@@ -4,7 +4,7 @@
 
 ## Windows PC에서 빌드
 
-1. Visual Studio 2022 또는 Build Tools 설치에서 **Desktop development with C++**와 **MSVC v143**를 설치합니다.
+1. Visual Studio 2022 또는 2026에서 **Desktop development with C++**, **MSVC v143 x64/x86 build tools**, Windows SDK를 설치합니다. `ARM` 또는 `ARM64` 도구가 아니라 **x64/x86** 도구가 필요합니다.
 2. 이 폴더를 Windows PC로 복사합니다.
 3. PowerShell 또는 명령 프롬프트에서 이 폴더로 이동해 빌드 스크립트를 실행합니다:
 
@@ -12,9 +12,9 @@
    .\build-win32.cmd
    ```
 
-   스크립트가 Visual Studio의 MSBuild를 찾아 Win32 Release로 빌드합니다. 산출물은 `bin\Win32\Release\KyeongwanScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
+   스크립트가 Visual Studio 2022/2026의 MSBuild를 찾아 Win32 Release로 빌드합니다. VS2026의 v143 도구 구성 요소 ID도 검색합니다. 산출물은 `bin\Win32\Release\KyeongwanScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
 
-   `vswhere.exe`를 찾지 못하거나 C++ 도구가 없다는 메시지가 나오면 Visual Studio Installer에 해당 구성 요소가 설치되지 않은 상태입니다. Visual Studio Installer 자체에서 메모리 접근 위반이 발생하면 이 스크립트로 해결할 수 없으며, Installer 문제를 먼저 복구해야 합니다.
+   `vswhere.exe`를 찾지 못하거나 C++ 도구가 없다는 메시지가 나오면 Visual Studio Installer에서 **MSVC v143 x64/x86 build tools**가 설치되어 있는지 확인합니다. Visual Studio Installer 자체에서 메모리 접근 위반이 발생하면 이 스크립트로 해결할 수 없으며, Installer 문제를 먼저 복구해야 합니다.
 
 ## 별도 설치 및 제거
 
