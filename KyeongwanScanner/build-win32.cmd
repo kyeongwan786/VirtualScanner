@@ -15,17 +15,13 @@ if not exist "%VSWHERE%" (
     exit /b 1
 )
 
-rem VS 2026 uses a versioned component ID for the optional v143 toolset.
-for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.ComponentGroup.VC.Tools.143.x86.x64 -property installationPath`) do set "VSROOT=%%I"
-
-rem VS 2022 exposes the x86/x64 v143 tools through the unversioned component ID.
-if not defined VSROOT (
-    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%I"
-)
+rem Find Visual Studio without component filters. Component IDs differ between
+rem Visual Studio releases; let MSBuild report a missing v143 toolset precisely.
+for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
 
 if not defined VSROOT (
-    echo ERROR: No Visual Studio installation with the C++ x86/x64 tools was found.
-    echo In Visual Studio Installer, add Desktop development with C++ and the MSVC v143 x64/x86 tools.
+    echo ERROR: vswhere.exe did not report a Visual Studio installation.
+    echo Open Visual Studio Installer and confirm the installation is completed.
     exit /b 1
 )
 

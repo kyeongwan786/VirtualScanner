@@ -12,9 +12,9 @@
    .\build-win32.cmd
    ```
 
-   스크립트가 Visual Studio 2022/2026의 MSBuild를 찾아 Win32 Release로 빌드합니다. VS2026의 v143 도구 구성 요소 ID도 검색합니다. 산출물은 `bin\Win32\Release\KyeongwanScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
+   스크립트가 `vswhere`로 설치된 Visual Studio의 MSBuild를 찾아 Win32 Release로 빌드합니다. Visual Studio 구성 요소 ID 차이로 설치본 검색이 실패하지 않도록 별도 구성 요소 필터는 사용하지 않으며, v143이 빠진 경우 MSBuild가 해당 도구 누락 오류를 표시합니다. 산출물은 `bin\Win32\Release\KyeongwanScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
 
-   `vswhere.exe`를 찾지 못하거나 C++ 도구가 없다는 메시지가 나오면 Visual Studio Installer에서 **MSVC v143 x64/x86 build tools**가 설치되어 있는지 확인합니다. Visual Studio Installer 자체에서 메모리 접근 위반이 발생하면 이 스크립트로 해결할 수 없으며, Installer 문제를 먼저 복구해야 합니다.
+   `vswhere.exe`가 Visual Studio를 찾지 못하면 Visual Studio Installer에서 설치가 완료됐는지 확인합니다. `MSB8020` 또는 `v143` 도구 세트를 찾을 수 없다는 오류가 나오면 Installer의 개별 구성 요소에서 **MSVC v143 x64/x86 build tools**를 추가합니다. Visual Studio Installer 자체에서 메모리 접근 위반이 발생하면 이 스크립트로 해결할 수 없으며, Installer 문제를 먼저 복구해야 합니다.
 
 ## 별도 설치 및 제거
 
