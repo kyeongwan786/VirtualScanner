@@ -1,0 +1,10 @@
+{
+  "stations": [
+    {
+      "label": "접수 자리 1",
+      "station_id": "desk-01",
+      "url": "http://192.168.0.25:29742",
+      "token": "same-32-character-or-longer-token-as-that-receiver"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+LIBRARY "KyeongwanScanner"
+EXPORTS
+    DS_Entry=_DS_Entry@20 @1

@@ -1,0 +1,6 @@
+{
+  "station_id": "desk-01",
+  "host": "0.0.0.0",
+  "port": 29742,
+  "token": "replace-with-a-random-secret-at-least-32-characters"
+}
