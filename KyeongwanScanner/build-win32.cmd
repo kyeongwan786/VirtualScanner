@@ -15,9 +15,10 @@ if not exist "%VSWHERE%" (
     exit /b 1
 )
 
-rem Find Visual Studio without component filters. Component IDs differ between
-rem Visual Studio releases; let MSBuild report a missing v143 toolset precisely.
-for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
+rem Include Preview/Insiders installations as well as stable releases. Component
+rem IDs differ between Visual Studio releases, so let MSBuild report a missing
+rem v143 toolset precisely instead of filtering installations here.
+for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -prerelease -property installationPath`) do set "VSROOT=%%I"
 
 if not defined VSROOT (
     echo ERROR: vswhere.exe did not report a Visual Studio installation.
