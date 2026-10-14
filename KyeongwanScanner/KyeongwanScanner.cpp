@@ -256,7 +256,11 @@ TW_IDENTITY_KW MakeIdentity() {
     identity.SupportedGroups = DG_CONTROL | DG_IMAGE;
     strcpy_s(identity.Manufacturer, "Kyeongwan");
     strcpy_s(identity.ProductFamily, "Virtual Scanner");
+#ifdef KYEONGWAN_SCANNER_DIAGNOSTIC
+    strcpy_s(identity.ProductName, "kyeongwan-scanner-diagnostic");
+#else
     strcpy_s(identity.ProductName, "kyeongwan-scanner");
+#endif
     return identity;
 }
 

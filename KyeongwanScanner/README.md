@@ -47,3 +47,13 @@ Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSo
 구조체 대조 기준은 [TWAIN Working Group의 공식 `twain.h`](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/src/twain.h)입니다. x86 DSM이 `C:\Windows\twain_32` 아래의 `.ds` 파일을 하위 폴더까지 검색한다는 설치 경로 근거는 [공식 DSM README](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/README.txt)에 있습니다.
 
 기존 장치 파일은 건드리지 않도록 구성했지만, 페이지의 자체 장치 검색 방식과 실제 Source 호환성은 대상 PC에서 목록을 확인해야만 확정할 수 있습니다.
+
+## 기존 Source를 유지하는 병렬 진단 설치
+
+현재 설치된 `kyeongwan-scanner`를 제거하거나 덮어쓰지 않고 진단 빌드를 나란히 설치할 수 있습니다. Windows에서 `build-diagnostic-win32.cmd`를 실행하면 `bin\Win32\Diagnostic\KyeongwanScannerDiagnostic.ds`가 생성됩니다. 이를 VM으로 복사하고, 관리자 PowerShell에서 다음 스크립트를 실행합니다:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-KyeongwanScannerDiagnostic.ps1 -BuiltSource .\KyeongwanScannerDiagnostic.ds
+```
+
+이 Source의 표시 이름은 `kyeongwan-scanner-diagnostic`이며 설치 폴더는 `C:\Windows\twain_32\KyeongwanScannerDiagnostic`입니다. 업무 포털의 신청서 스캔 설정에서 이 이름을 임시 선택해 진단할 수 있습니다. 기존 `kyeongwan-scanner`, VOIM, WIA 장치의 파일 및 설정은 설치 스크립트가 변경하지 않습니다. 시험 후 진단 Source를 제거할 때만 `Uninstall-KyeongwanScannerDiagnostic.ps1`을 사용합니다. 소유권/해시가 일치하지 않으면 제거를 중단합니다.
