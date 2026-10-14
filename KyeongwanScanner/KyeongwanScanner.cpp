@@ -145,6 +145,7 @@ constexpr uint16_t TWAIN_STATE_DS_OPEN = 4;
 constexpr uint16_t TWAIN_STATE_DS_ENABLED = 5;
 constexpr uint16_t TWAIN_STATE_TRANSFER_READY = 6;
 constexpr uint16_t TWAIN_STATE_TRANSFERRING = 7;
+constexpr DWORD kTraceRotateBytes = 1024 * 1024;
 
 constexpr uint16_t kSupportedCaps[] = {
     CAP_SUPPORTEDCAPS, CAP_XFERCOUNT, ICAP_COMPRESSION, ICAP_PIXELTYPE,
@@ -162,6 +163,85 @@ uint16_t g_resolutionDpi = 175;
 uint16_t g_transferCount = 0xffff; // -1: return all pages in the ready job.
 std::once_flag g_gdiplusOnce;
 ULONG_PTR g_gdiplusToken = 0;
+std::mutex g_traceMutex;
+
+bool IsCurrentPageAvailable();
+
+bool ShouldTraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
+                          uint16_t result) {
+    if (result == TWRC_FAILURE) return true;
+    if (dataGroup == DG_CONTROL && dataArgType == DAT_IDENTITY)
+        return message == MSG_OPENDS || message == MSG_CLOSEDS;
+    if (dataGroup == DG_CONTROL && dataArgType == DAT_USERINTERFACE)
+        return message == MSG_ENABLEDS || message == MSG_DISABLEDS;
+    if (dataGroup == DG_CONTROL && dataArgType == DAT_EVENT)
+        return result == TWRC_DSEVENT;
+    if (dataGroup == DG_CONTROL && dataArgType == DAT_PENDINGXFERS)
+        return message == MSG_ENDXFER || message == MSG_RESET;
+    return dataGroup == DG_IMAGE &&
+        (dataArgType == DAT_IMAGEINFO || dataArgType == DAT_IMAGENATIVEXFER);
+}
+
+void TraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
+                    uint16_t result, void* data) noexcept {
+    if (!ShouldTraceTwainCall(dataGroup, dataArgType, message, result)) return;
+    try {
+        std::lock_guard<std::mutex> guard(g_traceMutex);
+        wchar_t programData[MAX_PATH]{};
+        const DWORD length = GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH) return;
+
+        wchar_t directory[MAX_PATH]{};
+        if (swprintf_s(directory, L"%s\\KyeongwanScanner\\VirtualSource", programData) < 0) return;
+        CreateDirectoryW((std::wstring(programData) + L"\\KyeongwanScanner").c_str(), nullptr);
+        CreateDirectoryW(directory, nullptr);
+        const std::wstring logPath = std::wstring(directory) + L"\\twain-diagnostics.log";
+
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (GetFileAttributesExW(logPath.c_str(), GetFileExInfoStandard, &attributes)) {
+            const ULONGLONG size = (static_cast<ULONGLONG>(attributes.nFileSizeHigh) << 32) |
+                                  attributes.nFileSizeLow;
+            if (size >= kTraceRotateBytes) {
+                const std::wstring previousPath = logPath + L".1";
+                DeleteFileW(previousPath.c_str());
+                MoveFileW(logPath.c_str(), previousPath.c_str());
+            }
+        }
+
+        HANDLE file = CreateFileW(logPath.c_str(), FILE_APPEND_DATA,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return;
+
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        char detail[80]{};
+        if (dataGroup == DG_CONTROL && dataArgType == DAT_CAPABILITY && data) {
+            const auto* capability = static_cast<const TW_CAPABILITY_KW*>(data);
+            sprintf_s(detail, " cap=0x%04X", capability->Cap);
+        } else if (dataGroup == DG_CONTROL && dataArgType == DAT_PENDINGXFERS && data &&
+                   result != TWRC_FAILURE) {
+            const auto* pending = static_cast<const TW_PENDINGXFERS_KW*>(data);
+            sprintf_s(detail, " pending=%u", pending->Count);
+        }
+
+        char line[320]{};
+        const int lineLength = sprintf_s(
+            line, "%04u-%02u-%02u %02u:%02u:%02u pid=%lu tid=%lu dg=0x%08lX dat=0x%04X msg=0x%04X rc=%u cc=%u state=%ld page=%zu/%zu%s\r\n",
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+            GetCurrentProcessId(), GetCurrentThreadId(), static_cast<unsigned long>(dataGroup),
+            dataArgType, message, result, g_lastCondition, g_state,
+            IsCurrentPageAvailable() ? g_nextPage + 1 : 0, g_pages.size(), detail);
+        if (lineLength > 0) {
+            DWORD written = 0;
+            WriteFile(file, line, static_cast<DWORD>(lineLength), &written, nullptr);
+            FlushFileBuffers(file);
+        }
+        CloseHandle(file);
+    } catch (...) {
+        // Diagnostics are best-effort and must never affect scanner operation.
+    }
+}
 
 TW_IDENTITY_KW MakeIdentity() {
     TW_IDENTITY_KW identity{};
@@ -444,7 +524,7 @@ uint16_t ReturnFailure(uint16_t condition) {
 }
 
 // TWAIN DSM resolves this export by name; ordinal 1 supports older DSM builds.
-extern "C" __declspec(dllexport) uint16_t WINAPI DS_Entry(
+static uint16_t WINAPI DispatchDS_Entry(
     TW_IDENTITY_KW* /*origin*/, uint32_t dataGroup, uint16_t dataArgType,
     uint16_t message, void* data) {
     try {
@@ -601,6 +681,15 @@ extern "C" __declspec(dllexport) uint16_t WINAPI DS_Entry(
         // escape through the TWAIN C ABI into the business application.
         return ReturnFailure(TWCC_OPERATIONERROR);
     }
+}
+
+// TWAIN DSM resolves this export by name; ordinal 1 supports older DSM builds.
+extern "C" __declspec(dllexport) uint16_t WINAPI DS_Entry(
+    TW_IDENTITY_KW* origin, uint32_t dataGroup, uint16_t dataArgType,
+    uint16_t message, void* data) {
+    const uint16_t result = DispatchDS_Entry(origin, dataGroup, dataArgType, message, data);
+    TraceTwainCall(dataGroup, dataArgType, message, result, data);
+    return result;
 }
 
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

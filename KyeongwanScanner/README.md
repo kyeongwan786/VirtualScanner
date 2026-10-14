@@ -42,6 +42,8 @@ Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSo
 
 코드에는 TWAIN identity, 열기/닫기, JPG 작업 검색, Acquire 이벤트, 이미지 정보 응답 및 Native Transfer가 작성되어 있습니다. TWAIN 1.x 자료구조의 Win32 크기를 컴파일 시 검사하도록 했습니다. 다만 Windows에서 빌드하지 않았고, 업무페이지의 TWAIN 호환성·선택·실제 이미지 반환도 아직 확인되지 않았습니다. 업무페이지가 WIA만 사용한다면 이 TWAIN Source는 목록에 나타나지 않을 수 있습니다. 화면의 `(32-32)` 표기만으로 API를 확정할 수 없습니다.
 
+스캔 오류를 진단하기 위해 TWAIN DSM 요청의 그룹/자료형/메시지 번호, 반환 코드, 상태 코드, Source 상태와 페이지 인덱스를 기록합니다. 기록 파일은 `%ProgramData%\KyeongwanScanner\VirtualSource\twain-diagnostics.log`이며 1 MiB가 되면 이전 로그를 `.1`로 한 번 보관합니다. 이미지 내용, 파일명, 경로, 토큰은 기록하지 않습니다. 이 로그는 진단 코드가 포함된 새 Win32 빌드를 설치한 뒤 생성됩니다.
+
 구조체 대조 기준은 [TWAIN Working Group의 공식 `twain.h`](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/src/twain.h)입니다. x86 DSM이 `C:\Windows\twain_32` 아래의 `.ds` 파일을 하위 폴더까지 검색한다는 설치 경로 근거는 [공식 DSM README](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/README.txt)에 있습니다.
 
 기존 장치 파일은 건드리지 않도록 구성했지만, 페이지의 자체 장치 검색 방식과 실제 Source 호환성은 대상 PC에서 목록을 확인해야만 확정할 수 있습니다.
