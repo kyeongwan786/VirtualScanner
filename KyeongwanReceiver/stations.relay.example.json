@@ -1,0 +1,8 @@
+{
+  "relay_url": "https://REPLACE_WITH_SERVER_NAME:8443",
+  "ca_cert": "",
+  "central_token": "provision-the-central-sender-token",
+  "stations": [
+    {"label": "접수 자리 1", "station_id": "desk-01"}
+  ]
+}

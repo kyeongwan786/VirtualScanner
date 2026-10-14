@@ -30,11 +30,13 @@
 
 Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지의 스캐너 선택 목록에 `kyeongwan-scanner`라는 이름을 노출하는 첫 단계를 목표로 한다. 기존 Canon, HP, UniTwain, VOIM 등의 장치 파일을 덮어쓰지 않고 별도 폴더에 설치하도록 구성돼 있다.
 
-현재 코드는 TWAIN Source identity, 열기/닫기, `%ProgramData%\KyeongwanScanner\VirtualSource\ready`의 완성된 작업 검색, Acquire 이벤트 및 JPG의 Native Transfer 반환까지 작성되어 있다. 모든 페이지 반환이 끝난 작업은 `completed`로 이동해 보존하며, TWAIN Acquire 취소·실패 작업은 `ready`에 남아 재시도할 수 있다. 송신 중 취소한 작업은 Receiver가 `cancelled`에 보존한다. **목록 표시, 선택, 업무페이지에 실제 이미지 반환은 대상 Windows PC에서 아직 확인되지 않았다.**
+현재 코드는 TWAIN Source identity, 열기/닫기, `%ProgramData%\KyeongwanScanner\VirtualSource\ready`의 완성된 작업 검색, Acquire 이벤트 및 JPG의 Native Transfer 반환까지 작성되어 있다. 모든 페이지 반환 후 업무페이지가 `MSG_ENDXFER`로 완료를 확인하면 해당 작업 폴더를 삭제하며, 취소·실패·미완료 작업은 재시도할 수 있도록 `ready`에 남긴다. 송신 중 취소한 작업은 Receiver가 `cancelled`에 보존한다. **목록 표시, 선택, 업무페이지에 실제 이미지 반환은 대상 Windows PC에서 아직 확인되지 않았다.**
 
 ### `KyeongwanReceiver`
 
-`phone-dcim-transfer`의 드래그앤드롭 PDF 처리와 JPG 페이지 렌더링 방식을 참고한 중앙 송신 GUI와 접수 PC Receiver가 있다. 중앙 GUI에서 자리를 선택하면 PDF 페이지를 JPG로 렌더링해 해당 Receiver로 보내고, Receiver는 모든 페이지가 도착한 작업만 `%ProgramData%\KyeongwanScanner\VirtualSource\ready\<job-id>`에 공개한다. TWAIN Source는 Acquire 때 이 대기열을 읽고 각 JPG를 스캔 이미지로 반환하도록 작성되어 있다. 중앙 GUI의 전송 취소는 부분 수신 데이터를 삭제하지 않고 `cancelled` 폴더에 보존한다. **이 연결은 아직 Windows에서 빌드 및 업무페이지로 검증되지 않았다.** 상세 실행 방법은 [`KyeongwanReceiver/README.md`](KyeongwanReceiver/README.md)에 있다.
+`phone-dcim-transfer`의 드래그앤드롭 PDF 처리와 JPG 페이지 렌더링 방식을 참고한 중앙 송신 GUI와 접수 PC Receiver가 있다. 새 `relay_server.py`는 중앙 작업을 암호화해 임시 저장하고, `relay_receiver.py`는 각 VM에서 바깥으로 폴링해 지정된 자리 작업만 로컬 `%ProgramData%\KyeongwanScanner\VirtualSource\ready\<job-id>`에 공개한다. 일반 릴레이 모드는 HTTPS, 중앙/자리별 토큰과 출발 IP 허용 목록을 사용한다. Render 무료 시험 모드는 Render 앞단 HTTPS와 강한 bearer token을 사용하고 IP allow-list는 적용하지 않으며, 무료 인스턴스의 임시 저장소에 의존한다. Receiver가 안전하게 로컬에 저장한 뒤 ack하면 릴레이 사본을 삭제하고, TWAIN이 모든 페이지를 성공적으로 반환하면 VM의 작업 사본도 삭제한다. Render Blueprint는 준비됐지만 실제 배포하지 않았고, 무료 서비스는 유휴 시 잠들며 재시작 시 대기 작업을 잃을 수 있어 시험 문서 전용이다. 구형 `receiver.py` 직접 연결 방식은 개발 호환용으로 남아 있다. 릴레이와 TWAIN 연결은 Windows에서 아직 종단간 검증되지 않았다. 상세 실행 방법과 보안 한계는 [`KyeongwanReceiver/README.md`](KyeongwanReceiver/README.md)에 있다.
+
+중앙 송신 GUI와 시험 릴레이는 macOS에서도 실행할 수 있다. `make_test_tls.py`는 사설 LAN 시험용 CA/서버 인증서를 만든다. 새 릴레이 모드에서는 Windows VM이 Mac 서버에 아웃바운드 HTTPS로 접속하므로 VM의 인바운드 포트 전달은 필요 없다. 다만 VM과 Mac 사이에 라우팅 경로가 있어야 하며 VMware NAT/브리지 전환은 하지 않는다. 이 시험용 인증서는 운영용이 아니다. 릴레이 서버 배포 및 macOS/Windows 간 전송은 실제 환경에서 아직 확인하지 않았다.
 
 ## 지금까지 확인된 중요한 점
 

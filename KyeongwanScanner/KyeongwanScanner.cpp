@@ -258,18 +258,12 @@ bool FindNextJob() {
     return false;
 }
 
-bool ArchiveCurrentJob() {
+bool RemoveCurrentJob() {
     if (g_jobDirectory.empty()) return false;
     try {
-        const fs::path root = GetQueueRoot();
-        const fs::path archive = root.parent_path() / L"completed";
-        fs::create_directories(archive);
-        fs::path destination = archive / g_jobDirectory.filename();
-        if (fs::exists(destination)) {
-            destination += L"_" + std::to_wstring(GetTickCount64());
-        }
-        fs::rename(g_jobDirectory, destination);
-        return true;
+        std::error_code error;
+        const uintmax_t removed = fs::remove_all(g_jobDirectory, error);
+        return !error && removed > 0;
     } catch (...) {
         return false;
     }
@@ -515,7 +509,7 @@ extern "C" __declspec(dllexport) uint16_t WINAPI DS_Entry(
             if (g_state != TWAIN_STATE_DS_ENABLED) return ReturnFailure(TWCC_SEQERROR);
             g_state = TWAIN_STATE_DS_OPEN;
             g_eventPending = false;
-            ClearCurrentJob(); // Leave the complete job in ready for a later retry.
+            ClearCurrentJob(); // Keep an incomplete job in ready so the application can retry it.
             SetCondition(TWCC_SUCCESS);
             return TWRC_SUCCESS;
         }
@@ -550,7 +544,7 @@ extern "C" __declspec(dllexport) uint16_t WINAPI DS_Entry(
             pending->Count = static_cast<uint16_t>(remaining > 0xffff ? 0xffff : remaining);
             pending->Reserved = 0;
             if (remaining == 0) {
-                if (!ArchiveCurrentJob()) return ReturnFailure(TWCC_OPERATIONERROR);
+                if (!RemoveCurrentJob()) return ReturnFailure(TWCC_OPERATIONERROR);
                 ClearCurrentJob();
                 g_state = TWAIN_STATE_DS_ENABLED;
             } else {

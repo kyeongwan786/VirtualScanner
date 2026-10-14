@@ -34,7 +34,7 @@
 
 ## JPG 저장 위치와 스캔 흐름
 
-Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSource\ready\<job-id>`입니다. `.ds` 설치 폴더와는 별도이며, Receiver와 TWAIN Source가 같은 데이터 폴더를 사용합니다. 업무페이지가 스캔을 요청하면 Source가 완성된 작업 하나를 찾아 JPG 페이지들을 TWAIN Native Transfer로 반환합니다. 모든 페이지 전송이 끝난 작업은 삭제하지 않고 `completed` 하위 폴더로 이동합니다. 취소되거나 미완료된 작업은 `ready`에 남아 재시도할 수 있습니다.
+Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSource\ready\<job-id>`입니다. `.ds` 설치 폴더와는 별도이며, Receiver와 TWAIN Source가 같은 데이터 폴더를 사용합니다. 업무페이지가 스캔을 요청하면 Source가 완성된 작업 하나를 찾아 JPG 페이지들을 TWAIN Native Transfer로 반환합니다. 마지막 페이지 전송을 업무페이지가 `MSG_ENDXFER`로 성공 확인하면 작업 폴더를 삭제합니다. 취소되거나 미완료된 작업은 `ready`에 남아 재시도할 수 있습니다.
 
 이 설계에서 업무페이지는 JPG 폴더를 직접 열거하지 않습니다. 업무페이지는 TWAIN Source를 선택하고 스캔을 요청하며, Source가 지정 폴더의 JPG를 읽어 스캔 결과로 응답합니다.
 

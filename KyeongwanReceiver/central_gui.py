@@ -7,6 +7,9 @@ import json
 import os
 import queue
 import re
+import ssl
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -19,14 +22,24 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from PIL import Image
 import pymupdf as fitz
-from tkinterdnd2 import DND_FILES, TkinterDnD
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except (ImportError, OSError, tk.TclError):
+    DND_FILES = None
+    TkinterDnD = None
 
 
 APP_NAME = "Kyeongwan Scanner — 중앙 전송"
 MAX_PAGE_BYTES = 40 * 1024 * 1024
 MAX_PAGES = 100
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-APP_CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "KyeongwanScanner"
+if sys.platform == "win32":
+    APP_CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "KyeongwanScanner"
+elif sys.platform == "darwin":
+    APP_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "KyeongwanScanner"
+else:
+    APP_CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "KyeongwanScanner"
 STATIONS_FILE = APP_CONFIG_DIR / "stations.json"
 
 
@@ -51,6 +64,32 @@ def load_stations() -> list[dict]:
     stations = raw.get("stations") if isinstance(raw, dict) else None
     if not isinstance(stations, list):
         raise TransferError("stations.json에는 stations 배열이 있어야 합니다.")
+    relay_url = raw.get("relay_url") if isinstance(raw, dict) else None
+    central_token = raw.get("central_token") if isinstance(raw, dict) else None
+    if relay_url is not None or central_token is not None:
+        parsed_relay = urlsplit(relay_url.rstrip("/")) if isinstance(relay_url, str) else None
+        if (parsed_relay is None or parsed_relay.scheme != "https" or not parsed_relay.netloc
+                or parsed_relay.path not in ("", "/") or parsed_relay.query or parsed_relay.fragment):
+            raise TransferError("중계 서버 주소는 https://로 시작하는 서버 주소여야 합니다.")
+        if not isinstance(central_token, str) or len(central_token) < 32:
+            raise TransferError("중앙 송신기용 central_token이 없거나 너무 짧습니다.")
+        ca_cert = raw.get("ca_cert")
+        try:
+            tls_context = ssl.create_default_context(cafile=ca_cert) if ca_cert else None
+        except (OSError, ssl.SSLError) as error:
+            raise TransferError(f"릴레이 CA 인증서를 읽지 못했습니다: {error}") from error
+        valid = []
+        for station in stations:
+            if not isinstance(station, dict):
+                continue
+            station_id = station.get("station_id")
+            label = station.get("label", station_id)
+            if (isinstance(station_id, str) and JOB_ID_RE.fullmatch(station_id)
+                    and isinstance(label, str) and label):
+                valid.append({"mode": "relay", "station_id": station_id, "label": label,
+                              "url": urlunsplit((parsed_relay.scheme, parsed_relay.netloc, "", "", "")),
+                              "token": central_token, "ssl_context": tls_context})
+        return valid
     valid = []
     for station in stations:
         if not isinstance(station, dict):
@@ -77,15 +116,17 @@ def load_stations() -> list[dict]:
 
 def request_json(url: str, method: str = "GET", token: str | None = None,
                  body: bytes | None = None, content_type: str | None = None,
-                 timeout: float = 40) -> tuple[int, dict]:
+                 timeout: float = 40, auth_mode: str = "receiver", ssl_context=None) -> tuple[int, dict]:
     headers = {"Accept": "application/json"}
     if token:
-        headers["X-Receiver-Token"] = token
+        headers["Authorization" if auth_mode == "relay" else "X-Receiver-Token"] = (
+            f"Bearer {token}" if auth_mode == "relay" else token
+        )
     if content_type:
         headers["Content-Type"] = content_type
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=ssl_context) as response:
             status, data = response.status, response.read(64 * 1024)
     except urllib.error.HTTPError as error:
         status, data = error.code, error.read(64 * 1024)
@@ -169,7 +210,9 @@ def render_pdf(source: Path, dpi: int, quality: int):
 
 def request_job_cancellation(station: dict, job_id: str) -> dict:
     url = f"{station['url']}/v1/jobs/{quote(job_id, safe='')}/cancel"
-    status, payload = request_json(url, "DELETE", station["token"], timeout=5)
+    mode = station.get("mode", "receiver")
+    status, payload = request_json(url, "DELETE", station["token"], timeout=5, auth_mode=mode,
+                                   ssl_context=station.get("ssl_context"))
     if status == 200:
         return payload
     if status == 409:
@@ -201,7 +244,9 @@ def send_page(station: dict, job_id: str, page_number: int, content: bytes,
     for attempt in range(3):
         stop_if_cancelled(cancel_event, station, job_id)
         try:
-            status, payload = request_json(url, "PUT", station["token"], content, "image/jpeg")
+            status, payload = request_json(url, "PUT", station["token"], content, "image/jpeg",
+                                           auth_mode=station.get("mode", "receiver"),
+                                           ssl_context=station.get("ssl_context"))
         except TransferError as error:
             last_error = error
             if attempt < 2:
@@ -219,13 +264,15 @@ def send_one(source: Path, station: dict, dpi: int, quality: int, progress,
     job_id = uuid.uuid4().hex
     stop_if_cancelled(cancel_event, station, job_id)
     progress(f"작업 ID: {job_id} ({source.name})")
-    status, health = request_json(station["url"] + "/health")
-    if status != 200 or health.get("status") != "ready":
-        raise TransferError(f"{station['label']} Receiver가 준비되지 않았습니다: {health}")
-    if health.get("station_id") != station["station_id"]:
-        raise TransferError(
-            f"자리 불일치: 설정은 {station['station_id']}인데 Receiver는 {health.get('station_id')}입니다."
-        )
+    mode = station.get("mode", "receiver")
+    if mode == "receiver":
+        status, health = request_json(station["url"] + "/health")
+        if status != 200 or health.get("status") != "ready":
+            raise TransferError(f"{station['label']} Receiver가 준비되지 않았습니다: {health}")
+        if health.get("station_id") != station["station_id"]:
+            raise TransferError(
+                f"자리 불일치: 설정은 {station['station_id']}인데 Receiver는 {health.get('station_id')}입니다."
+            )
 
     if source.suffix.casefold() == ".pdf":
         wait_until_stable(source)
@@ -246,6 +293,17 @@ def send_one(source: Path, station: dict, dpi: int, quality: int, progress,
             yield 1, content
         page_iter = jpg_page()
 
+    if mode == "relay":
+        metadata = json.dumps({"station_id": station["station_id"], "job_id": job_id,
+                               "page_count": page_count,
+                               "dpi": dpi if source.suffix.casefold() == ".pdf" else 175,
+                               "source_name": source.name}, ensure_ascii=False).encode("utf-8")
+        status, result = request_json(f"{station['url']}/v1/jobs", "POST", station["token"], metadata,
+                                      "application/json", auth_mode="relay",
+                                      ssl_context=station.get("ssl_context"))
+        if status != 201:
+            raise TransferError(f"중앙 릴레이가 작업을 만들지 못했습니다: {result}")
+
     for number, content in page_iter:
         send_page(station, job_id, number, content, cancel_event)
         progress(f"{source.name}: {number}/{page_count} 페이지 전송")
@@ -258,10 +316,16 @@ def send_one(source: Path, station: dict, dpi: int, quality: int, progress,
     last_error = None
     for attempt in range(3):
         try:
-            status, result = request_json(
-                f"{station['url']}/v1/jobs/{quote(job_id, safe='')}/complete",
-                "POST", station["token"], metadata, "application/json",
-            )
+            if mode == "relay":
+                status, result = request_json(
+                    f"{station['url']}/v1/jobs/{quote(job_id, safe='')}/complete",
+                    "POST", station["token"], auth_mode="relay", ssl_context=station.get("ssl_context"),
+                )
+            else:
+                status, result = request_json(
+                    f"{station['url']}/v1/jobs/{quote(job_id, safe='')}/complete",
+                    "POST", station["token"], metadata, "application/json",
+                )
             break
         except TransferError as error:
             last_error = error
@@ -271,13 +335,14 @@ def send_one(source: Path, station: dict, dpi: int, quality: int, progress,
     else:
         raise last_error or TransferError(f"작업 완료 요청 실패 (작업 ID: {job_id})")
     if status not in (200, 201):
-        raise TransferError(f"Receiver가 작업 완료를 확인하지 않았습니다: {result}")
+        raise TransferError(f"전송 대상이 작업 완료를 확인하지 않았습니다: {result}")
     return job_id
 
 
 class CentralSenderApp:
-    def __init__(self, root):
+    def __init__(self, root, drag_drop_enabled: bool = True):
         self.root = root
+        self.drag_drop_enabled = drag_drop_enabled
         self.root.title(APP_NAME)
         self.root.geometry("760x580")
         self.root.minsize(640, 480)
@@ -292,10 +357,10 @@ class CentralSenderApp:
         self.root.after(200, self._poll_events)
 
     def _build(self):
-        ttk.Label(self.root, text=APP_NAME, font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=18, pady=(16, 5))
+        ttk.Label(self.root, text=APP_NAME, font=("TkDefaultFont", 18, "bold")).pack(anchor="w", padx=18, pady=(16, 5))
         ttk.Label(
             self.root,
-            text="PDF를 페이지별 JPG로 변환해 선택한 자리의 Receiver 폴더로 보냅니다. 원본 PDF는 변경하거나 삭제하지 않습니다.",
+            text="PDF를 페이지별 JPG로 변환해 선택한 자리로 보냅니다. 원본 PDF는 변경하거나 삭제하지 않습니다.",
             wraplength=710,
         ).pack(anchor="w", padx=19, pady=(0, 14))
         row = ttk.Frame(self.root, padding=(18, 0))
@@ -315,12 +380,23 @@ class CentralSenderApp:
         ttk.Spinbox(options, from_=60, to=100, increment=5, textvariable=self.quality, width=7).pack(side="left", padx=6)
         self.dropbox = tk.Label(
             self.root,
-            text="텔레그램에서 받은 PDF를 여기로 끌어놓으세요\n여러 파일 또는 폴더도 선택할 수 있습니다",
-            relief="ridge", borderwidth=2, height=8, bg="#f2f5f9", font=("Segoe UI", 12),
+            text=(
+                "텔레그램에서 받은 PDF를 여기로 끌어놓으세요\n여러 파일 또는 폴더도 선택할 수 있습니다"
+                if self.drag_drop_enabled else
+                "아래 ‘파일 선택…’ 버튼으로 PDF 또는 JPG를 선택하세요"
+            ),
+            relief="ridge", borderwidth=2, height=8, bg="#f2f5f9", font=("TkDefaultFont", 12),
         )
         self.dropbox.pack(fill="both", expand=True, padx=18, pady=(8, 10))
-        self.dropbox.drop_target_register(DND_FILES)
-        self.dropbox.dnd_bind("<<Drop>>", self._on_drop)
+        if self.drag_drop_enabled:
+            try:
+                self.dropbox.drop_target_register(DND_FILES)
+                self.dropbox.dnd_bind("<<Drop>>", self._on_drop)
+            except (AttributeError, tk.TclError):
+                self.drag_drop_enabled = False
+                self.dropbox.configure(
+                    text="아래 ‘파일 선택…’ 버튼으로 PDF 또는 JPG를 선택하세요"
+                )
         buttons = ttk.Frame(self.root, padding=(18, 0))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="파일 선택…", command=self._choose_files).pack(side="left")
@@ -350,7 +426,12 @@ class CentralSenderApp:
         if not STATIONS_FILE.exists():
             STATIONS_FILE.write_text(json.dumps({"stations": []}, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
-            os.startfile(str(STATIONS_FILE))
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-t", str(STATIONS_FILE)])
+            elif os.name == "nt":
+                os.startfile(str(STATIONS_FILE))
+            else:
+                subprocess.Popen(["xdg-open", str(STATIONS_FILE)])
         except (AttributeError, OSError):
             messagebox.showinfo(APP_NAME, f"이 파일을 편집한 뒤 앱을 다시 여세요:\n{STATIONS_FILE}", parent=self.root)
 
@@ -455,8 +536,16 @@ class CentralSenderApp:
 
 
 def main():
-    root = TkinterDnD.Tk()
-    CentralSenderApp(root)
+    drag_drop_enabled = TkinterDnD is not None
+    if drag_drop_enabled:
+        try:
+            root = TkinterDnD.Tk()
+        except (OSError, RuntimeError, tk.TclError):
+            root = tk.Tk()
+            drag_drop_enabled = False
+    else:
+        root = tk.Tk()
+    CentralSenderApp(root, drag_drop_enabled=drag_drop_enabled)
     root.mainloop()
 
 

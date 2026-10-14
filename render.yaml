@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: kyeongwan-relay-test
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -r KyeongwanReceiver/relay-requirements.txt
+    startCommand: python KyeongwanReceiver/relay_server.py --render
+    healthCheckPath: /health
+    envVars:
+      - key: KYEONGWAN_RELAY_RENDER_MODE
+        value: "true"
+      - key: KYEONGWAN_RELAY_CENTRAL_TOKEN
+        sync: false
+      - key: KYEONGWAN_RELAY_STATIONS
+        sync: false
+      - key: KYEONGWAN_RELAY_DATA_KEY
+        generateValue: true

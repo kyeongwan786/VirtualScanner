@@ -1,0 +1,10 @@
+{
+  "relay_url": "https://YOUR-SERVICE.onrender.com",
+  "central_token": "paste-the-render-central-token-here",
+  "stations": [
+    {
+      "label": "테스트 VM",
+      "station_id": "desk-01"
+    }
+  ]
+}

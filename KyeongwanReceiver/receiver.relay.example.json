@@ -1,0 +1,7 @@
+{
+  "station_id": "desk-01",
+  "relay_url": "https://REPLACE_WITH_SERVER_NAME:8443",
+  "ca_cert": "",
+  "poll_interval_seconds": 10,
+  "token": "provision-a-unique-random-token-for-this-station"
+}

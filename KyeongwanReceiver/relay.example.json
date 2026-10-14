@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1",
+  "port": 8443,
+  "tls_cert": "",
+  "tls_key": "",
+  "data_dir": "./relay-data",
+  "data_key_file": "./relay-data.key",
+  "central_token_sha256": "replace-with-64-character-sha256-hex-digest",
+  "central_allowed_ips": ["127.0.0.1/32", "::1/128"],
+  "stations": {
+    "desk-01": {
+      "token_sha256": "replace-with-64-character-sha256-hex-digest",
+      "allowed_ips": ["127.0.0.1/32", "::1/128"]
+    }
+  }
+}
