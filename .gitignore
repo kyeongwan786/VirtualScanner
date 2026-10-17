@@ -1,0 +1,27 @@
+# Local editor and Python artifacts
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+.pytest_cache/
+
+# User-supplied reference material and local data
+/idscanner/
+*.db
+*.sqlite
+*.sqlite3
+*.skt
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+
+# Local build and temporary files
+/VirtualScanner-source.zip
+/*.pdf
+NEW_WORK/build/
+NEW_WORK/dist/
+NEW_WORK/output/
+NEW_WORK/*.spec

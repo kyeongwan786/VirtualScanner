@@ -10,7 +10,7 @@
 4. Receiver는 가상 Source 공용 저장소 `%ProgramData%\KyeongwanScanner\VirtualSource\ready\<job-id>`에 작업별 JPG와 manifest를 저장한다.
 5. 해당 자리의 TWAIN Source가 스캔 요청을 받으면 대기 폴더의 JPG를 업무페이지에 반환한다.
 
-`KyeongwanScanner`는 `%ProgramData%\\KyeongwanScanner\\VirtualSource\\ready`에서 완성된 작업을 찾아 페이지 순서대로 TWAIN Native Transfer 이미지로 반환하도록 작성되어 있다. 이는 업무페이지가 파일 경로를 직접 읽는 동작이 아니라, TWAIN Source가 업무페이지의 Acquire 요청에 이미지 데이터를 응답하는 구조다. 실제 업무페이지에서 선택·스캔되는지는 Windows 대상 PC에서 아직 검증되지 않았다.
+`KyeongwanScanner`는 `%ProgramData%\\KyeongwanScanner\\VirtualSource\\ready`에서 완성된 작업을 찾아 페이지 순서대로 TWAIN Native Transfer 이미지로 반환한다. 이는 업무페이지가 파일 경로를 직접 읽는 동작이 아니라, TWAIN Source가 Acquire 요청에 이미지 데이터를 응답하는 구조다. 2026-10-14 Windows VM에서 신청서 스캔 성공을 확인했으며, 반환된 페이지와 특정 입력 JPG의 일치는 별도 대조가 필요하다.
 
 ## 보안 릴레이 구성 (새 흐름)
 

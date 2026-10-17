@@ -30,7 +30,7 @@
 
 Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지의 스캐너 선택 목록에 `kyeongwan-scanner`라는 이름을 노출하는 첫 단계를 목표로 한다. 기존 Canon, HP, UniTwain, VOIM 등의 장치 파일을 덮어쓰지 않고 별도 폴더에 설치하도록 구성돼 있다.
 
-현재 코드는 TWAIN Source identity, 열기/닫기, `%ProgramData%\KyeongwanScanner\VirtualSource\ready`의 완성된 작업 검색, Acquire 이벤트 및 JPG의 Native Transfer 반환까지 작성되어 있다. 모든 페이지 반환 후 업무페이지가 `MSG_ENDXFER`로 완료를 확인하면 해당 작업 폴더를 삭제하며, 취소·실패·미완료 작업은 재시도할 수 있도록 `ready`에 남긴다. 송신 중 취소한 작업은 Receiver가 `cancelled`에 보존한다. **목록 표시, 선택, 업무페이지에 실제 이미지 반환은 대상 Windows PC에서 아직 확인되지 않았다.**
+현재 코드는 TWAIN Source identity, 열기/닫기, `%ProgramData%\KyeongwanScanner\VirtualSource\ready`의 완성된 작업 검색, Acquire 이벤트 및 JPG의 Native Transfer 반환까지 작성되어 있다. 모든 페이지 반환 후 업무페이지가 `MSG_ENDXFER`로 완료를 확인하면 해당 작업 폴더를 삭제하며, 취소·실패·미완료 작업은 재시도할 수 있도록 `ready`에 남긴다. 송신 중 취소한 작업은 Receiver가 `cancelled`에 보존한다. **2026-10-14 Windows VM에서 identity 덮어쓰기와 `DAT_EVENT` 상수 오류를 수정한 진단 Source로 신청서 스캔이 정상 완료됐다고 사용자가 확인했다. 반환된 페이지가 어떤 `ready` 작업에서 왔는지는 아직 대조하지 않았다.**
 
 ### `KyeongwanReceiver`
 
@@ -42,18 +42,15 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 - 제공된 업무페이지 스캐너 선택 화면에는 TWAIN으로 보이는 장치와 `WIA-...` 장치가 함께 표시된다. 따라서 화면 전체가 TWAIN 전용이라고 단정할 수 없다.
 - 화면의 `(32-32)` 표시는 32비트 호환을 시사하지만, 그것만으로 업무페이지가 어떤 API로 모든 장치를 열거하는지 확정되지는 않는다.
-- `KyeongwanScanner`는 현재 TWAIN 방식으로 작성돼 있다. 따라서 첫 검증은 대상 PC에서 업무페이지에 `kyeongwan-scanner`가 표시되는지 확인하는 것이다. 필요하면 별도의 진단 도구로 TWAIN/WIA 목록을 비교한다.
+- `KyeongwanScanner`는 TWAIN 방식이다. 진단에서 확인한 결함은 DSM의 identity ID를 덮어쓴 것과 `DAT_EVENT`를 `0x0001`로 잘못 정의한 것이었다. identity 수정 뒤 U.Scan은 `MSG_ENABLEDS`까지 왔고, 잘못된 이벤트 자료형 값 때문에 `cc=13`이 반복되어 로딩이 멈추지 않았다. 이벤트 값을 `0x0002`로 수정한 뒤 사용자가 신청서 스캔 성공을 확인했다.
 - Mac에서는 Windows용 TWAIN 바이너리를 빌드하거나 업무페이지와의 장치 호환성을 검증할 수 없다. 이 프로젝트의 C++ Source 빌드는 Windows의 Visual Studio C++ 도구가 필요하다.
 
 ## 완성까지 필요한 단계
 
-1. **목록 표시:** 업무페이지 설정에 `kyeongwan-scanner`가 나타나는지 확인한다.
-2. **선택과 열기:** 해당 Source를 선택했을 때 오류 없이 열리는지 확인한다.
-3. **스캔 요청:** 업무페이지의 스캔 동작이 TWAIN Source의 획득 요청까지 도달하는지 확인한다.
-4. **시험 이미지 반환:** 테스트 JPG 한 장을 TWAIN 규격에 맞게 반환해 업무페이지에 표시되는지 확인한다.
-5. **Receiver 종단 간 확인:** 중앙 GUI에서 해당 접수 자리로 보낸 PDF가 그 PC의 `ready`에 도착하고, 업무페이지 Acquire가 올바른 JPG를 반환하는지 확인한다. 여러 페이지, 취소, 실패 후 재시도도 확인한다.
+1. **시험 이미지 일치 확인:** 스캔 전 `ready`의 작업과 페이지를 기록하고, 스캔 후 반환된 페이지가 그중 어느 작업인지 확인한다. 여러 작업이 쌓인 경우 Source는 수정 시각이 가장 오래된 유효 작업부터 선택한다.
+2. **다중 페이지·재시도 확인:** 여러 페이지 전송, 취소, 실패 후 재시도를 확인한다.
 
-TWAIN Source, Receiver 대기열 및 중앙 GUI의 송수신·취소 코드는 작성되어 있다. 목록 표시가 확인되기 전에는 업무페이지에서 이 Source가 실제로 선택되고 동작한다고 볼 수 없다. Windows 업무페이지의 실제 Acquire 성공은 검증 전이다. 기존 `phone-dcim-transfer`는 구현 참고 대상이며, 그 프로젝트의 휴대폰 DCIM 전송 코드는 새 Receiver 큐와 연결되어 있지 않다.
+TWAIN Source, Receiver 대기열 및 중앙 GUI의 송수신·취소 코드는 작성되어 있다. Windows VM에서 스캔 성공은 확인됐지만, 성공한 작업은 `MSG_ENDXFER` 완료 시 `ready`에서 삭제되므로 현재 남아 있는 대기 이미지와 사후 비교할 수 없다. 또 대기 작업이 여러 개면 가장 오래된 유효 작업을 반환한다. 다음 확인은 스캔 전 대기 작업을 기록해 반환 입력을 식별하는 것이다. 기존 `phone-dcim-transfer`는 구현 참고 대상이며, 그 프로젝트의 휴대폰 DCIM 전송 코드는 새 Receiver 큐와 연결되어 있지 않다.
 
 ## 기존 장치에 대한 설치 원칙
 

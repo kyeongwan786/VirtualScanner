@@ -7,3 +7,4 @@ relay-test-ca.key
 relay-test-ca.crt
 relay-server.key
 relay-server.crt
+local-test-files/

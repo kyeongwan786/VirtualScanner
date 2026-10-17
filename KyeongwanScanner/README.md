@@ -40,9 +40,32 @@ Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSo
 
 ## 현재 구현과 검증 상태
 
-코드에는 TWAIN identity, 열기/닫기, JPG 작업 검색, Acquire 이벤트, 이미지 정보 응답 및 Native Transfer가 작성되어 있습니다. TWAIN 1.x 자료구조의 Win32 크기를 컴파일 시 검사하도록 했습니다. 다만 Windows에서 빌드하지 않았고, 업무페이지의 TWAIN 호환성·선택·실제 이미지 반환도 아직 확인되지 않았습니다. 업무페이지가 WIA만 사용한다면 이 TWAIN Source는 목록에 나타나지 않을 수 있습니다. 화면의 `(32-32)` 표기만으로 API를 확정할 수 없습니다.
+코드에는 TWAIN identity, 열기/닫기, JPG 작업 검색, Acquire 이벤트, 이미지 정보 응답 및 Native Transfer가 작성되어 있습니다. TWAIN 1.x 자료구조의 Win32 크기를 컴파일 시 검사하도록 했습니다. 2026-10-14 Windows VM에서 신청서 스캔이 정상 완료된 것을 사용자가 확인했습니다. 이 과정에서 Source Manager가 관리하는 identity ID를 보존하고, `DAT_EVENT`를 TWAIN 값 `0x0002`로 바로잡았습니다. 반환된 이미지와 입력 JPG가 일치하는지는 아직 확인 중입니다.
 
 스캔 오류를 진단하기 위해 TWAIN DSM 요청의 그룹/자료형/메시지 번호, 반환 코드, 상태 코드, Source 상태와 페이지 인덱스를 기록합니다. 기록 파일은 `%ProgramData%\KyeongwanScanner\VirtualSource\twain-diagnostics.log`이며 1 MiB가 되면 이전 로그를 `.1`로 한 번 보관합니다. 이미지 내용, 파일명, 경로, 토큰은 기록하지 않습니다. 이 로그는 진단 코드가 포함된 새 Win32 빌드를 설치한 뒤 생성됩니다.
+
+U.Scan과 TWAIN 로그를 한 번의 시도로 시간 대조하려면 `Capture-OneScan.ps1`을 VM으로 복사해 일반 PowerShell에서 실행합니다. 스크립트가 시작 시각을 기록하고, 사용자가 신청서 스캔 한 번을 끝낸 뒤 Enter를 누르면 그 시간 구간의 TWAIN 진단 로그와 `SKTLibCbn_날짜.log` 행을 바탕화면의 `Kyeongwan-one-scan-diagnostics.txt`에 모읍니다. 이미 실행한 시도는 `-FromTime 'yyyy-MM-dd HH:mm:ss'` 인수로 그 시각부터 현재까지 수집할 수 있습니다. 원본 로그는 수정하거나 삭제하지 않습니다. 공유 전에 개인정보나 문서 내용이 없는지 확인하세요.
+
+수집 결과의 `이번 스캔을 쉬운 말로 보면` 절은 열기, 스캔 시작, 진행 신호 거부, 이미지 전달을 한국어로 요약합니다. 아래 원본 TWAIN/U.Scan 로그도 함께 남겨 요약과 근거를 대조할 수 있습니다. 스크립트는 UTF-8 BOM으로 저장되어 Windows PowerShell 5.1에서 한글을 표시합니다. 원본 로그 파일은 수정하거나 삭제하지 않습니다.
+
+### 진단 로그를 직접 읽는 법
+
+`TWAIN source diagnostics`의 각 줄은 포탈이 TWAIN Source에 보낸 요청 한 건과 그 응답입니다. `dg`, `dat`, `msg`는 요청 종류를 16진수로 쓴 값입니다. `dg=0x00000001`은 제어 요청, `dg=0x00000002`는 이미지 요청입니다. C++를 몰라도 아래 숫자를 찾아 순서를 읽을 수 있습니다.
+
+| 로그의 `dat` / `msg`    | 의미                                                     |
+| ----------------------- | -------------------------------------------------------- |
+| `dat=0x0003 msg=0x0001` | Source identity 조회 (`DAT_IDENTITY / MSG_GET`)          |
+| `dat=0x0003 msg=0x0401` | Source 열기 (`DAT_IDENTITY / MSG_OPENDS`)                |
+| `dat=0x0001`            | 스캔 설정 확인/변경 (`DAT_CAPABILITY`)                   |
+| `dat=0x0009 msg=0x0502` | 실제 Acquire 시작 (`DAT_USERINTERFACE / MSG_ENABLEDS`)   |
+| `dat=0x0002 msg=0x0601` | 앱 이벤트 전달 (`DAT_EVENT / MSG_PROCESSEVENT`)          |
+| `dat=0x0101 msg=0x0001` | 현재 이미지 정보 요청 (`DAT_IMAGEINFO / MSG_GET`)        |
+| `dat=0x0104 msg=0x0001` | 이미지 데이터 가져오기 (`DAT_IMAGENATIVEXFER / MSG_GET`) |
+| `dat=0x0005 msg=0x0701` | 페이지 전송 완료 확인 (`DAT_PENDINGXFERS / MSG_ENDXFER`) |
+
+`rc`는 Source의 응답입니다. `0`은 성공, `1`은 실패, `4`는 Source가 이벤트를 소비해 앱에 알릴 이벤트가 있다는 뜻, `5`는 Source와 관계없는 이벤트, `6`은 이미지 전송 완료입니다. 실패한 줄의 `cc`는 이유입니다. 예를 들어 `cc=13`은 지원하지 않는 요청, `cc=10`은 잘못된 값입니다. `state=4`는 Source가 열림, `state=5`는 Acquire 중, `state=6`은 이미지 전송 준비, `state=7`은 전송 중입니다. `page=1/3`이면 세 장 중 첫 장을 다루고 있다는 뜻입니다.
+
+정상 흐름은 대략 `MSG_OPENDS` → capability 요청 → `MSG_ENABLEDS` → 이벤트 전달 → `DAT_IMAGEINFO` / `DAT_IMAGENATIVEXFER` → `MSG_ENDXFER` 순서입니다. Open 다음에 바로 Close만 있으면 Acquire 전 중단입니다. `MSG_ENABLEDS` 뒤에 같은 이벤트 요청이 `rc=1 cc=13`으로 반복되면 이벤트 처리가 실패한 것입니다. 로그가 길어도 우선 이 열과 순서만 보면 중단 지점을 찾을 수 있습니다. 진단 로그에 기록되는 `identityId`는 Source Manager가 준 식별자이며 숫자 자체를 설정하거나 고칠 필요는 없습니다.
 
 구조체 대조 기준은 [TWAIN Working Group의 공식 `twain.h`](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/src/twain.h)입니다. x86 DSM이 `C:\Windows\twain_32` 아래의 `.ds` 파일을 하위 폴더까지 검색한다는 설치 경로 근거는 [공식 DSM README](https://github.com/twain/twain-dsm/blob/master/TWAIN_DSM/README.txt)에 있습니다.
 
@@ -56,4 +79,4 @@ Receiver가 저장하는 JPG 위치는 `%ProgramData%\KyeongwanScanner\VirtualSo
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-KyeongwanScannerDiagnostic.ps1 -BuiltSource .\KyeongwanScannerDiagnostic.ds
 ```
 
-이 Source의 표시 이름은 `kyeongwan-scanner-diagnostic`이며 설치 폴더는 `C:\Windows\twain_32\KyeongwanScannerDiagnostic`입니다. 업무 포털의 신청서 스캔 설정에서 이 이름을 임시 선택해 진단할 수 있습니다. 기존 `kyeongwan-scanner`, VOIM, WIA 장치의 파일 및 설정은 설치 스크립트가 변경하지 않습니다. 시험 후 진단 Source를 제거할 때만 `Uninstall-KyeongwanScannerDiagnostic.ps1`을 사용합니다. 소유권/해시가 일치하지 않으면 제거를 중단합니다.
+이 Source의 표시 이름은 `kyeongwan-scanner-diagnostic`이며 설치 폴더는 `C:\Windows\twain_32\KyeongwanScannerDiagnostic`입니다. 업무 포털의 신청서 스캔 설정에서 이 이름을 임시 선택해 진단할 수 있습니다. 진단 빌드는 성공한 요청을 포함해 모든 TWAIN 요청을 같은 `twain-diagnostics.log`에 기록하며, capability 번호와 EnableDS UI 인수도 남깁니다. 기존 `kyeongwan-scanner`, VOIM, WIA 장치의 파일 및 설정은 설치 스크립트가 변경하지 않습니다. 시험 후 진단 Source를 제거할 때만 `Uninstall-KyeongwanScannerDiagnostic.ps1`을 사용합니다. 소유권/해시가 일치하지 않으면 제거를 중단합니다.

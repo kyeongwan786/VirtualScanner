@@ -85,7 +85,7 @@ static_assert(sizeof(TW_IMAGEINFO_KW) == 42, "TW_IMAGEINFO ABI mismatch.");
 namespace {
 constexpr uint32_t DG_CONTROL = 0x0001;
 constexpr uint32_t DG_IMAGE = 0x0002;
-constexpr uint16_t DAT_EVENT = 0x0001;
+constexpr uint16_t DAT_EVENT = 0x0002;
 constexpr uint16_t DAT_CAPABILITY = 0x0001;
 constexpr uint16_t DAT_IDENTITY = 0x0003;
 constexpr uint16_t DAT_PENDINGXFERS = 0x0005;
@@ -98,7 +98,7 @@ constexpr uint16_t MSG_GET = 0x0001;
 constexpr uint16_t MSG_GETCURRENT = 0x0002;
 constexpr uint16_t MSG_GETDEFAULT = 0x0003;
 constexpr uint16_t MSG_SET = 0x0006;
-constexpr uint16_t MSG_PROCESSEVENT = 0x0001;
+constexpr uint16_t MSG_PROCESSEVENT = 0x0601;
 constexpr uint16_t MSG_OPENDS = 0x0401;
 constexpr uint16_t MSG_CLOSEDS = 0x0402;
 constexpr uint16_t MSG_ENABLEDS = 0x0502;
@@ -169,6 +169,15 @@ bool IsCurrentPageAvailable();
 
 bool ShouldTraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
                           uint16_t result) {
+#ifdef KYEONGWAN_SCANNER_DIAGNOSTIC
+    // A diagnostic build records successful queries too. The production
+    // source keeps its quieter, failure/event-focused trace below.
+    (void)dataGroup;
+    (void)dataArgType;
+    (void)message;
+    (void)result;
+    return true;
+#else
     if (result == TWRC_FAILURE) return true;
     if (dataGroup == DG_CONTROL && dataArgType == DAT_IDENTITY)
         return message == MSG_OPENDS || message == MSG_CLOSEDS;
@@ -180,6 +189,7 @@ bool ShouldTraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t mes
         return message == MSG_ENDXFER || message == MSG_RESET;
     return dataGroup == DG_IMAGE &&
         (dataArgType == DAT_IMAGEINFO || dataArgType == DAT_IMAGENATIVEXFER);
+#endif
 }
 
 void TraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
@@ -219,6 +229,13 @@ void TraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
         if (dataGroup == DG_CONTROL && dataArgType == DAT_CAPABILITY && data) {
             const auto* capability = static_cast<const TW_CAPABILITY_KW*>(data);
             sprintf_s(detail, " cap=0x%04X", capability->Cap);
+        } else if (dataGroup == DG_CONTROL && dataArgType == DAT_IDENTITY && data) {
+            const auto* identity = static_cast<const TW_IDENTITY_KW*>(data);
+            sprintf_s(detail, " identityId=%lu", static_cast<unsigned long>(identity->Id));
+        } else if (dataGroup == DG_CONTROL && dataArgType == DAT_USERINTERFACE && data) {
+            const auto* ui = static_cast<const TW_USERINTERFACE_KW*>(data);
+            sprintf_s(detail, " showUI=%u modalUI=%u parent=%u", ui->ShowUI, ui->ModalUI,
+                      ui->hParent != nullptr ? 1u : 0u);
         } else if (dataGroup == DG_CONTROL && dataArgType == DAT_PENDINGXFERS && data &&
                    result != TWRC_FAILURE) {
             const auto* pending = static_cast<const TW_PENDINGXFERS_KW*>(data);
@@ -245,7 +262,6 @@ void TraceTwainCall(uint32_t dataGroup, uint16_t dataArgType, uint16_t message,
 
 TW_IDENTITY_KW MakeIdentity() {
     TW_IDENTITY_KW identity{};
-    identity.Id = 1;
     identity.Version.MajorNum = 1;
     identity.Version.MinorNum = 9;
     identity.Version.Language = TWON_LANGUAGE_USA;
@@ -262,6 +278,13 @@ TW_IDENTITY_KW MakeIdentity() {
     strcpy_s(identity.ProductName, "kyeongwan-scanner");
 #endif
     return identity;
+}
+
+void FillIdentityPreservingManagerId(TW_IDENTITY_KW* destination) {
+    if (!destination) return;
+    const uint32_t sourceManagerId = destination->Id;
+    *destination = MakeIdentity();
+    destination->Id = sourceManagerId;
 }
 
 void SetCondition(uint16_t condition) { g_lastCondition = condition; }
@@ -542,14 +565,14 @@ static uint16_t WINAPI DispatchDS_Entry(
 
     if (dataGroup == DG_CONTROL && dataArgType == DAT_IDENTITY && data) {
         if (message == MSG_GET) {
-            *static_cast<TW_IDENTITY_KW*>(data) = MakeIdentity();
+            FillIdentityPreservingManagerId(static_cast<TW_IDENTITY_KW*>(data));
             SetCondition(TWCC_SUCCESS);
             return TWRC_SUCCESS;
         }
         if (message == MSG_OPENDS) {
             if (g_state != 3) return ReturnFailure(TWCC_SEQERROR);
             g_state = TWAIN_STATE_DS_OPEN;
-            *static_cast<TW_IDENTITY_KW*>(data) = MakeIdentity();
+            FillIdentityPreservingManagerId(static_cast<TW_IDENTITY_KW*>(data));
             ClearCurrentJob();
             g_eventPending = false;
             g_parentWindow = nullptr;
