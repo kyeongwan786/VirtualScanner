@@ -7,7 +7,7 @@ import unicodedata
 from new_work.domain import OcrLine
 
 
-_RRN = re.compile(r"(?<!\d)(\d{6})\D{0,3}(\d{7})(?!\d)")
+_RRN = re.compile(r"(?<!\d)(\d{6})\D{0,3}(\d)\D{0,3}(\d{6})(?!\d)")
 _LICENSE = re.compile(r"(?<!\d)(\d{2})\D?(\d{2})\D?(\d{6})\D?(\d{2})(?!\d)")
 _LICENSE_LABEL = re.compile(r"운전\s*면허|면허\s*번호")
 _DATE = re.compile(

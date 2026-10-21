@@ -350,6 +350,20 @@ class NewWorkApp:
         entry = self._focused_entry
         entry.insert(tk.INSERT, line.text)
         entry.focus_set()
+        try:
+            result_path = write_ocr_result(
+                self.draft.result,
+                self._id_type_detection,
+                values={field: item.get() for field, item in self._entries.items()},
+            )
+        except OSError as exc:
+            messagebox.showwarning(
+                "\uacb0\uacfc \ud30c\uc77c \uc800\uc7a5 \uc2e4\ud328",
+                f"\uc785\ub825\uce78\uc5d0\ub294 \ubc18\uc601\ud588\uc9c0\ub9cc result.txt \uc800\uc7a5\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4: {exc}",
+                parent=self.root,
+            )
+            return
+        self.review_status.set(f"\uc120\ud0dd\ud55c OCR \uc904\uc744 \uc785\ub825\uce78\uc5d0 \ubc18\uc601\ud558\uace0 result.txt \uc800\uc7a5: {result_path}")
 
     def mark_reviewed(self) -> None:
         if self.draft is None:
