@@ -3,6 +3,7 @@ from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from PIL import Image
 
@@ -120,11 +121,11 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "ctzCorpNum=900101-1234567",
                     "custNm=홍길동",
                     "isueDt=2020. 3. 26.",
-                    "isuePlc=대구광역시 서구청장",
+                    "isuePlc=%EB%8C%80%EA%B5%AC%EA%B4%91%EC%97%AD%EC%8B%9C+%EC%84%9C%EA%B5%AC%EC%B2%AD%EC%9E%A5",
                     "nationClCd=I",
-                    "addr=대구광역시 서구",
+                    "addr=%EB%8C%80%EA%B5%AC%EA%B4%91%EC%97%AD%EC%8B%9C+%EC%84%9C%EA%B5%AC",
                     "mskPos=",
-                    f"base64DATA={base64.b64encode(image_bytes).decode('ascii')}",
+                    f"base64DATA={quote_plus(base64.b64encode(image_bytes).decode('ascii'))}",
                     "idCrop=",
                 ],
             )
@@ -167,7 +168,7 @@ class IdTypeDetectionTests(unittest.TestCase):
             (OcrLine("900101-1234567", box=(100, 200, 370, 240)),)
         )
 
-        self.assertEqual(detected, "250%2C200%2C370%2C240")
+        self.assertEqual(detected, "250,200,370,240")
 
     def test_mask_position_is_unset_when_number_or_location_is_ambiguous(self):
         self.assertIsNone(

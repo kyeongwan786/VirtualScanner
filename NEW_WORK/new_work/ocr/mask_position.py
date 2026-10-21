@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import quote_plus
 
 from new_work.domain import OcrLine
 
 
 def detect_mask_position(lines: tuple[OcrLine, ...]) -> str | None:
-    """Encode the bounding rectangle of the last six RRN digits.
+    """Return raw comma-separated bounds for the last six RRN digits.
 
     PaddleOCR supplies a polygon around the full resident number. Since its six
     front digits, separator, and seven rear digits are printed in a single line,
@@ -31,7 +30,7 @@ def detect_mask_position(lines: tuple[OcrLine, ...]) -> str | None:
         rear_left = round(left + width * (7.5 / 13.5))
         rear_right = round(right)
         bounds = f"{rear_left},{round(top)},{rear_right},{round(bottom)}"
-        matches.append(quote_plus(bounds))
+        matches.append(bounds)
 
     if len(matches) != 1:
         return None

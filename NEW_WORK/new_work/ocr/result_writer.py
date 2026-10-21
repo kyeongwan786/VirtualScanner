@@ -4,6 +4,7 @@ import base64
 import sys
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import quote_plus
 
 from new_work.domain import OcrResult
 from new_work.image.face_crop import crop_id_portrait_jpeg
@@ -25,6 +26,9 @@ RESULT_FIELD_ORDER = (
     "base64DATA",
     "idCrop",
 )
+URL_ENCODED_FIELDS = frozenset(RESULT_FIELD_ORDER[7:])
+
+
 def execution_directory() -> Path:
     """Folder beside the source project or frozen executable."""
     if getattr(sys, "frozen", False):
@@ -61,17 +65,16 @@ def write_ocr_result(
     output_lines: list[str] = []
     for field in RESULT_FIELD_ORDER:
         if field == "base64DATA":
-            image_data = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
-            output_lines.append(f"base64DATA={image_data}")
-            continue
-        if field == "idCrop":
+            value = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
+        elif field == "idCrop":
             cropped = crop_id_portrait_jpeg(result.image_path)
-            encoded = base64.b64encode(cropped).decode("ascii") if cropped else ""
-            output_lines.append(f"idCrop={encoded}")
-            continue
-        value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()
+            value = base64.b64encode(cropped).decode("ascii") if cropped else ""
+        else:
+            value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()
         if field == "drvLicenIsueNum" and not value:
             continue
+        if field in URL_ENCODED_FIELDS:
+            value = quote_plus(value, encoding="utf-8")
         output_lines.append(f"{field}={value}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
