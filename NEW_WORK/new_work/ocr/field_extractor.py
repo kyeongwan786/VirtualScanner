@@ -10,6 +10,8 @@ _LICENSE = re.compile(r"(?<!\d)(\d{2})\D?(\d{2})\D?(\d{6})\D?(\d{2})(?!\d)")
 _DATE = re.compile(
     r"(?<!\d)(20\d{2})\s*(?:년|[./-])\s*(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})\s*일?"
 )
+_DATE_PREFIX = re.compile(r"(?<!\d)(20\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]?\s*$")
+_DATE_DAY_ONLY = re.compile(r"^\s*(\d{1,2})\s*[.]?\s*$")
 _NAME = re.compile(r"[가-힣]{2,4}")
 _ISSUER = re.compile(r"(?:시장|구청장|군수|읍장|면장|동장|경찰청장|도로교통공단)")
 _ADDRESS_PREFIX = re.compile(
@@ -49,15 +51,24 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
     if len(set(license_numbers)) == 1 and license_numbers:
         values["drvLicenIsueNum"] = license_numbers[0]
 
-    dated: list[tuple[OcrLine, str]] = []
+    date_values: set[str] = set()
     for line in lines:
         match = _DATE.search(line.text)
         if match:
             year, month, day = match.groups()
             if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-                dated.append((line, f"{year}. {int(month)}. {int(day)}."))
-    if len(dated) == 1:
-        values["isueDt"] = dated[0][1]
+                date_values.add(f"{year}. {int(month)}. {int(day)}.")
+    for index, line in enumerate(lines[:-1]):
+        prefix = _DATE_PREFIX.search(line.text)
+        day_match = _DATE_DAY_ONLY.fullmatch(lines[index + 1].text)
+        if not prefix or not day_match:
+            continue
+        year, month = prefix.groups()
+        day = day_match.group(1)
+        if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+            date_values.add(f"{year}. {int(month)}. {int(day)}.")
+    if len(date_values) == 1:
+        values["isueDt"] = date_values.pop()
 
     issuers = [line.text.strip() for line in lines if _ISSUER.search(line.text)]
     if len(issuers) == 1:

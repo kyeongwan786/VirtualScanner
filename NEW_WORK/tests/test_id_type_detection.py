@@ -44,6 +44,11 @@ class IdTypeDetectionTests(unittest.TestCase):
 
         self.assertEqual(values["drvLicenIsueNum"], "11-22-123456-78")
 
+    def test_joins_issue_date_split_across_adjacent_ocr_lines(self):
+        values = extract_identity_fields((OcrLine("2020.3"), OcrLine("26")))
+
+        self.assertEqual(values["isueDt"], "2020. 3. 26.")
+
     def test_detects_unambiguous_resident_card(self):
         detected = detect_id_type((OcrLine("대한민국 주민등록증"),))
 
