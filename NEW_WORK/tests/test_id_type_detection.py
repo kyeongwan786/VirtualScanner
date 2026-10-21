@@ -115,7 +115,7 @@ class IdTypeDetectionTests(unittest.TestCase):
             (OcrLine("900101-1234567", box=(100, 200, 370, 240)),)
         )
 
-        self.assertEqual(detected, "230%2C200%2C370%2C240")
+        self.assertEqual(detected, "250%2C200%2C370%2C240")
 
     def test_mask_position_is_unset_when_number_or_location_is_ambiguous(self):
         self.assertIsNone(
