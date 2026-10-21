@@ -4,11 +4,36 @@ from pathlib import Path
 
 from new_work.domain import OcrLine, OcrResult
 from new_work.ocr.id_types import detect_id_type
+from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
 
 
 class IdTypeDetectionTests(unittest.TestCase):
+    def test_extracts_clear_identity_fields_from_ocr_lines(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("주민등록증"),
+                OcrLine("홍길동"),
+                OcrLine("900101-1234567", box=(20, 100, 290, 140)),
+                OcrLine("서울특별시 종로구 세종대로 1"),
+                OcrLine("101동 202호"),
+                OcrLine("2020. 3. 26."),
+                OcrLine("서울특별시 종로구청장"),
+            )
+        )
+
+        self.assertEqual(values["ctzCorpNum"], "9001011234567")
+        self.assertEqual(values["custNm"], "홍길동")
+        self.assertEqual(values["addr"], "서울특별시 종로구 세종대로 1 101동 202호")
+        self.assertEqual(values["isueDt"], "2020. 3. 26.")
+        self.assertEqual(values["isuePlc"], "서울특별시 종로구청장")
+
+    def test_extracts_license_number_when_unambiguous(self):
+        values = extract_identity_fields((OcrLine("11-22-123456-78"),))
+
+        self.assertEqual(values["drvLicenIsueNum"], "11-22-123456-78")
+
     def test_detects_unambiguous_resident_card(self):
         detected = detect_id_type((OcrLine("대한민국 주민등록증"),))
 

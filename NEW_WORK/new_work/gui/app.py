@@ -20,6 +20,7 @@ from new_work.carrier.sk import create_sk_report
 from new_work.gui.stores_dialog import StoreManagerDialog
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
+from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
 from new_work.stores import Store, default_config_path, load_stores
@@ -211,6 +212,17 @@ class NewWorkApp:
         self.ocr_button.configure(state="normal")
         if self.draft is None or self.draft.result.image_path != image_path:
             return
+        detection = detect_id_type(result.lines)
+        extracted_values = extract_identity_fields(result.lines)
+        result = OcrResult(
+            job_id=result.job_id,
+            image_path=result.image_path,
+            values={**result.values, **extracted_values},
+            lines=result.lines,
+            engine_name=result.engine_name,
+            engine_version=result.engine_version,
+            elapsed_seconds=result.elapsed_seconds,
+        )
         self.draft = ReviewDraft.from_result(result)
         for field in REVIEW_TEXT_FIELDS:
             self._original_labels[field].set(result.values.get(field) or "(필드 자동 분류 안 함)")
@@ -221,7 +233,7 @@ class NewWorkApp:
         for line in result.lines:
             score = "" if line.confidence is None else f"  [{line.confidence:.3f}]"
             self.ocr_lines.insert(tk.END, f"{line.text}{score}")
-        self._id_type_detection = detect_id_type(result.lines)
+        self._id_type_detection = detection
         self._apply_detected_id_type(self._id_type_detection)
         mask_position = detect_mask_position(result.lines)
         mask_entry = self._entries["mskPos"]
