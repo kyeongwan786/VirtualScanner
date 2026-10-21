@@ -36,6 +36,8 @@ python -m unittest discover -s tests -v
 
 Windows x64에서 `build_windows.bat`을 실행하면 PyInstaller one-file 빌드를 시도해 `dist\new_work.exe`를 만든다. 현재 개발 호스트는 macOS이므로 이 BAT, Windows 실행, GUI 호환성 및 단일 EXE의 Paddle 네이티브 종속성 포함 여부는 검증되지 않았다.
 
+PaddleX OCR 파이프라인은 런타임에 OCR 선택 의존성의 설치 메타데이터를 검사한다. 빌드 환경에는 `paddlex[ocr]`가 설치되며, `package_windows.py`가 OCR 추가 패키지의 메타데이터도 EXE에 포함한다. 이전 패키징에서 이를 빠뜨리면 `A dependency error occurred during pipeline creation` 오류가 모델 다운로드 전에 발생할 수 있다. 이 수정이 반영된 EXE를 Windows에서 다시 빌드해야 한다.
+
 ## 남은 주요 작업
 
 - `skt.exe`의 59컬럼 이관을 독립 복사 DB에서 구현·비교한다. JPG 입력으로 물리 스캐너 검증을 통과한 것처럼 만들지 않는다.

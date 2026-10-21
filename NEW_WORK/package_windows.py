@@ -11,10 +11,16 @@ import paddlex
 
 def main() -> int:
     debug_console = os.environ.get("NEW_WORK_DEBUG", "").strip() == "1"
+    # PaddleX checks OCR optional dependencies with importlib.metadata at
+    # runtime. A one-file PyInstaller build must carry metadata for the OCR
+    # extra as well as PaddleX's base dependencies, or pipeline creation fails
+    # before it can download any models.
     required_metadata = {
         name.casefold()
         for name in paddlex.utils.deps.BASE_DEP_SPECS
     }
+    ocr_extra = getattr(paddlex.utils.deps, "EXTRAS", {}).get("ocr", {})
+    required_metadata.update(name.casefold() for name in ocr_extra)
     required_metadata.update({"paddleocr", "paddlex", "paddlepaddle"})
     installed_distributions = {
         distribution.metadata["Name"].casefold(): distribution.metadata["Name"]
@@ -26,6 +32,17 @@ def main() -> int:
         for name in required_metadata
         if name in installed_distributions
     )
+    missing_ocr_metadata = sorted(
+        name.casefold()
+        for name in ocr_extra
+        if name.casefold() not in installed_distributions
+    )
+    if missing_ocr_metadata:
+        raise RuntimeError(
+            "The PaddleX OCR extra is incomplete in the build environment. "
+            "Reinstall requirements.txt; missing distribution metadata: "
+            + ", ".join(missing_ocr_metadata)
+        )
 
     command = [
         sys.executable,
