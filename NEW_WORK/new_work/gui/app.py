@@ -265,7 +265,8 @@ class NewWorkApp:
         else:
             detection_status = (
                 f"문서 종류: {self._id_type_detection.name} "
-                f"({self._id_type_detection.code})"
+                f"(kaitIdType={self._id_type_detection.code}, "
+                f"idType={self._id_type_detection.type_code})"
             )
         result_status = f" · 결과: {result_path}" if result_path else ""
         mask_status = (

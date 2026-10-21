@@ -75,6 +75,8 @@ def main() -> int:
 
     print(f"OCR 완료: {len(ocr_result.lines)}줄 인식")
     print(f"문서 종류: {detection.name or '판별 안 됨'}")
+    if detection.code:
+        print(f"kaitIdType={detection.code}, idType={detection.type_code or ''}")
     if detection.candidate_codes and not detection.code:
         print(f"문서 코드 후보: {', '.join(detection.candidate_codes)} (수동 선택 필요)")
     print(f"결과 파일: {written.resolve()}")
