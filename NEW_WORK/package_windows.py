@@ -57,8 +57,6 @@ def main() -> int:
         "paddleocr",
         "--collect-all",
         "paddlex",
-        "--collect-all",
-        "chardet",
         "--collect-binaries",
         "paddle",
         "--collect-data",
