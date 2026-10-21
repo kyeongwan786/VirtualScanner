@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib import metadata, util
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from threading import Lock
 from time import perf_counter
@@ -9,6 +10,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from new_work.domain import OcrLine, OcrResult
+from new_work.ocr.mask_position import mask_position_from_box
 
 
 class OcrUnavailableError(RuntimeError):
@@ -42,6 +44,8 @@ class PaddleOcrAdapter:
         self.ocr_version = ocr_version
         self._engine_factory = engine_factory
         self._engine: Any | None = None
+        self._english_engine: Any | None = None
+        self._recognizers: dict[str, Any] = {}
         self._lock = Lock()
 
     @property
@@ -57,7 +61,7 @@ class PaddleOcrAdapter:
             return f"PaddleOCR 한국어 {self.ocr_version} 모바일 ({self.device})"
         return "PaddleOCR 설치 필요 (현재 Python 환경에 설치)"
 
-    def _create_engine(self) -> Any:
+    def _create_engine(self, language: str = "korean") -> Any:
         factory = self._engine_factory
         if factory is None:
             if not self.available:
@@ -75,12 +79,16 @@ class PaddleOcrAdapter:
 
         try:
             return factory(
-                lang="korean",
-                ocr_version=self.ocr_version,
+                text_detection_model_name=f"{self.ocr_version}_mobile_det",
+                text_recognition_model_name=(
+                    f"{'korean' if language == 'korean' else 'en'}_"
+                    f"{self.ocr_version}_mobile_rec"
+                ),
                 device=self.device,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+                text_det_limit_side_len=640,
             )
         except Exception as exc:
             raise OcrUnavailableError(
@@ -95,6 +103,70 @@ class PaddleOcrAdapter:
                     self._engine = self._create_engine()
         return self._engine
 
+    def _get_english_engine(self) -> Any:
+        if self._english_engine is None:
+            with self._lock:
+                if self._english_engine is None:
+                    self._english_engine = self._create_recognizer("en")
+        return self._english_engine
+
+    def _create_recognizer(self, language: str) -> Any:
+        try:
+            factory = self._engine_factory
+            if factory is None:
+                from paddleocr import TextRecognition
+
+                factory = TextRecognition
+            model_language = "korean" if language == "korean" else "en"
+            return factory(
+                model_name=f"{model_language}_{self.ocr_version}_mobile_rec",
+                device=self.device,
+            )
+        except Exception as exc:
+            raise OcrUnavailableError(
+                f"PaddleOCR 문자 인식 모델 초기화에 실패했습니다: {exc}"
+            ) from exc
+
+    def _get_number_recognizer(self) -> Any:
+        if "korean" not in self._recognizers:
+            with self._lock:
+                if "korean" not in self._recognizers:
+                    self._recognizers["korean"] = self._create_recognizer("korean")
+        return self._recognizers["korean"]
+
+    def warmup(self) -> None:
+        """Load OCR models before the operator starts a document review."""
+        self._get_engine()
+        self._get_english_engine()
+        self._get_number_recognizer()
+
+    def recognize_card_heading(self, image_path: Path) -> tuple[OcrLine, ...]:
+        """Re-read the small upper-left document heading when full OCR is unsure."""
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        path = Path(image_path)
+        if not path.is_file():
+            raise OcrUnavailableError(f"이미지 파일을 찾을 수 없습니다: {path}")
+        with Image.open(path) as source:
+            rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+        height, width = rgb.shape[:2]
+        crop = rgb[int(height * 0.05):int(height * 0.20),
+                   int(width * 0.05):int(width * 0.40)]
+        crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        with TemporaryDirectory(prefix="new_work_heading_") as temp_dir:
+            crop_path = Path(temp_dir) / "heading.png"
+            if not cv2.imwrite(str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)):
+                return ()
+            lines = self._read_lines(
+                self._get_number_recognizer().predict(input=str(crop_path))
+            )
+        return tuple(
+            OcrLine(line.text, line.confidence, None, "korean_focus")
+            for line in lines
+        )
+
     def recognize(self, image_path: Path) -> OcrResult:
         path = Path(image_path)
         if not path.is_file():
@@ -103,7 +175,10 @@ class PaddleOcrAdapter:
         started = perf_counter()
         try:
             outputs = self._get_engine().predict(input=str(path))
-            lines = tuple(self._read_lines(outputs))
+            lines = tuple(
+                OcrLine(line.text, line.confidence, line.box, "korean")
+                for line in self._read_lines(outputs)
+            )
         except OcrUnavailableError:
             raise
         except Exception as exc:
@@ -124,40 +199,119 @@ class PaddleOcrAdapter:
 
     def recognize_foreigner_reg_number(self, image_path: Path) -> str:
         """Re-read the printed number area at high resolution on alien cards."""
+        number, _ = self.recognize_foreigner_reg_number_details(image_path)
+        return number
+
+    def recognize_foreigner_reg_number_details(
+        self, image_path: Path
+    ) -> tuple[str, str]:
+        """Return the foreign registration number and its six-digit mask box."""
         import cv2
         import numpy as np
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         with Image.open(image_path) as source:
-            image = np.asarray(source.convert("RGB"))
+            image = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
             height, width = image.shape[:2]
-            # On the standard landscape foreign resident card, the number is
-            # printed to the right of the two-line registration label.
-            crop = image[
-                int(height * 0.215):int(height * 0.285),
-                int(width * 0.46):int(width * 0.755),
-            ]
+            # Determine the card layout once and read only that number band.
+            # TextRecognition skips the detector because the crop is already
+            # a single known text row.
+            if _face_on_right(image):
+                crop_left, crop_top, crop_right, crop_bottom = (
+                    int(width * 0.10), int(height * 0.22),
+                    int(width * 0.63), int(height * 0.39),
+                )
+            else:
+                crop_left, crop_top, crop_right, crop_bottom = (
+                    int(width * 0.35), int(height * 0.17),
+                    int(width * 0.78), int(height * 0.30),
+                )
+            crop = image[crop_top:crop_bottom, crop_left:crop_right]
             gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
             denoised = cv2.medianBlur(gray, 3)
-            variants = [
-                cv2.resize(denoised, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC),
-                cv2.resize(
-                    cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-                    None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC,
-                ),
-            ]
+            variants = [cv2.resize(
+                crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC
+            )]
 
         with TemporaryDirectory(prefix="new_work_foreigner_num_") as temp_dir:
-            engine = self._get_engine()
+            engine = self._get_number_recognizer()
             for index, variant in enumerate(variants):
                 crop_path = Path(temp_dir) / f"registration_number_{index}.png"
                 if not cv2.imwrite(str(crop_path), variant):
                     continue
                 outputs = engine.predict(input=str(crop_path))
-                number = _number_from_focused_lines(self._read_lines(outputs))
+                lines = self._read_lines(outputs)
+                number = _number_from_focused_lines(lines)
+                if not number and index == 0:
+                    thresholded = cv2.threshold(
+                        denoised, 0, 255,
+                        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+                    )[1]
+                    variants.append(cv2.resize(
+                        thresholded, None, fx=3, fy=3,
+                        interpolation=cv2.INTER_CUBIC,
+                    ))
+                    continue
                 if number:
-                    return number
-        return ""
+                    # This recognition-only model does not return text boxes.
+                    # The crop bounds approximate the line bounds for mskPos.
+                    position = mask_position_from_box((
+                        float(crop_left), float(crop_top),
+                        float(crop_right), float(crop_bottom),
+                    )) or ""
+                    return number, position
+        return "", ""
+
+    def recognize_english(self, image_path: Path) -> tuple[OcrLine, ...]:
+        """Run English OCR on the likely printed name area only."""
+        path = Path(image_path)
+        if not path.is_file():
+            raise OcrUnavailableError(f"이미지 파일을 찾을 수 없습니다: {path}")
+        try:
+            engine = self._get_english_engine()
+            # The Korean full-card pass already reads the remaining fields.
+            # Avoid spending a second full-card detector pass for English.
+            import cv2
+            import numpy as np
+            from PIL import Image, ImageOps
+
+            with Image.open(path) as source:
+                rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+            height, width = rgb.shape[:2]
+            face_on_right = _face_on_right(rgb)
+            if face_on_right:
+                left, top, right, bottom = (
+                    int(width * 0.17), int(height * 0.33),
+                    int(width * 0.45), int(height * 0.47),
+                )
+            else:
+                left, top, right, bottom = (
+                    int(width * 0.44), int(height * 0.33),
+                    int(width * 0.85), int(height * 0.53),
+                )
+            crop = Image.fromarray(rgb[top:bottom, left:right])
+            scale = 2
+            crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+            with TemporaryDirectory(prefix="new_work_foreigner_name_") as temp_dir:
+                crop_path = Path(temp_dir) / "name_area.png"
+                crop.save(crop_path)
+                focused_outputs = engine.predict(input=str(crop_path))
+            focused_lines = []
+            for line in self._read_lines(focused_outputs):
+                box = line.box
+                mapped_box = None if box is None else (
+                    left + box[0] / scale, top + box[1] / scale,
+                    left + box[2] / scale, top + box[3] / scale,
+                )
+                text = _name_with_visual_spaces(line.text, rgb, mapped_box)
+                focused_lines.append(
+                    OcrLine(text, line.confidence, mapped_box, "english_focus")
+                )
+            return tuple(focused_lines)
+        except OcrUnavailableError:
+            raise
+        except Exception as exc:
+            raise OcrUnavailableError(f"영문 PaddleOCR 인식 실패: {exc}") from exc
 
     @staticmethod
     def _read_lines(outputs: Any) -> list[OcrLine]:
@@ -175,6 +329,9 @@ class PaddleOcrAdapter:
             texts = result.get("rec_texts")
             scores = result.get("rec_scores")
             boxes = result.get("rec_polys")
+            if texts is None and result.get("rec_text") is not None:
+                texts = [result["rec_text"]]
+                scores = [result.get("rec_score")]
             if boxes is None:
                 boxes = result.get("dt_polys")
             texts = [] if texts is None else texts
@@ -230,6 +387,120 @@ def _number_from_focused_lines(lines: list[OcrLine]) -> str:
     if len(joined) == 13 and joined[6] in "5678":
         candidates.add(joined)
     return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _face_on_right(image_rgb: Any) -> bool:
+    """Return whether the card portrait is on the right half, when detected."""
+    import cv2
+
+    height, width = image_rgb.shape[:2]
+    cascade = cv2.CascadeClassifier(
+        str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+    )
+    if cascade.empty():
+        return False
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    faces = cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.08,
+        minNeighbors=4,
+        minSize=(max(24, width // 25), max(24, height // 14)),
+    )
+    return bool(len(faces)) and max(
+        x + face_width / 2 for x, _, face_width, _ in faces
+    ) > width / 2
+
+
+def _name_from_focused_lines(lines: list[OcrLine]) -> str:
+    """Parse Latin name text, excluding common card labels and nationality."""
+    stopwords = {
+        "CARD", "KOR", "RESIDENCE", "NAME", "FULL", "SEX", "GENDER",
+        "NATIONALITY", "ADDRESS", "DATE", "BIRTH", "ISSUE", "EXPIRY",
+        "PERIOD", "STATUS", "SRI", "LANKA",
+    }
+    words: list[str] = []
+    for line in lines:
+        for raw in re.findall(r"[A-Za-z][A-Za-z'-]*", line.text):
+            word = raw.strip("'-")
+            if not word or word.upper() in stopwords:
+                continue
+            if len(word) == 1 and not raw.endswith("-"):
+                continue
+            words.append(word.upper())
+    return " ".join(words)
+
+
+def _name_with_visual_spaces(
+    text: str,
+    image_rgb: Any,
+    box: tuple[float, float, float, float] | None,
+) -> str:
+    """Restore word boundaries the recognizer drops in a compact name line."""
+    if box is None:
+        return text
+    compact = "".join(re.findall(r"[A-Za-z'-]", text))
+    if len(compact) < 8 or len(text.split()) != 1:
+        return text
+    try:
+        import cv2
+        import numpy as np
+
+        height, width = image_rgb.shape[:2]
+        left, top, right, bottom = box
+        x1, y1 = max(0, int(left)), max(0, int(top))
+        x2, y2 = min(width, int(right)), min(height, int(bottom))
+        if x2 <= x1 or y2 <= y1:
+            return text
+        gray = cv2.cvtColor(image_rgb[y1:y2, x1:x2], cv2.COLOR_RGB2GRAY)
+        if gray.size == 0:
+            return text
+        # A fixed dark-ink threshold suppresses most of the colored security
+        # background while retaining the large inter-word gap.
+        binary = cv2.threshold(gray, 70, 255, cv2.THRESH_BINARY_INV)[1]
+        projection = (binary > 0).sum(axis=0)
+        active = projection > 1
+        minimum_gap = max(8, int(gray.shape[0] * 0.22))
+        gaps = []
+        index = 0
+        while index < len(active):
+            if active[index]:
+                index += 1
+                continue
+            start = index
+            while index < len(active) and not active[index]:
+                index += 1
+            end = index
+            if (
+                end - start >= minimum_gap
+                and start > len(active) * 0.04
+                and end < len(active) * 0.96
+            ):
+                boundary = round(((start + end) / 2) / len(active) * len(compact))
+                if 0 < boundary < len(compact):
+                    gaps.append(boundary)
+        # The source text already contains some spaces. Map those to the same
+        # compact character offsets before adding the visually measured gaps.
+        existing = set()
+        offset = 0
+        for char in text:
+            if char.isspace():
+                if 0 < offset < len(compact):
+                    existing.add(offset)
+            elif re.match(r"[A-Za-z'-]", char):
+                offset += 1
+        boundaries = sorted(existing | set(gaps))
+        if not boundaries:
+            return text
+        pieces = []
+        start = 0
+        for boundary in boundaries:
+            if boundary > start:
+                pieces.append(compact[start:boundary])
+                start = boundary
+        pieces.append(compact[start:])
+        return " ".join(piece for piece in pieces if piece)
+    except Exception:
+        return text
 
 
 class UnconnectedOcrAdapter:

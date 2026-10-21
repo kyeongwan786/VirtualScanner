@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 from threading import Thread
+from time import perf_counter
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -67,6 +68,23 @@ class NewWorkApp:
         root.geometry("1160x780")
         root.minsize(1000, 700)
         self._build()
+        if isinstance(self.ocr, PaddleOcrAdapter):
+            self.ocr_status.set("OCR 모델 준비 중 · 백그라운드에서 불러오는 중")
+            Thread(target=self._warmup_ocr, daemon=True).start()
+
+    def _warmup_ocr(self) -> None:
+        try:
+            self.ocr.warmup()
+        except Exception as exc:
+            self.root.after(
+                0, self.ocr_status.set,
+                f"OCR 모델 준비 실패 · OCR 실행 시 오류 상세를 표시합니다: {exc}",
+            )
+            return
+        self.root.after(
+            0, self.ocr_status.set,
+            f"OCR 준비됨 · {self.ocr.status}",
+        )
 
     def _build(self) -> None:
         self._setup_style()
@@ -339,12 +357,93 @@ class NewWorkApp:
         Thread(target=self._recognize_in_background, args=(image_path,), daemon=True).start()
 
     def _recognize_in_background(self, image_path: Path) -> None:
+        started = perf_counter()
         try:
             result = self.ocr.recognize(image_path)
             detection = detect_id_type(result.lines)
+            if detection.code is None:
+                heading_reader = getattr(self.ocr, "recognize_card_heading", None)
+                if callable(heading_reader):
+                    try:
+                        heading_lines = heading_reader(image_path)
+                    except Exception:
+                        heading_lines = ()
+                    if heading_lines:
+                        result = OcrResult(
+                            job_id=result.job_id,
+                            image_path=result.image_path,
+                            values=result.values,
+                            lines=tuple((*result.lines, *heading_lines)),
+                            engine_name=result.engine_name,
+                            engine_version=result.engine_version,
+                            elapsed_seconds=result.elapsed_seconds,
+                        )
+                        detection = detect_id_type(result.lines)
             if detection.code == "1401":
+                english_reader = getattr(self.ocr, "recognize_english", None)
+                english_lines = ()
+                english_engine_used = False
+                english_error = ""
+                if callable(english_reader):
+                    try:
+                        english_lines = english_reader(image_path)
+                    except Exception as exc:
+                        english_lines = ()
+                        english_error = str(exc)
+                    if english_lines:
+                        english_engine_used = True
+                        result = OcrResult(
+                            job_id=result.job_id,
+                            image_path=result.image_path,
+                            values=result.values,
+                            lines=tuple((*result.lines, *english_lines)),
+                            engine_name=f"{result.engine_name} + English",
+                            engine_version=result.engine_version,
+                            elapsed_seconds=result.elapsed_seconds,
+                        )
+                if callable(english_reader) and not english_engine_used:
+                    result = OcrResult(
+                        job_id=result.job_id,
+                        image_path=result.image_path,
+                        values=result.values,
+                        lines=result.lines,
+                        engine_name=(
+                            f"{result.engine_name} (English OCR unavailable: "
+                            f"{english_error or 'no text returned'})"
+                        ),
+                        engine_version=result.engine_version,
+                        elapsed_seconds=result.elapsed_seconds,
+                    )
+                details_reader = getattr(
+                    self.ocr, "recognize_foreigner_reg_number_details", None
+                )
+                details = None
+                # Most cards already have a full-line number box. Reuse it for
+                # masking rather than running another detector on a crop.
+                has_full_line_mask = bool(
+                    result.values.get("mskPos") or detect_mask_position(result.lines)
+                )
+                if callable(details_reader) and not has_full_line_mask:
+                    try:
+                        details = details_reader(image_path)
+                    except Exception:
+                        details = None
+                if details and details[0]:
+                    values = {**result.values, "ctzCorpNum": details[0]}
+                    if details[1]:
+                        values["mskPos"] = details[1]
+                        values["_mskPosEstimated"] = "1"
+                    result = OcrResult(
+                        job_id=result.job_id,
+                        image_path=result.image_path,
+                        values=values,
+                        lines=result.lines,
+                        engine_name=result.engine_name,
+                        engine_version=result.engine_version,
+                        elapsed_seconds=result.elapsed_seconds,
+                    )
                 number_reader = getattr(self.ocr, "recognize_foreigner_reg_number", None)
-                if callable(number_reader):
+                if not callable(details_reader) and callable(number_reader):
                     try:
                         number = number_reader(image_path)
                     except Exception:
@@ -362,6 +461,15 @@ class NewWorkApp:
         except Exception as exc:
             self.root.after(0, self._ocr_failed, exc)
             return
+        result = OcrResult(
+            job_id=result.job_id,
+            image_path=result.image_path,
+            values=result.values,
+            lines=result.lines,
+            engine_name=result.engine_name,
+            engine_version=result.engine_version,
+            elapsed_seconds=perf_counter() - started,
+        )
         self.root.after(0, self._ocr_succeeded, image_path, result)
 
     def _ocr_failed(self, error: Exception) -> None:
@@ -380,13 +488,12 @@ class NewWorkApp:
             return
         detection = detect_id_type(result.lines)
         extracted_values = extract_identity_fields(result.lines)
+        merged_values = {key: value for key, value in extracted_values.items() if value}
+        merged_values.update({key: value for key, value in result.values.items() if value})
         result = OcrResult(
             job_id=result.job_id,
             image_path=result.image_path,
-            values={
-                **result.values,
-                **{key: value for key, value in extracted_values.items() if value},
-            },
+            values=merged_values,
             lines=result.lines,
             engine_name=result.engine_name,
             engine_version=result.engine_version,
@@ -404,7 +511,7 @@ class NewWorkApp:
             self.ocr_lines.insert(tk.END, f"{line.text}{score}")
         self._id_type_detection = detection
         self._apply_detected_id_type(self._id_type_detection)
-        mask_position = detect_mask_position(result.lines)
+        mask_position = result.values.get("mskPos") or detect_mask_position(result.lines)
         mask_entry = self._entries["mskPos"]
         mask_entry.delete(0, tk.END)
         if mask_position:
@@ -419,7 +526,7 @@ class NewWorkApp:
             result_path = None
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"OCR은 끝났지만 result.txt를 저장하지 못했습니다: {exc}",
+                f"OCR은 끝났지만 sk_report.txt를 저장하지 못했습니다: {exc}",
                 parent=self.root,
             )
         elapsed = "" if result.elapsed_seconds is None else f" · {result.elapsed_seconds:.2f}초"
@@ -438,14 +545,22 @@ class NewWorkApp:
                 f"idType={self._id_type_detection.type_code})"
             )
         result_status = f" · 결과: {result_path}" if result_path else ""
+        name_status = (
+            " · 영문 이름 미인식(원문 검토 필요)"
+            if detection.code == "1401" and not result.values.get("custNm")
+            else ""
+        )
+        number_label = "등록번호" if detection.code == "1401" else "주민번호"
         mask_status = (
-            "주민번호 뒷자리 영역 감지"
+            f"{number_label} 마스킹 위치 추정값(저장 전 확인 필요)"
+            if mask_position and result.values.get("_mskPosEstimated")
+            else f"{number_label} 뒷자리 영역 감지"
             if mask_position
-            else "주민번호 위치 미감지(해당 줄 인식/좌표 확인 필요)"
+            else f"{number_label} 위치 미감지(인식/좌표 확인 필요)"
         )
         self.review_status.set(
             f"문자 {len(result.lines)}줄 인식 완료{elapsed}. {detection_status}{result_status}. "
-            f"{mask_status}. 이름·번호 등 업무 필드 값은 확인 후 직접 입력하세요."
+            f"{mask_status}{name_status}. 이름·번호 등 업무 필드 값은 확인 후 직접 입력하세요."
         )
 
     def _apply_detected_id_type(self, detection: IdTypeDetection) -> None:
@@ -497,7 +612,7 @@ class NewWorkApp:
         except OSError as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"선택한 문서 유형을 result.txt에 저장하지 못했습니다: {exc}",
+                f"선택한 문서 유형을 sk_report.txt에 저장하지 못했습니다: {exc}",
                 parent=self.root,
             )
             return
@@ -528,11 +643,11 @@ class NewWorkApp:
         except OSError as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"입력칸에는 반영했지만 result.txt 저장에 실패했습니다: {exc}",
+                f"입력칸에는 반영했지만 sk_report.txt 저장에 실패했습니다: {exc}",
                 parent=self.root,
             )
             return
-        self.review_status.set(f"선택한 OCR 줄을 입력칸에 반영하고 result.txt 저장: {result_path}")
+        self.review_status.set(f"선택한 OCR 줄을 입력칸에 반영하고 sk_report.txt 저장: {result_path}")
 
     def mark_reviewed(self) -> None:
         if self.draft is None:
@@ -547,7 +662,7 @@ class NewWorkApp:
         except OSError as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"검토값은 현재 메모리에 반영됐지만 result.txt 저장에 실패했습니다: {exc}",
+                f"검토값은 현재 메모리에 반영됐지만 sk_report.txt 저장에 실패했습니다: {exc}",
                 parent=self.root,
             )
             result_path = None

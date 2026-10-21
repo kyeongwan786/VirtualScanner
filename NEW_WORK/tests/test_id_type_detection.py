@@ -40,6 +40,26 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(values["isueDt"], "20200326")
         self.assertEqual(values["isuePlc"], "서울특별시 종로구청장")
 
+    def test_extracts_resident_name_merged_with_registration_number_row(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("주민등록증"),
+                OcrLine("홍길동 900101-1234567", box=(20, 100, 290, 140)),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "홍길동")
+
+    def test_extracts_resident_name_after_same_line_name_label(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("이름: 홍길동", box=(20, 70, 150, 100)),
+                OcrLine("900101-1234567", box=(20, 110, 290, 145)),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "홍길동")
+
     def test_extracts_license_number_when_unambiguous(self):
         values = extract_identity_fields((OcrLine("11-22-123456-78"),))
 
@@ -73,6 +93,16 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(detected.type_code, "R")
         self.assertEqual(detected.candidate_codes, ("1001",))
         self.assertEqual(detected.code, "1001")
+
+    def test_detects_foreign_resident_card_from_a_partial_heading(self):
+        detected = detect_id_type((OcrLine("외국인"),))
+
+        self.assertEqual(detected.code, "1401")
+
+    def test_detects_foreign_resident_card_from_focused_partial_heading(self):
+        detected = detect_id_type((OcrLine("외국", source="korean_focus"),))
+
+        self.assertEqual(detected.code, "1401")
 
     def test_prioritizes_resident_issue_confirmation_over_resident_card(self):
         detected = detect_id_type(("주민등록증 발급확인서",))
@@ -131,6 +161,77 @@ class IdTypeDetectionTests(unittest.TestCase):
                 detected = detect_id_type((label,))
                 self.assertEqual(detected.code, expected_kait_id)
                 self.assertEqual(detected.type_code, expected_id_type)
+
+    def test_extracts_english_name_after_spaced_foreigner_name_label(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국인등록증"),
+                OcrLine("성 명"),
+                OcrLine("WALAKULUGE MADURA J-"),
+                OcrLine("ANAKA SUBHASHITHA"),
+                OcrLine("국적 SRI LANKA"),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "WALAKULUGE MADURA J ANAKA SUBHASHITHA")
+
+    def test_uses_english_name_rows_when_foreigner_label_is_misrecognized(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국인등록증", box=(59, 53, 342, 111)),
+                OcrLine("월국입 011211-7240203 성", box=(356, 136, 925, 181)),
+                OcrLine("등록번호", box=(360, 165, 454, 194)),
+                OcrLine("NALAKULUGEMADURA-", box=(357, 237, 910, 278)),
+                OcrLine("ANAKA SUBHASHTHA", box=(469, 275, 839, 312)),
+                OcrLine("체류자격 비전문취업(E-9)", box=(357, 406, 800, 449)),
+                OcrLine("CHIEF CHANGWON IMMIGRATION OFFICE", box=(469, 561, 916, 587)),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "NALAKULUGEMADURA ANAKA SUBHASHTHA")
+
+    def test_uses_name_row_before_label_on_reverse_layout_foreigner_card(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국인등록증", box=(220, 38, 464, 90)),
+                OcrLine("Registration No.", box=(28, 200, 178, 224), source="english"),
+                OcrLine("SAMPLE PERSON", 0.91, (204, 236, 413, 267), "english_focus"),
+                OcrLine("Name", 0.94, (118, 261, 183, 289), "english"),
+                OcrLine("INDONESIA", 0.95, (199, 350, 388, 384), "english"),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "SAMPLE PERSON")
+
+    def test_uses_focused_english_name_when_full_card_number_anchor_is_missing(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국인등록증"),
+                OcrLine("SAMPLE HOLDER", 0.94, (25, 40, 230, 75), "english_focus"),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "SAMPLE HOLDER")
+
+    def test_focused_partial_heading_enables_foreign_name_extraction(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국", source="korean_focus"),
+                OcrLine("SAMPLE HOLDER", 0.94, None, "english_focus"),
+            )
+        )
+
+        self.assertEqual(values["custNm"], "SAMPLE HOLDER")
+
+    def test_extracts_foreign_registration_number_without_ocr_label(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("외국인등록증"),
+                OcrLine("900101-5123456", box=(20, 100, 290, 140)),
+            )
+        )
+
+        self.assertEqual(values["ctzCorpNum"], "9001015123456")
 
     def test_driver_detection_writes_numeric_kait_fields_and_letter_id_type(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -193,7 +294,7 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "recogSubCd=1001",
                     "idType=R",
                     "ctzCorpNum=900101-1234567",
-                    "custNm=홍길동",
+                    "custNm=%ED%99%8D%EA%B8%B8%EB%8F%99",
                     "isueDt=2020. 3. 26.",
                     "isuePlc=%EB%8C%80%EA%B5%AC%EA%B4%91%EC%97%AD%EC%8B%9C+%EC%84%9C%EA%B5%AC%EC%B2%AD%EC%9E%A5",
                     "nationClCd=I",

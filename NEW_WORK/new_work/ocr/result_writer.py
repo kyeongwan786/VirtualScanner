@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -26,7 +27,7 @@ RESULT_FIELD_ORDER = (
     "base64DATA",
     "idCrop",
 )
-URL_ENCODED_FIELDS = frozenset(RESULT_FIELD_ORDER[7:])
+URL_ENCODED_FIELDS = frozenset(("custNm", *RESULT_FIELD_ORDER[7:]))
 
 
 def execution_directory() -> Path:
@@ -36,13 +37,20 @@ def execution_directory() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def default_result_path() -> Path:
+    """Use the legacy Windows consumer path; keep source runs portable."""
+    if os.name == "nt":
+        return Path(r"C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt")
+    return execution_directory() / "sk_report.txt"
+
+
 def write_ocr_result(
     result: OcrResult,
     detection: IdTypeDetection,
     values: Mapping[str, str] | None = None,
     path: Path | None = None,
 ) -> Path:
-    target = Path(path) if path is not None else execution_directory() / "result.txt"
+    target = Path(path) if path is not None else default_result_path()
     provided = dict(result.values if values is None else values)
     selected_code = provided.get("kaitIdType", "").strip()
     if not selected_code and detection.code:
@@ -55,7 +63,7 @@ def write_ocr_result(
         "ctzCorpNum": provided.get("ctzCorpNum", ""),
         "custNm": provided.get("custNm", ""),
         "isueDt": provided.get("isueDt", ""),
-        "drvLicenIsueNum": provided.get("drvLicenIsueNum", "").replace("-", "").replace(" ", ""),
+        "drvLicenIsueNum": provided.get("drvLicenIsueNum", "").strip(),
         "isuePlc": provided.get("isuePlc", ""),
         "nationClCd": provided.get("nationClCd", "").strip() or "I",
         "addr": provided.get("addr", ""),

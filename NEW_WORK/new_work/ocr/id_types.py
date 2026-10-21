@@ -63,7 +63,11 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
     cards) is selected automatically; the GUI still lets the operator choose
     another code from the table.
     """
-    raw_lines = tuple(line.text if isinstance(line, OcrLine) else str(line) for line in lines)
+    source_lines = tuple(lines)
+    raw_lines = tuple(
+        line.text if isinstance(line, OcrLine) else str(line)
+        for line in source_lines
+    )
     # Recognize common Korean and English headings on foreign resident cards.
     foreign_text = "".join(
         re.sub(r"[^0-9A-Za-z\uac00-\ud7a3]", "", text).casefold()
@@ -75,6 +79,22 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
         return IdTypeDetection(
             name="\uc678\uad6d\uc778\ub4f1\ub85d\uc99d", type_code="F",
             candidate_codes=("1401",), matched_text="\uc678\uad6d\uc778\ub4f1\ub85d\uc99d",
+        )
+    partial_foreign_heading = any(
+        isinstance(line, OcrLine)
+        and line.source == "korean_focus"
+        and "\uc678\uad6d" in _normalize(line.text)
+        for line in source_lines
+    )
+    if (
+        ("\uc678\uad6d\uc778" in foreign_text or partial_foreign_heading)
+        and "\uc5ec\uad8c" not in foreign_text
+    ):
+        # Low-resolution cards may yield only the first word from the heading.
+        # Keep explicit foreign-passport text out of this fallback.
+        return IdTypeDetection(
+            name="\uc678\uad6d\uc778\ub4f1\ub85d\uc99d", type_code="F",
+            candidate_codes=("1401",), matched_text="\uc678\uad6d\uc778",
         )
     normalized = "".join(_normalize(text) for text in raw_lines)
     for phrases, codes in _RULES:

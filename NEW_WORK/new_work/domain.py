@@ -25,6 +25,7 @@ class OcrLine:
     text: str
     confidence: float | None = None
     box: tuple[float, float, float, float] | None = None
+    source: str = ""
 
 
 @dataclass(frozen=True)

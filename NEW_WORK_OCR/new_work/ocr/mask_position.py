@@ -19,19 +19,25 @@ def detect_mask_position(lines: tuple[OcrLine, ...]) -> str | None:
         digits = re.sub(r"\D", "", line.text)
         if len(digits) != 13 or line.box is None:
             continue
-        left, top, right, bottom = line.box
-        width = right - left
-        height = bottom - top
-        if width <= 0 or height <= 0:
-            continue
-
-        # Six front digits, the half-width hyphen, and the first rear digit
-        # precede the target six digits: 7.5 units out of 13.5 total units.
-        rear_left = round(left + width * (7.5 / 13.5))
-        rear_right = round(right)
-        bounds = f"{rear_left},{round(top)},{rear_right},{round(bottom)}"
-        matches.append(bounds)
+        bounds = mask_position_from_box(line.box)
+        if bounds:
+            matches.append(bounds)
 
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def mask_position_from_box(
+    box: tuple[float, float, float, float],
+) -> str | None:
+    """Estimate the last six number digits within a single 13-digit text box."""
+    left, top, right, bottom = box
+    width = right - left
+    if width <= 0 or bottom <= top:
+        return None
+
+    # Six front digits, the half-width hyphen, and the first rear digit
+    # precede the target six digits: 7.5 units out of 13.5 total units.
+    rear_left = round(left + width * (7.5 / 13.5))
+    return f"{rear_left},{round(top)},{round(right)},{round(bottom)}"

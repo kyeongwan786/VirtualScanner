@@ -42,9 +42,44 @@ def main() -> int:
         return 2
 
     try:
-        ocr_result = PaddleOcrAdapter().recognize(image_path)
+        adapter = PaddleOcrAdapter()
+        ocr_result = adapter.recognize(image_path)
         detection = detect_id_type(ocr_result.lines)
-        values = {**ocr_result.values, **extract_identity_fields(ocr_result.lines)}
+        focused_values = {}
+        english_ocr_used = False
+        if detection.code == "1401":
+            english_reader = getattr(adapter, "recognize_english", None)
+            if callable(english_reader):
+                try:
+                    english_lines = english_reader(image_path)
+                except Exception:
+                    english_lines = ()
+                if english_lines:
+                    english_ocr_used = True
+                    ocr_result = OcrResult(
+                        job_id=ocr_result.job_id,
+                        image_path=ocr_result.image_path,
+                        values=ocr_result.values,
+                        lines=tuple((*ocr_result.lines, *english_lines)),
+                        engine_name=ocr_result.engine_name,
+                        engine_version=ocr_result.engine_version,
+                        elapsed_seconds=ocr_result.elapsed_seconds,
+                    )
+            details_reader = getattr(adapter, "recognize_foreigner_reg_number_details", None)
+            if callable(details_reader):
+                try:
+                    number, mask_position = details_reader(image_path)
+                except Exception:
+                    number, mask_position = "", ""
+                if number:
+                    focused_values["ctzCorpNum"] = number
+                if mask_position:
+                    focused_values["mskPos"] = mask_position
+        values = {
+            **extract_identity_fields(ocr_result.lines),
+            **ocr_result.values,
+            **focused_values,
+        }
         if detection.code:
             values.update(
                 kaitIdType=detection.code,
@@ -54,7 +89,7 @@ def main() -> int:
         elif detection.type_code:
             values["idType"] = detection.type_code
         values["nationClCd"] = "I"
-        mask_position = detect_mask_position(ocr_result.lines)
+        mask_position = values.get("mskPos") or detect_mask_position(ocr_result.lines)
         if mask_position:
             values["mskPos"] = mask_position
 
@@ -77,6 +112,8 @@ def main() -> int:
     print(f"문서 종류: {detection.name or '판별 안 됨'}")
     if detection.code:
         print(f"kaitIdType={detection.code}, idType={detection.type_code or ''}")
+    if detection.code == "1401" and not english_ocr_used:
+        print("영문 OCR을 사용할 수 없어 기본 한국어 OCR 결과를 표시합니다.")
     if detection.candidate_codes and not detection.code:
         print(f"문서 코드 후보: {', '.join(detection.candidate_codes)} (수동 선택 필요)")
     print(f"결과 파일: {written.resolve()}")

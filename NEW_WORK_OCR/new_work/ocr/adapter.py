@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from importlib import metadata, util
 from pathlib import Path
+import re
+from tempfile import TemporaryDirectory
 from threading import Lock
 from time import perf_counter
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from new_work.domain import OcrLine, OcrResult
+from new_work.ocr.mask_position import mask_position_from_box
 
 
 class OcrUnavailableError(RuntimeError):
@@ -41,6 +44,7 @@ class PaddleOcrAdapter:
         self.ocr_version = ocr_version
         self._engine_factory = engine_factory
         self._engine: Any | None = None
+        self._english_engine: Any | None = None
         self._lock = Lock()
 
     @property
@@ -56,7 +60,7 @@ class PaddleOcrAdapter:
             return f"PaddleOCR 한국어 {self.ocr_version} 모바일 ({self.device})"
         return "PaddleOCR 설치 필요 (현재 Python 환경에 설치)"
 
-    def _create_engine(self) -> Any:
+    def _create_engine(self, language: str = "korean") -> Any:
         factory = self._engine_factory
         if factory is None:
             if not self.available:
@@ -74,7 +78,7 @@ class PaddleOcrAdapter:
 
         try:
             return factory(
-                lang="korean",
+                lang=language,
                 ocr_version=self.ocr_version,
                 device=self.device,
                 use_doc_orientation_classify=False,
@@ -93,6 +97,13 @@ class PaddleOcrAdapter:
                 if self._engine is None:
                     self._engine = self._create_engine()
         return self._engine
+
+    def _get_english_engine(self) -> Any:
+        if self._english_engine is None:
+            with self._lock:
+                if self._english_engine is None:
+                    self._english_engine = self._create_engine("en")
+        return self._english_engine
 
     def recognize(self, image_path: Path) -> OcrResult:
         path = Path(image_path)
@@ -120,6 +131,98 @@ class PaddleOcrAdapter:
             engine_version=version,
             elapsed_seconds=perf_counter() - started,
         )
+
+    def recognize_foreigner_reg_number(self, image_path: Path) -> str:
+        """Re-read the printed number area at high resolution on alien cards."""
+        number, _ = self.recognize_foreigner_reg_number_details(image_path)
+        return number
+
+    def recognize_foreigner_reg_number_details(
+        self, image_path: Path
+    ) -> tuple[str, str]:
+        """Return the foreign registration number and its six-digit mask box."""
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        with Image.open(image_path) as source:
+            image = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+            height, width = image.shape[:2]
+            # On the standard landscape foreign resident card, the number is
+            # printed to the right of the two-line registration label.
+            crop_left = int(width * 0.46)
+            crop_top = int(height * 0.215)
+            crop = image[
+                crop_top:int(height * 0.285),
+                crop_left:int(width * 0.755),
+            ]
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            denoised = cv2.medianBlur(gray, 3)
+            variants = [
+                cv2.resize(denoised, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC),
+                cv2.resize(
+                    cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                    None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC,
+                ),
+            ]
+
+        with TemporaryDirectory(prefix="new_work_foreigner_num_") as temp_dir:
+            engine = self._get_engine()
+            for index, variant in enumerate(variants):
+                crop_path = Path(temp_dir) / f"registration_number_{index}.png"
+                if not cv2.imwrite(str(crop_path), variant):
+                    continue
+                outputs = engine.predict(input=str(crop_path))
+                lines = self._read_lines(outputs)
+                number = _number_from_focused_lines(lines)
+                if number:
+                    position = ""
+                    number_lines = []
+                    for line in lines:
+                        digits = "".join(char for char in line.text if char.isdigit())
+                        if not digits or line.box is None:
+                            continue
+                        number_lines.append((digits, line.box))
+                    matching = [box for digits, box in number_lines if digits == number]
+                    if not matching:
+                        ordered = sorted(number_lines, key=lambda row: row[1][0])
+                        if "".join(digits for digits, _ in ordered) == number:
+                            boxes = [box for _, box in ordered]
+                            heights = [box[3] - box[1] for box in boxes]
+                            centers = [(box[1] + box[3]) / 2 for box in boxes]
+                            if max(centers) - min(centers) <= max(heights, default=0):
+                                matching = [(
+                                    min(box[0] for box in boxes),
+                                    min(box[1] for box in boxes),
+                                    max(box[2] for box in boxes),
+                                    max(box[3] for box in boxes),
+                                )]
+                    if matching:
+                        # Map the OCR box from the 5x number crop back to the
+                        # EXIF-corrected source JPG coordinate system.
+                        left, top, right, bottom = matching[0]
+                        source_box = (
+                            crop_left + left / 5,
+                            crop_top + top / 5,
+                            crop_left + right / 5,
+                            crop_top + bottom / 5,
+                        )
+                        position = mask_position_from_box(source_box) or ""
+                    return number, position
+        return "", ""
+
+    def recognize_english(self, image_path: Path) -> tuple[OcrLine, ...]:
+        """Run the English PP-OCRv5 pipeline across the entire card image."""
+        path = Path(image_path)
+        if not path.is_file():
+            raise OcrUnavailableError(f"이미지 파일을 찾을 수 없습니다: {path}")
+        try:
+            outputs = self._get_english_engine().predict(input=str(path))
+            return tuple(self._read_lines(outputs))
+        except OcrUnavailableError:
+            raise
+        except Exception as exc:
+            raise OcrUnavailableError(f"영문 PaddleOCR 인식 실패: {exc}") from exc
 
     @staticmethod
     def _read_lines(outputs: Any) -> list[OcrLine]:
@@ -173,6 +276,44 @@ class PaddleOcrAdapter:
             return left, top, right, bottom
         except (TypeError, ValueError, IndexError):
             return None
+
+
+def _number_from_focused_lines(lines: list[OcrLine]) -> str:
+    """Accept a clear 13-digit number from the tightly cropped number field."""
+    candidates: set[str] = set()
+    numeric_rows: list[str] = []
+    for line in lines:
+        digits = "".join(char for char in line.text if char.isdigit())
+        if len(digits) >= 13:
+            for offset in range(len(digits) - 12):
+                candidate = digits[offset:offset + 13]
+                if candidate[6] in "5678":
+                    candidates.add(candidate)
+        elif digits and all(char.isdigit() or char in " -‐‑–—." for char in line.text.strip()):
+            numeric_rows.append(digits)
+    joined = "".join(numeric_rows)
+    if len(joined) == 13 and joined[6] in "5678":
+        candidates.add(joined)
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _name_from_focused_lines(lines: list[OcrLine]) -> str:
+    """Parse Latin name text, excluding common card labels and nationality."""
+    stopwords = {
+        "CARD", "KOR", "RESIDENCE", "NAME", "FULL", "SEX", "GENDER",
+        "NATIONALITY", "ADDRESS", "DATE", "BIRTH", "ISSUE", "EXPIRY",
+        "PERIOD", "STATUS", "SRI", "LANKA",
+    }
+    words: list[str] = []
+    for line in lines:
+        for raw in re.findall(r"[A-Za-z][A-Za-z'-]*", line.text):
+            word = raw.strip("'-")
+            if not word or word.upper() in stopwords:
+                continue
+            if len(word) == 1 and not raw.endswith("-"):
+                continue
+            words.append(word.upper())
+    return " ".join(words)
 
 
 class UnconnectedOcrAdapter:

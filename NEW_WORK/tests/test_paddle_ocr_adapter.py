@@ -2,7 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from new_work.ocr.adapter import OcrUnavailableError, PaddleOcrAdapter
+from new_work.ocr.adapter import (
+    OcrUnavailableError,
+    PaddleOcrAdapter,
+    _name_from_focused_lines,
+)
+from new_work.domain import OcrLine
 
 
 class FakePrediction:
@@ -29,6 +34,27 @@ class FakeEngine:
 
 
 class PaddleOcrAdapterTests(unittest.TestCase):
+    def test_reads_text_recognition_pipeline_output(self):
+        lines = PaddleOcrAdapter._read_lines(
+            [{"res": {"rec_text": "SAMPLE HOLDER", "rec_score": 0.93}}]
+        )
+
+        self.assertEqual(lines, [OcrLine("SAMPLE HOLDER", 0.93, None)])
+
+    def test_focused_english_name_ocr_discards_card_labels_and_keeps_initials(self):
+        value = _name_from_focused_lines(
+            [
+                OcrLine("성"),
+                OcrLine("WAL AKULUGE"),
+                OcrLine("MADURA J-"),
+                OcrLine("ANAKA"),
+                OcrLine("SUBHASHITHA"),
+                OcrLine("SRI LANKA"),
+            ]
+        )
+
+        self.assertEqual(value, "WAL AKULUGE MADURA J ANAKA SUBHASHITHA")
+
     def test_korean_mobile_pipeline_returns_raw_lines_and_confidence(self):
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
@@ -44,8 +70,12 @@ class PaddleOcrAdapterTests(unittest.TestCase):
         adapter = PaddleOcrAdapter(engine_factory=factory)
         result = adapter.recognize(image_path)
 
-        self.assertEqual(constructor_options["lang"], "korean")
-        self.assertEqual(constructor_options["ocr_version"], "PP-OCRv5")
+        self.assertEqual(constructor_options["text_detection_model_name"], "PP-OCRv5_mobile_det")
+        self.assertEqual(
+            constructor_options["text_recognition_model_name"],
+            "korean_PP-OCRv5_mobile_rec",
+        )
+        self.assertEqual(constructor_options["text_det_limit_side_len"], 640)
         self.assertFalse(constructor_options["use_doc_orientation_classify"])
         self.assertFalse(constructor_options["use_doc_unwarping"])
         self.assertFalse(constructor_options["use_textline_orientation"])

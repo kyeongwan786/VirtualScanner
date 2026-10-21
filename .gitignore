@@ -21,6 +21,8 @@ __pycache__/
 # Local build and temporary files
 /VirtualScanner-source.zip
 /*.pdf
+/*.jpg
+/*.jpeg
 NEW_WORK/build/
 NEW_WORK/dist/
 NEW_WORK/output/
@@ -30,3 +32,4 @@ NEW_WORK_OCR/build/
 NEW_WORK_OCR/dist/
 NEW_WORK_OCR/*.spec
 NEW_WORK_OCR/result.txt
+/NEW_WORK/sk_report.txt
