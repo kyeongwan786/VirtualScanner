@@ -16,7 +16,7 @@ python -m pip install -r requirements.txt
 python run.py
 ```
 
-기본 엔진은 CPU에서 PaddleOCR 한국어 PP-OCRv3 모바일 파이프라인을 사용한다. PaddleOCR 공식 표의 한국어 문자 인식 단계 CPU 시간은 v3 모바일 8.76ms, v5 모바일 21.20ms로 기재되어 있어 속도 우선 기본값은 v3로 정했다. v3의 평균 인식 점수는 v5보다 낮게 공개되어 있으므로 정확도가 더 중요하면 `NEW_WORK_OCR_VERSION=PP-OCRv5`로 전환한다. 이 수치는 인식 모듈만의 결과로 detector 등을 포함한 전체 속도를 뜻하지 않는다. `NEW_WORK_OCR_DEVICE=gpu` 환경 변수도 지정할 수 있으며 호환 GPU Paddle 런타임이 필요하다. 방향 분류, 문서 펴기, 텍스트 방향 보정 모듈은 꺼서 OCR 단계를 줄였다. OCR 추론은 UI를 막지 않도록 별도 스레드에서 실행한다.
+기본 엔진은 CPU의 PaddleOCR 한국어 PP-OCRv5 모바일 파이프라인이다. 이전 v3 기본값은 제공된 신분증 JPG에서 읽기 어려운 결과를 내어 바꿨다. PaddleOCR 공식 다국어 인식 벤치마크는 한국어 v5 모바일 88.0%, v3 모바일 60.21%로 제시하며, CPU 인식 시간은 각각 21.20ms와 8.76ms다. 이는 PaddleOCR 자체 평가 데이터의 인식 단계 수치이지 신분증 전체 OCR의 정확도나 속도 보장은 아니다. `NEW_WORK_OCR_VERSION=PP-OCRv3`로 구버전을 선택할 수 있고, `NEW_WORK_OCR_DEVICE=gpu`도 지정할 수 있다(호환 GPU 런타임 필요). 방향 분류, 문서 펴기, 텍스트 방향 보정 모듈은 꺼 두었으며, OCR 추론은 UI를 막지 않도록 별도 스레드에서 실행한다. [PaddleOCR 한국어 모델·벤치마크](https://www.paddleocr.ai/v3.3.1/en/version3.x/pipeline_usage/OCR.html)
 
 최초 OCR 실행 때 PaddleOCR가 모델 파일을 내려받을 수 있도록 네트워크 접근이 필요하다. 단일 EXE 빌드가 완료되거나 오프라인 배포가 검증된 상태는 아니다. PaddleOCR 모델 캐시 포함과 Windows 대상 PC 성능·정확도는 별도로 검증해야 한다.
 

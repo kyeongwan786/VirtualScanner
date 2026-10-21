@@ -30,7 +30,7 @@ class PaddleOcrAdapter:
     def __init__(
         self,
         device: str = "cpu",
-        ocr_version: str = "PP-OCRv3",
+        ocr_version: str = "PP-OCRv5",
         engine_factory: Callable[..., Any] | None = None,
     ) -> None:
         if device not in {"cpu", "gpu"}:
@@ -54,7 +54,7 @@ class PaddleOcrAdapter:
     def status(self) -> str:
         if self.available:
             return f"PaddleOCR 한국어 {self.ocr_version} 모바일 ({self.device})"
-        return "PaddleOCR 설치 필요 (Windows 빌드 환경에서 설치)"
+        return "PaddleOCR 설치 필요 (현재 Python 환경에 설치)"
 
     def _create_engine(self) -> Any:
         factory = self._engine_factory
@@ -62,7 +62,7 @@ class PaddleOcrAdapter:
             if not self.available:
                 raise OcrUnavailableError(
                     "PaddleOCR/PaddlePaddle이 설치되지 않았습니다. "
-                    "NEW_WORK Windows 설치 안내에 따라 OCR 런타임을 설치하세요."
+                    "NEW_WORK/requirements.txt를 현재 Python 환경에 설치하세요."
                 )
             try:
                 from paddleocr import PaddleOCR

@@ -40,14 +40,14 @@ class PaddleOcrAdapterTests(unittest.TestCase):
         result = adapter.recognize(image_path)
 
         self.assertEqual(constructor_options["lang"], "korean")
-        self.assertEqual(constructor_options["ocr_version"], "PP-OCRv3")
+        self.assertEqual(constructor_options["ocr_version"], "PP-OCRv5")
         self.assertFalse(constructor_options["use_doc_orientation_classify"])
         self.assertFalse(constructor_options["use_doc_unwarping"])
         self.assertFalse(constructor_options["use_textline_orientation"])
         self.assertEqual([line.text for line in result.lines], ["서울시청", "12345"])
         self.assertEqual(result.lines[0].confidence, 0.97)
         self.assertEqual(result.values, {})
-        self.assertIn("PaddleOCR PP-OCRv3 Korean Mobile", result.engine_name)
+        self.assertIn("PaddleOCR PP-OCRv5 Korean Mobile", result.engine_name)
         self.assertEqual(engine.paths, [str(image_path)])
 
     def test_engine_initializes_once_and_file_must_exist(self):
