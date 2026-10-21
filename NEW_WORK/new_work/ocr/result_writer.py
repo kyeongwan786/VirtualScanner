@@ -55,7 +55,7 @@ def write_ocr_result(
         "ctzCorpNum": provided.get("ctzCorpNum", ""),
         "custNm": provided.get("custNm", ""),
         "isueDt": provided.get("isueDt", ""),
-        "drvLicenIsueNum": provided.get("drvLicenIsueNum", ""),
+        "drvLicenIsueNum": provided.get("drvLicenIsueNum", "").replace("-", "").replace(" ", ""),
         "isuePlc": provided.get("isuePlc", ""),
         "nationClCd": provided.get("nationClCd", "").strip() or "I",
         "addr": provided.get("addr", ""),

@@ -6,7 +6,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 def crop_id_portrait_jpeg(
@@ -20,7 +20,8 @@ def crop_id_portrait_jpeg(
     around it. Ambiguous face detections return None instead of cropping an
     arbitrary region.
     """
-    source = Image.open(Path(image_path)).convert("RGB")
+    with Image.open(Path(image_path)) as opened:
+        source = ImageOps.exif_transpose(opened).convert("RGB")
     try:
         gray = np.asarray(source.convert("L"))
         try:
@@ -32,15 +33,15 @@ def crop_id_portrait_jpeg(
                 minSize=(24, 30),
             )
         except (cv2.error, RuntimeError):
-            return None
+            return _fixed_card_portrait(source)
         if faces is None or len(faces) == 0:
-            return None
+            return _fixed_card_portrait(source)
         ordered = sorted(faces, key=lambda face: int(face[2]) * int(face[3]), reverse=True)
         if len(ordered) > 1:
             largest_area = int(ordered[0][2]) * int(ordered[0][3])
             second_area = int(ordered[1][2]) * int(ordered[1][3])
             if second_area >= largest_area * 0.75:
-                return None
+                return _fixed_card_portrait(source)
 
         x, y, width, height = (int(value) for value in ordered[0])
         center_x = x + width / 2
@@ -49,7 +50,7 @@ def crop_id_portrait_jpeg(
         top = max(0, round(y - height * 0.22))
         bottom = min(source.height, round(y + height * 2.0))
         if right - left < 24 or bottom - top < 30:
-            return None
+            return _fixed_card_portrait(source)
 
         output = BytesIO()
         source.crop((left, top, right, bottom)).save(
@@ -58,6 +59,26 @@ def crop_id_portrait_jpeg(
         return output.getvalue()
     finally:
         source.close()
+
+
+def _fixed_card_portrait(source: Image.Image) -> bytes | None:
+    """Fallback for standardized horizontal Korean ID scans with tiny portraits.
+
+    Haar detection often misses the small printed headshot on a card. These
+    scans share nearly the same card layout, so take the portrait panel from
+    normalized card coordinates when the image has a card-like aspect ratio.
+    """
+    if source.width < source.height or not 1.35 <= source.width / source.height <= 2.0:
+        return None
+    left = round(source.width * 0.045)
+    top = round(source.height * 0.14)
+    right = round(source.width * 0.35)
+    bottom = round(source.height * 0.86)
+    if right <= left or bottom <= top:
+        return None
+    output = BytesIO()
+    source.crop((left, top, right, bottom)).save(output, format="JPEG", quality=95)
+    return output.getvalue()
 
 
 def _face_detector():
