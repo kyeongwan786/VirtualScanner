@@ -19,17 +19,17 @@ from new_work.carrier.kt import (
 from new_work.carrier.sk import create_sk_report
 from new_work.gui.stores_dialog import StoreManagerDialog
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
+from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
+from new_work.ocr.result_writer import write_ocr_result
 from new_work.stores import Store, default_config_path, load_stores
 from new_work.transfer import append_transfer_log, transfer_file
 
 
-LEGACY_ID_TYPES = {
-    "주민등록증 (1001 / R)": ("1001", "R"),
-    "운전면허증 (1102 / D)": ("1102", "D"),
-    "외국인등록증 (1401 / F)": ("1401", "F"),
-    "복지카드 (1301 / S)": ("1301", "S"),
-    "보훈카드 (1302 / N)": ("1302", "N"),
+ID_TYPE_LABEL_TO_CODE = {
+    f"{code} / {data['type']} — {data['name']}": code
+    for code, data in ID_TYPES.items()
 }
+ID_TYPE_CODE_TO_LABEL = {code: label for label, code in ID_TYPE_LABEL_TO_CODE.items()}
 
 
 class NewWorkApp:
@@ -40,6 +40,7 @@ class NewWorkApp:
         self._preview: ImageTk.PhotoImage | None = None
         self._entries: dict[str, ttk.Entry] = {}
         self._focused_entry: ttk.Entry | None = None
+        self._id_type_detection = IdTypeDetection(None, None)
         try:
             self.stores = load_stores()
         except ValueError as exc:
@@ -65,11 +66,11 @@ class NewWorkApp:
         ttk.Label(toolbar, text="원본 문서 유형").pack(side="left", padx=(12, 4))
         self.id_type_choice = ttk.Combobox(
             toolbar, state="readonly", width=27,
-            values=("유형 선택…", *LEGACY_ID_TYPES.keys()),
+            values=("유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()),
         )
         self.id_type_choice.current(0)
         self.id_type_choice.pack(side="left")
-        self.id_type_choice.bind("<<ComboboxSelected>>", self._legacy_type_selected)
+        self.id_type_choice.bind("<<ComboboxSelected>>", self._id_type_choice_selected)
 
         store_bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
         store_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -168,6 +169,7 @@ class NewWorkApp:
 
         result = OcrResult.empty(path)
         self.draft = ReviewDraft.from_result(result)
+        self._id_type_detection = IdTypeDetection(None, None)
         self.id_type_choice.current(0)
         self.image_label.configure(image=self._preview, text="")
         self.image_path_text.set(str(path))
@@ -218,22 +220,59 @@ class NewWorkApp:
         for line in result.lines:
             score = "" if line.confidence is None else f"  [{line.confidence:.3f}]"
             self.ocr_lines.insert(tk.END, f"{line.text}{score}")
-        self._legacy_type_selected()
+        self._id_type_detection = detect_id_type(result.lines)
+        self._apply_detected_id_type(self._id_type_detection)
+        try:
+            result_path = write_ocr_result(result, self._id_type_detection)
+        except OSError as exc:
+            result_path = None
+            messagebox.showwarning(
+                "결과 파일 저장 실패",
+                f"OCR은 끝났지만 result.txt를 저장하지 못했습니다: {exc}",
+                parent=self.root,
+            )
         elapsed = "" if result.elapsed_seconds is None else f" · {result.elapsed_seconds:.2f}초"
         self.ocr_status.set(f"OCR 상태: {result.engine_name} {result.engine_version}")
+        if self._id_type_detection.name is None:
+            detection_status = "문서 종류 미판별"
+        elif self._id_type_detection.code is None:
+            detection_status = (
+                f"{self._id_type_detection.name} 감지; 코드 선택 필요 "
+                f"({', '.join(self._id_type_detection.candidate_codes)})"
+            )
+        else:
+            detection_status = (
+                f"문서 종류: {self._id_type_detection.name} "
+                f"({self._id_type_detection.code})"
+            )
+        result_status = f" · 결과: {result_path}" if result_path else ""
         self.review_status.set(
-            f"문자 {len(result.lines)}줄 인식 완료{elapsed}. 업무 필드 자동 분류는 아직 적용하지 않았습니다."
+            f"문자 {len(result.lines)}줄 인식 완료{elapsed}. {detection_status}{result_status}. "
+            "이름·번호 등 업무 필드 값은 확인 후 직접 입력하세요."
         )
+
+    def _apply_detected_id_type(self, detection: IdTypeDetection) -> None:
+        if detection.code:
+            self.id_type_choice.set(ID_TYPE_CODE_TO_LABEL[detection.code])
+            self._legacy_type_selected()
+            return
+        self.id_type_choice.current(0)
+        for field in ("kaitIdType", "recogSubCd"):
+            self._entries[field].delete(0, tk.END)
+        id_type_entry = self._entries["idType"]
+        id_type_entry.delete(0, tk.END)
+        if detection.type_code:
+            id_type_entry.insert(0, detection.type_code)
 
     def _set_focused_entry(self, entry: ttk.Entry) -> None:
         self._focused_entry = entry
 
     def _legacy_type_selected(self, _event=None) -> None:
         selection = self.id_type_choice.get()
-        selected = LEGACY_ID_TYPES.get(selection)
-        if selected is None:
+        code = ID_TYPE_LABEL_TO_CODE.get(selection)
+        if code is None:
             return
-        code, id_type = selected
+        id_type = ID_TYPES[code]["type"]
         # com_sk maps the same RECOG_SUB_CD to both report keys and maps the
         # chosen identity kind to ID_TYPE. This is an explicit user choice.
         for field, value in (("kaitIdType", code), ("recogSubCd", code), ("idType", id_type)):
@@ -244,6 +283,31 @@ class NewWorkApp:
             self._entries["nationClCd"].delete(0, tk.END)
             self._entries["nationClCd"].insert(0, "F")
             self._entries["mskPos"].delete(0, tk.END)
+
+    def _id_type_choice_selected(self, _event=None) -> None:
+        self._legacy_type_selected()
+        code = ID_TYPE_LABEL_TO_CODE.get(self.id_type_choice.get())
+        if code is None or self.draft is None or not self.draft.result.lines:
+            return
+        data = ID_TYPES[code]
+        self._id_type_detection = IdTypeDetection(
+            name=data["name"],
+            type_code=data["type"],
+            candidate_codes=(code,),
+            matched_text=self._id_type_detection.matched_text,
+        )
+        try:
+            path = write_ocr_result(self.draft.result, self._id_type_detection)
+        except OSError as exc:
+            messagebox.showwarning(
+                "결과 파일 저장 실패",
+                f"선택한 문서 유형을 result.txt에 저장하지 못했습니다: {exc}",
+                parent=self.root,
+            )
+            return
+        self.review_status.set(
+            f"문서 종류 수동 선택: {data['name']} ({code}) · 결과: {path}"
+        )
 
     def insert_selected_ocr_line(self) -> None:
         selected = self.ocr_lines.curselection()
