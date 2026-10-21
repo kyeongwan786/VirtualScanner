@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib import metadata, util
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Lock
 from time import perf_counter
 from typing import Any, Callable, Protocol
@@ -121,6 +122,43 @@ class PaddleOcrAdapter:
             elapsed_seconds=perf_counter() - started,
         )
 
+    def recognize_foreigner_reg_number(self, image_path: Path) -> str:
+        """Re-read the printed number area at high resolution on alien cards."""
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(image_path) as source:
+            image = np.asarray(source.convert("RGB"))
+            height, width = image.shape[:2]
+            # On the standard landscape foreign resident card, the number is
+            # printed to the right of the two-line registration label.
+            crop = image[
+                int(height * 0.215):int(height * 0.285),
+                int(width * 0.46):int(width * 0.755),
+            ]
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            denoised = cv2.medianBlur(gray, 3)
+            variants = [
+                cv2.resize(denoised, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC),
+                cv2.resize(
+                    cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                    None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC,
+                ),
+            ]
+
+        with TemporaryDirectory(prefix="new_work_foreigner_num_") as temp_dir:
+            engine = self._get_engine()
+            for index, variant in enumerate(variants):
+                crop_path = Path(temp_dir) / f"registration_number_{index}.png"
+                if not cv2.imwrite(str(crop_path), variant):
+                    continue
+                outputs = engine.predict(input=str(crop_path))
+                number = _number_from_focused_lines(self._read_lines(outputs))
+                if number:
+                    return number
+        return ""
+
     @staticmethod
     def _read_lines(outputs: Any) -> list[OcrLine]:
         """Read PaddleOCR 3.x prediction objects without depending on their class."""
@@ -173,6 +211,25 @@ class PaddleOcrAdapter:
             return left, top, right, bottom
         except (TypeError, ValueError, IndexError):
             return None
+
+
+def _number_from_focused_lines(lines: list[OcrLine]) -> str:
+    """Accept a clear 13-digit number from the tightly cropped number field."""
+    candidates: set[str] = set()
+    numeric_rows: list[str] = []
+    for line in lines:
+        digits = "".join(char for char in line.text if char.isdigit())
+        if len(digits) >= 13:
+            for offset in range(len(digits) - 12):
+                candidate = digits[offset:offset + 13]
+                if candidate[6] in "5678":
+                    candidates.add(candidate)
+        elif digits and all(char.isdigit() or char in " -‐‑–—." for char in line.text.strip()):
+            numeric_rows.append(digits)
+    joined = "".join(numeric_rows)
+    if len(joined) == 13 and joined[6] in "5678":
+        candidates.add(joined)
+    return next(iter(candidates)) if len(candidates) == 1 else ""
 
 
 class UnconnectedOcrAdapter:

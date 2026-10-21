@@ -15,7 +15,7 @@ ID_TYPES: dict[str, dict[str, str]] = {
     "1301": {"type": "S", "name": "복지카드"},
     "1303": {"type": "S", "name": "복지카드"},
     "1302": {"type": "N", "name": "국가유공자증"},
-    "1401": {"type": "F", "name": "외국인등록증"},
+    "1401": {"type": "F", "name": "\uc678\uad6d\uc778\ub4f1\ub85d\uc99d"},
     "2001": {"type": "P", "name": "여권"},
     "2002": {"type": "T", "name": "외국인 여권"},
     "3001": {"type": "K", "name": "주민등록 발급확인서"},
@@ -63,10 +63,20 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
     cards) is selected automatically; the GUI still lets the operator choose
     another code from the table.
     """
-    normalized = "".join(
-        _normalize(line.text if isinstance(line, OcrLine) else str(line))
-        for line in lines
+    raw_lines = tuple(line.text if isinstance(line, OcrLine) else str(line) for line in lines)
+    # Recognize common Korean and English headings on foreign resident cards.
+    foreign_text = "".join(
+        re.sub(r"[^0-9A-Za-z\uac00-\ud7a3]", "", text).casefold()
+        for text in raw_lines
     )
+    if any(marker in foreign_text for marker in (
+        "\uc678\uad6d\uc778\ub4f1\ub85d", "alienregistration", "residencecard",
+    )):
+        return IdTypeDetection(
+            name="\uc678\uad6d\uc778\ub4f1\ub85d\uc99d", type_code="F",
+            candidate_codes=("1401",), matched_text="\uc678\uad6d\uc778\ub4f1\ub85d\uc99d",
+        )
+    normalized = "".join(_normalize(text) for text in raw_lines)
     for phrases, codes in _RULES:
         for phrase in phrases:
             if _normalize(phrase) in normalized:

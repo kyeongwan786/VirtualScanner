@@ -32,6 +32,19 @@ ID_TYPE_LABEL_TO_CODE = {
     for code, data in ID_TYPES.items()
 }
 ID_TYPE_CODE_TO_LABEL = {code: label for label, code in ID_TYPE_LABEL_TO_CODE.items()}
+FIELD_LABELS = {
+    "kaitIdType": "문서 코드",
+    "recogSubCd": "인식 세부 코드",
+    "idType": "신분증 구분",
+    "ctzCorpNum": "주민등록번호",
+    "custNm": "이름",
+    "isueDt": "발급일자",
+    "drvLicenIsueNum": "운전면허번호",
+    "isuePlc": "발급기관",
+    "nationClCd": "국적 코드",
+    "addr": "주소",
+    "mskPos": "마스킹 좌표",
+}
 
 
 class NewWorkApp:
@@ -51,104 +64,239 @@ class NewWorkApp:
         self.selected_store_id: str | None = None
 
         root.title("NEW_WORK — OCR 검토 준비")
-        root.geometry("1180x780")
+        root.geometry("1160x780")
+        root.minsize(1000, 700)
         self._build()
 
     def _build(self) -> None:
-        self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(2, weight=1)
+        self._setup_style()
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-        toolbar = ttk.Frame(self.root, padding=10)
-        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Button(toolbar, text="JPG 불러오기", command=self.choose_image).pack(side="left")
-        self.ocr_button = ttk.Button(toolbar, text="OCR 실행", command=self.run_ocr)
-        self.ocr_button.pack(side="left", padx=(8, 0))
-        self.ocr_status = tk.StringVar(value=f"OCR 상태: {self.ocr.status}")
-        ttk.Label(toolbar, textvariable=self.ocr_status).pack(side="left", padx=16)
-        ttk.Label(toolbar, text="원본 문서 유형").pack(side="left", padx=(12, 4))
+        shell = ttk.Frame(self.root, style="App.TFrame", padding=16)
+        shell.grid(row=0, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(shell, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        header.columnconfigure(0, weight=1)
+        title_stack = ttk.Frame(header, style="App.TFrame")
+        title_stack.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_stack, text="신분증 OCR 검토", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            title_stack,
+            text="이미지를 확인하고, 추출된 정보를 검토한 뒤 저장하세요.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+        actions = ttk.Frame(header, style="App.TFrame")
+        actions.grid(row=0, column=1, sticky="e")
+        ttk.Button(actions, text="이미지 불러오기", command=self.choose_image).pack(side="left", padx=(0, 8))
+        self.ocr_button = ttk.Button(
+            actions, text="OCR 실행", command=self.run_ocr, style="Primary.TButton"
+        )
+        self.ocr_button.pack(side="left")
+
+        settings = ttk.LabelFrame(shell, text="작업 설정", padding=(12, 9))
+        settings.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        settings.columnconfigure(1, weight=1)
+        settings.columnconfigure(4, weight=1)
+        ttk.Label(settings, text="문서 유형", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
         self.id_type_choice = ttk.Combobox(
-            toolbar, state="readonly", width=27,
+            settings,
+            state="readonly",
+            width=34,
             values=("유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()),
         )
         self.id_type_choice.current(0)
-        self.id_type_choice.pack(side="left")
+        self.id_type_choice.grid(row=0, column=1, sticky="ew", padx=(0, 22))
         self.id_type_choice.bind("<<ComboboxSelected>>", self._id_type_choice_selected)
-
-        store_bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
-        store_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
-        ttk.Label(store_bar, text="접점").pack(side="left")
-        self.store_choice = ttk.Combobox(store_bar, state="readonly", width=38)
-        self.store_choice.pack(side="left", padx=8)
+        ttk.Label(settings, text="접점", style="Muted.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(0, 8)
+        )
+        self.store_choice = ttk.Combobox(settings, state="readonly", width=30)
+        self.store_choice.grid(row=0, column=3, sticky="ew", padx=(0, 8))
         self.store_choice.bind("<<ComboboxSelected>>", self._store_selected)
-        ttk.Button(store_bar, text="접점/공유폴더 설정", command=self.manage_stores).pack(side="left")
-        ttk.Button(store_bar, text="KT 원본 최신행 참고", command=self.show_kt_latest_row).pack(side="left", padx=(8, 0))
+        ttk.Button(settings, text="접점 설정", command=self.manage_stores).grid(
+            row=0, column=4, sticky="w", padx=(0, 8)
+        )
+        ttk.Button(settings, text="KT 최신 원본 참고", command=self.show_kt_latest_row).grid(
+            row=0, column=5, sticky="w"
+        )
         self._refresh_store_choice()
 
-        image_box = ttk.LabelFrame(self.root, text="이미지 미리보기", padding=8)
-        image_box.grid(row=2, column=0, sticky="nsew", padx=(10, 5), pady=5)
-        image_box.rowconfigure(0, weight=1)
+        work = ttk.Panedwindow(shell, orient="horizontal")
+        work.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
+        image_box = ttk.LabelFrame(work, text="1. 신분증 이미지", padding=12)
         image_box.columnconfigure(0, weight=1)
-        self.image_label = ttk.Label(image_box, text="JPG를 선택하세요", anchor="center")
+        image_box.rowconfigure(0, weight=1)
+        self.image_label = ttk.Label(
+            image_box,
+            text="이미지를 불러오면\n여기에 미리보기가 표시됩니다.",
+            anchor="center",
+            justify="center",
+            style="Preview.TLabel",
+        )
         self.image_label.grid(row=0, column=0, sticky="nsew")
-        self.image_path_text = tk.StringVar(value="")
-        ttk.Label(image_box, textvariable=self.image_path_text, wraplength=360).grid(
-            row=1, column=0, sticky="ew", pady=(8, 0)
+        self.image_path_text = tk.StringVar(value="선택된 이미지 없음")
+        ttk.Label(
+            image_box,
+            textvariable=self.image_path_text,
+            style="Muted.TLabel",
+            wraplength=470,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(10, 0))
+
+        review_box = ttk.LabelFrame(work, text="2. 인식 결과 검토", padding=10)
+        review_box.columnconfigure(0, weight=1)
+        review_box.rowconfigure(0, weight=1)
+        self.notebook = ttk.Notebook(review_box)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        fields_page = ttk.Frame(self.notebook, padding=12, style="Card.TFrame")
+        fields_page.columnconfigure(1, weight=1)
+        fields_page.columnconfigure(2, weight=2)
+        fields_page.rowconfigure(len(REVIEW_TEXT_FIELDS) + 1, weight=1)
+        self.notebook.add(fields_page, text="필드 검토")
+        ttk.Label(fields_page, text="항목", style="TableHead.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(6, 12), pady=(0, 8)
+        )
+        ttk.Label(fields_page, text="OCR 추출값", style="TableHead.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(0, 10), pady=(0, 8)
+        )
+        ttk.Label(fields_page, text="저장할 값", style="TableHead.TLabel").grid(
+            row=0, column=2, sticky="w", pady=(0, 8)
         )
 
-        review_box = ttk.LabelFrame(self.root, text="문자인식 값 검토", padding=10)
-        review_box.grid(row=2, column=1, sticky="nsew", padx=(5, 10), pady=5)
-        review_box.columnconfigure(1, weight=1)
         self._original_labels: dict[str, tk.StringVar] = {}
-        for row, field in enumerate(REVIEW_TEXT_FIELDS):
-            ttk.Label(review_box, text=field, width=22).grid(
-                row=row, column=0, sticky="w", padx=(0, 8), pady=3
-            )
-            original = tk.StringVar(value="(인식 대기)")
+        self._entries = {}
+        for row, field in enumerate(REVIEW_TEXT_FIELDS, start=1):
+            ttk.Label(
+                fields_page,
+                text=f"{FIELD_LABELS.get(field, field)}\n{field}",
+                style="FieldName.TLabel",
+                justify="left",
+            ).grid(row=row, column=0, sticky="w", padx=(6, 12), pady=4)
+            original = tk.StringVar(value="인식 대기")
             self._original_labels[field] = original
-            ttk.Label(review_box, textvariable=original, width=24).grid(
-                row=row, column=1, sticky="w", pady=3
-            )
-            entry = ttk.Entry(review_box)
-            entry.grid(row=row, column=2, sticky="ew", pady=3)
+            ttk.Label(
+                fields_page,
+                textvariable=original,
+                style="Original.TLabel",
+                wraplength=260,
+                justify="left",
+            ).grid(row=row, column=1, sticky="ew", padx=(0, 10), pady=4)
+            entry = ttk.Entry(fields_page, style="Field.TEntry")
+            entry.grid(row=row, column=2, sticky="ew", pady=4, ipady=3)
             entry.bind("<FocusIn>", lambda _event, selected=entry: self._set_focused_entry(selected))
             self._entries[field] = entry
 
-        ttk.Label(review_box, text="원본 인식값", foreground="#555").grid(
-            row=len(REVIEW_TEXT_FIELDS), column=1, sticky="w", pady=(8, 2)
+        ocr_page = ttk.Frame(self.notebook, padding=12, style="Card.TFrame")
+        ocr_page.columnconfigure(0, weight=1)
+        ocr_page.rowconfigure(1, weight=1)
+        self.notebook.add(ocr_page, text="OCR 원문")
+        ttk.Label(
+            ocr_page,
+            text="원문에서 줄을 골라 입력칸에 넣을 수 있어요. 먼저 ‘필드 검토’에서 입력칸을 클릭하세요.",
+            style="Muted.TLabel",
+            wraplength=660,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 9))
+        self.ocr_lines = tk.Listbox(
+            ocr_page,
+            height=14,
+            exportselection=False,
+            font=("Segoe UI", 10),
+            bg="#FFFFFF",
+            fg="#172033",
+            selectbackground="#DCE8FF",
+            selectforeground="#172033",
+            highlightthickness=1,
+            highlightbackground="#D8DEE9",
+            relief="flat",
+            activestyle="none",
         )
-        ttk.Label(review_box, text="검토/수정값", foreground="#555").grid(
-            row=len(REVIEW_TEXT_FIELDS), column=2, sticky="w", pady=(8, 2)
-        )
-        lines_row = len(REVIEW_TEXT_FIELDS) + 1
-        ttk.Label(review_box, text="OCR 원문 줄 (선택 후 현재 입력칸에 삽입)").grid(
-            row=lines_row, column=0, columnspan=3, sticky="w", pady=(8, 3)
-        )
-        self.ocr_lines = tk.Listbox(review_box, height=8, exportselection=False)
-        self.ocr_lines.grid(row=lines_row + 1, column=0, columnspan=3, sticky="nsew")
-        lines_scroll = ttk.Scrollbar(review_box, orient="vertical", command=self.ocr_lines.yview)
-        lines_scroll.grid(row=lines_row + 1, column=3, sticky="ns")
+        self.ocr_lines.grid(row=1, column=0, sticky="nsew")
+        lines_scroll = ttk.Scrollbar(ocr_page, orient="vertical", command=self.ocr_lines.yview)
+        lines_scroll.grid(row=1, column=1, sticky="ns")
         self.ocr_lines.configure(yscrollcommand=lines_scroll.set)
         ttk.Button(
-            review_box,
-            text="선택한 OCR 줄을 입력칸에 삽입",
+            ocr_page,
+            text="선택한 원문 줄 입력",
             command=self.insert_selected_ocr_line,
-        ).grid(row=lines_row + 2, column=2, sticky="e", pady=(4, 0))
-        review_box.rowconfigure(lines_row + 1, weight=1)
+            style="Secondary.TButton",
+        ).grid(row=2, column=0, sticky="e", pady=(10, 0))
 
-        footer = ttk.Frame(self.root, padding=10)
-        footer.grid(row=3, column=0, columnspan=2, sticky="ew")
-        self.review_status = tk.StringVar(value="이미지 선택 후 검토값을 입력할 수 있습니다.")
-        ttk.Label(footer, textvariable=self.review_status).pack(side="left", fill="x", expand=True)
-        ttk.Button(footer, text="검토 완료 표시", command=self.mark_reviewed).pack(side="right")
+        work.add(image_box, weight=2)
+        work.add(review_box, weight=3)
 
-        carrier = ttk.LabelFrame(self.root, text="통신사 결과 처리", padding=8)
-        carrier.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
-        ttk.Button(carrier, text="SK 보고서 생성/전달", command=self.run_sk).pack(side="left", padx=(0, 8))
-        ttk.Button(carrier, text="KT 결과 생성/공유폴더 전달", command=self.run_kt).pack(side="left", padx=(0, 8))
+        status_card = ttk.Frame(shell, style="Card.TFrame", padding=(12, 8))
+        status_card.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        status_card.columnconfigure(0, weight=1)
+        self.ocr_status = tk.StringVar(value=f"OCR 준비됨 · {self.ocr.status}")
+        ttk.Label(status_card, textvariable=self.ocr_status, style="Status.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.review_status = tk.StringVar(value="이미지를 불러온 다음 OCR을 실행하세요.")
+        ttk.Label(
+            status_card,
+            textvariable=self.review_status,
+            style="Muted.TLabel",
+            wraplength=1050,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(
+            status_card,
+            text="검토값 저장",
+            command=self.mark_reviewed,
+            style="Primary.TButton",
+        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+
+        carrier = ttk.LabelFrame(shell, text="후속 통신사 처리", padding=(12, 8))
+        carrier.grid(row=4, column=0, sticky="ew")
+        ttk.Button(carrier, text="SK 보고서 생성/전달", command=self.run_sk).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(carrier, text="KT 결과 생성/전달", command=self.run_kt).pack(
+            side="left", padx=(0, 12)
+        )
         ttk.Label(
             carrier,
-            text="SK/KT 크롭은 첨부 com_sk/com_kt의 최신 m.jpg 탐색 및 중앙 좌표 알고리즘을 사용합니다. LG 제외.",
-        ).pack(side="left", padx=8)
+            text="SK/KT 결과는 선택한 접점 설정을 사용합니다. LG는 제외됩니다.",
+            style="Muted.TLabel",
+        ).pack(side="left")
+
+    def _setup_style(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.root.configure(bg="#F3F5F9")
+        style.configure("App.TFrame", background="#F3F5F9")
+        style.configure("Card.TFrame", background="#FFFFFF")
+        style.configure("TLabel", background="#F3F5F9", foreground="#172033", font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background="#F3F5F9", foreground="#667085", font=("Segoe UI", 9))
+        style.configure("Title.TLabel", background="#F3F5F9", foreground="#172033", font=("Segoe UI", 19, "bold"))
+        style.configure("Status.TLabel", background="#FFFFFF", foreground="#344054", font=("Segoe UI", 9, "bold"))
+        style.configure("FieldName.TLabel", background="#FFFFFF", foreground="#344054", font=("Segoe UI", 9, "bold"))
+        style.configure("Original.TLabel", background="#FFFFFF", foreground="#667085", font=("Segoe UI", 9))
+        style.configure("TableHead.TLabel", background="#FFFFFF", foreground="#667085", font=("Segoe UI", 9, "bold"))
+        style.configure("Preview.TLabel", background="#E9EEF5", foreground="#667085", font=("Segoe UI", 12))
+        style.configure("TLabelframe", background="#FFFFFF", bordercolor="#DCE2EB", relief="solid")
+        style.configure("TLabelframe.Label", background="#F3F5F9", foreground="#344054", font=("Segoe UI", 10, "bold"))
+        style.configure("TNotebook", background="#FFFFFF", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(14, 8), font=("Segoe UI", 9, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", "#FFFFFF")], foreground=[("selected", "#2458C6")])
+        style.configure("TEntry", padding=(8, 6), fieldbackground="#FFFFFF")
+        style.configure("Field.TEntry", padding=(8, 6), fieldbackground="#FFFFFF")
+        style.configure("TCombobox", padding=(6, 5), fieldbackground="#FFFFFF")
+        style.configure("TButton", padding=(10, 7), font=("Segoe UI", 9))
+        style.configure("Primary.TButton", background="#2864DC", foreground="#FFFFFF", padding=(14, 8), font=("Segoe UI", 9, "bold"))
+        style.map("Primary.TButton", background=[("active", "#1D4FB5"), ("disabled", "#AEBAD0")], foreground=[("disabled", "#F5F7FA")])
+        style.configure("Secondary.TButton", background="#EAF0FF", foreground="#214FAF", padding=(12, 8), font=("Segoe UI", 9, "bold"))
+        style.map("Secondary.TButton", background=[("active", "#D8E4FF")])
 
     def choose_image(self) -> None:
         selected = filedialog.askopenfilename(
@@ -193,6 +341,24 @@ class NewWorkApp:
     def _recognize_in_background(self, image_path: Path) -> None:
         try:
             result = self.ocr.recognize(image_path)
+            detection = detect_id_type(result.lines)
+            if detection.code == "1401":
+                number_reader = getattr(self.ocr, "recognize_foreigner_reg_number", None)
+                if callable(number_reader):
+                    try:
+                        number = number_reader(image_path)
+                    except Exception:
+                        number = ""
+                    if number:
+                        result = OcrResult(
+                            job_id=result.job_id,
+                            image_path=result.image_path,
+                            values={**result.values, "ctzCorpNum": number},
+                            lines=result.lines,
+                            engine_name=result.engine_name,
+                            engine_version=result.engine_version,
+                            elapsed_seconds=result.elapsed_seconds,
+                        )
         except Exception as exc:
             self.root.after(0, self._ocr_failed, exc)
             return
@@ -217,7 +383,10 @@ class NewWorkApp:
         result = OcrResult(
             job_id=result.job_id,
             image_path=result.image_path,
-            values={**result.values, **extracted_values},
+            values={
+                **result.values,
+                **{key: value for key, value in extracted_values.items() if value},
+            },
             lines=result.lines,
             engine_name=result.engine_name,
             engine_version=result.engine_version,
@@ -358,12 +527,12 @@ class NewWorkApp:
             )
         except OSError as exc:
             messagebox.showwarning(
-                "\uacb0\uacfc \ud30c\uc77c \uc800\uc7a5 \uc2e4\ud328",
-                f"\uc785\ub825\uce78\uc5d0\ub294 \ubc18\uc601\ud588\uc9c0\ub9cc result.txt \uc800\uc7a5\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4: {exc}",
+                "결과 파일 저장 실패",
+                f"입력칸에는 반영했지만 result.txt 저장에 실패했습니다: {exc}",
                 parent=self.root,
             )
             return
-        self.review_status.set(f"\uc120\ud0dd\ud55c OCR \uc904\uc744 \uc785\ub825\uce78\uc5d0 \ubc18\uc601\ud558\uace0 result.txt \uc800\uc7a5: {result_path}")
+        self.review_status.set(f"선택한 OCR 줄을 입력칸에 반영하고 result.txt 저장: {result_path}")
 
     def mark_reviewed(self) -> None:
         if self.draft is None:
