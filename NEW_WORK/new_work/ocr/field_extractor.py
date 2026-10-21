@@ -57,7 +57,7 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
         if match:
             year, month, day = match.groups()
             if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-                date_values.add(f"{year}. {int(month)}. {int(day)}.")
+                date_values.add(f"{year}{int(month):02d}{int(day):02d}")
     for index, line in enumerate(lines[:-1]):
         prefix = _DATE_PREFIX.search(line.text)
         day_match = _DATE_DAY_ONLY.fullmatch(lines[index + 1].text)
@@ -66,7 +66,7 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
         year, month = prefix.groups()
         day = day_match.group(1)
         if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-            date_values.add(f"{year}. {int(month)}. {int(day)}.")
+            date_values.add(f"{year}{int(month):02d}{int(day):02d}")
     if len(date_values) == 1:
         values["isueDt"] = date_values.pop()
 

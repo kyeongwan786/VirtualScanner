@@ -36,7 +36,7 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(values["ctzCorpNum"], "9001011234567")
         self.assertEqual(values["custNm"], "홍길동")
         self.assertEqual(values["addr"], "서울특별시 종로구 세종대로 1 101동 202호")
-        self.assertEqual(values["isueDt"], "2020. 3. 26.")
+        self.assertEqual(values["isueDt"], "20200326")
         self.assertEqual(values["isuePlc"], "서울특별시 종로구청장")
 
     def test_extracts_license_number_when_unambiguous(self):
@@ -47,7 +47,12 @@ class IdTypeDetectionTests(unittest.TestCase):
     def test_joins_issue_date_split_across_adjacent_ocr_lines(self):
         values = extract_identity_fields((OcrLine("2020.3"), OcrLine("26")))
 
-        self.assertEqual(values["isueDt"], "2020. 3. 26.")
+        self.assertEqual(values["isueDt"], "20200326")
+
+    def test_pads_single_digit_month_and_day_to_yyyymmdd(self):
+        values = extract_identity_fields((OcrLine("2024. 5. 1."),))
+
+        self.assertEqual(values["isueDt"], "20240501")
 
     def test_detects_unambiguous_resident_card(self):
         detected = detect_id_type((OcrLine("대한민국 주민등록증"),))
