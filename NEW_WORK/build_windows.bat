@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
+echo NEW_WORK build: clean virtual environment, no pip cache, official PyPI index
 if exist .venv-build rmdir /s /q .venv-build
 py -3.12 -m venv .venv-build
 if errorlevel 1 goto :build_failed
@@ -9,9 +10,9 @@ if errorlevel 1 goto :build_failed
 call .venv-build\Scripts\activate.bat
 rem Skip pip's local wheel cache so stale or damaged cached archives cannot
 rem trigger a wheel hash mismatch during this clean build.
-python -m pip install --no-cache-dir --upgrade pip
+python -m pip install --no-cache-dir --index-url https://pypi.org/simple --upgrade pip
 if errorlevel 1 goto :build_failed
-python -m pip install --no-cache-dir -r requirements.txt
+python -m pip install --no-cache-dir --index-url https://pypi.org/simple -r requirements.txt
 if errorlevel 1 goto :build_failed
 
 python package_windows.py

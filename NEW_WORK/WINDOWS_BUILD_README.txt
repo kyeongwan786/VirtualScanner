@@ -15,9 +15,11 @@ macOS에서 Windows EXE를 만들 수 없어, 이 ZIP에 완성된 EXE는 들어
 이 소스에는 PaddleX OCR 선택 의존성 설치와 해당 메타데이터를 EXE에 포함하는
 수정이 들어 있습니다. 이전 빌드 EXE에는 이 수정이 없으므로 다시 빌드하세요.
 OCR 의존성이 빠져 있으면 빌드가 오류를 표시하고 중단됩니다.
-빌드는 `.venv-build`를 새로 만들고 pip 캐시를 사용하지 않아, 오래되거나 손상된
-wheel 캐시로 인한 SHA-256 불일치를 피합니다. 해시 오류가 다시 나오면 사용하는
-패키지 인덱스/프록시가 파일을 바꾸거나 손상시키는지 점검하세요.
+빌드 시작 시 `NEW_WORK build: clean virtual environment, no pip cache, official PyPI index`
+문구가 표시되어야 합니다. 빌드는 `.venv-build`를 새로 만들고 pip 캐시를 사용하지
+않으며 PyPI 공식 인덱스에서 내려받습니다. 해시 오류가 다시 나오면 이 문구가
+표시됐는지 먼저 확인하세요. 표시됐는데도 계속되면 네트워크 프록시/보안 프로그램이
+다운로드 파일을 바꾸거나 손상시키는지 확인해야 합니다.
 
 OCR 초기화가 멈추거나 오류가 나면 build_windows_debug.bat을 실행해 콘솔 창이
 포함된 진단용 EXE를 빌드하세요. dist\new_work.exe를 명령 프롬프트에서 실행하고
