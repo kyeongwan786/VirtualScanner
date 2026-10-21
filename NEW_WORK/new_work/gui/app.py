@@ -20,6 +20,7 @@ from new_work.carrier.sk import create_sk_report
 from new_work.gui.stores_dialog import StoreManagerDialog
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
+from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
 from new_work.stores import Store, default_config_path, load_stores
 from new_work.transfer import append_transfer_log, transfer_file
@@ -222,6 +223,11 @@ class NewWorkApp:
             self.ocr_lines.insert(tk.END, f"{line.text}{score}")
         self._id_type_detection = detect_id_type(result.lines)
         self._apply_detected_id_type(self._id_type_detection)
+        mask_position = detect_mask_position(result.lines)
+        mask_entry = self._entries["mskPos"]
+        mask_entry.delete(0, tk.END)
+        if mask_position:
+            mask_entry.insert(0, mask_position)
         try:
             result_path = write_ocr_result(
                 result,
@@ -250,9 +256,14 @@ class NewWorkApp:
                 f"({self._id_type_detection.code})"
             )
         result_status = f" · 결과: {result_path}" if result_path else ""
+        mask_status = (
+            "주민번호 뒷자리 영역 감지"
+            if mask_position
+            else "주민번호 위치 미감지(해당 줄 인식/좌표 확인 필요)"
+        )
         self.review_status.set(
             f"문자 {len(result.lines)}줄 인식 완료{elapsed}. {detection_status}{result_status}. "
-            "이름·번호 등 업무 필드 값은 확인 후 직접 입력하세요."
+            f"{mask_status}. 이름·번호 등 업무 필드 값은 확인 후 직접 입력하세요."
         )
 
     def _apply_detected_id_type(self, detection: IdTypeDetection) -> None:

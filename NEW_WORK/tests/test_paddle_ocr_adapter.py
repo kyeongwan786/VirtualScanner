@@ -10,6 +10,11 @@ class FakePrediction:
         "res": {
             "rec_texts": ["서울시청", "12345", ""],
             "rec_scores": [0.97, 0.88, 0.2],
+            "rec_polys": [
+                [[1, 2], [31, 2], [31, 12], [1, 12]],
+                [[4, 20], [44, 20], [44, 30], [4, 30]],
+                [[0, 0], [0, 0], [0, 0], [0, 0]],
+            ],
         }
     }
 
@@ -46,6 +51,7 @@ class PaddleOcrAdapterTests(unittest.TestCase):
         self.assertFalse(constructor_options["use_textline_orientation"])
         self.assertEqual([line.text for line in result.lines], ["서울시청", "12345"])
         self.assertEqual(result.lines[0].confidence, 0.97)
+        self.assertEqual(result.lines[0].box, (1.0, 2.0, 31.0, 12.0))
         self.assertEqual(result.values, {})
         self.assertIn("PaddleOCR PP-OCRv5 Korean Mobile", result.engine_name)
         self.assertEqual(engine.paths, [str(image_path)])

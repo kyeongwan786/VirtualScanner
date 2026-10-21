@@ -24,6 +24,7 @@ REVIEW_TEXT_FIELDS = (
 class OcrLine:
     text: str
     confidence: float | None = None
+    box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)

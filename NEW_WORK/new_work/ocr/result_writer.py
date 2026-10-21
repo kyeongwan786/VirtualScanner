@@ -21,9 +21,6 @@ RESULT_FIELD_ORDER = (
     "addr",
     "mskPos",
 )
-DEFAULT_MSK_POS = "339%2C257%2C491%2C300"
-
-
 def execution_directory() -> Path:
     """Folder beside the source project or frozen executable."""
     if getattr(sys, "frozen", False):
@@ -54,7 +51,7 @@ def write_ocr_result(
         "isuePlc": provided.get("isuePlc", ""),
         "nationClCd": provided.get("nationClCd", "").strip() or "I",
         "addr": provided.get("addr", ""),
-        "mskPos": provided.get("mskPos", "").strip() or DEFAULT_MSK_POS,
+        "mskPos": provided.get("mskPos", "").strip(),
     }
 
     output_lines: list[str] = []

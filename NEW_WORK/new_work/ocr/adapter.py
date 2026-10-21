@@ -134,8 +134,14 @@ class PaddleOcrAdapter:
             result = payload.get("res", payload)
             if not isinstance(result, dict):
                 continue
-            texts = result.get("rec_texts") or []
-            scores = result.get("rec_scores") or []
+            texts = result.get("rec_texts")
+            scores = result.get("rec_scores")
+            boxes = result.get("rec_polys")
+            if boxes is None:
+                boxes = result.get("dt_polys")
+            texts = [] if texts is None else texts
+            scores = [] if scores is None else scores
+            boxes = [] if boxes is None else boxes
             for index, text in enumerate(texts):
                 if text is None or not str(text).strip():
                     continue
@@ -145,8 +151,28 @@ class PaddleOcrAdapter:
                         score = float(scores[index])
                     except (TypeError, ValueError):
                         score = None
-                lines.append(OcrLine(text=str(text), confidence=score))
+                box = PaddleOcrAdapter._read_box(
+                    boxes[index] if index < len(boxes) else None
+                )
+                lines.append(OcrLine(text=str(text), confidence=score, box=box))
         return lines
+
+    @staticmethod
+    def _read_box(points: Any) -> tuple[float, float, float, float] | None:
+        """Convert a PaddleOCR polygon into source-image left, top, right, bottom."""
+        try:
+            coordinates = points.tolist() if hasattr(points, "tolist") else points
+            flattened = [point for point in coordinates if point is not None]
+            xs = [float(point[0]) for point in flattened]
+            ys = [float(point[1]) for point in flattened]
+            if not xs or not ys:
+                return None
+            left, top, right, bottom = min(xs), min(ys), max(xs), max(ys)
+            if right <= left or bottom <= top:
+                return None
+            return left, top, right, bottom
+        except (TypeError, ValueError, IndexError):
+            return None
 
 
 class UnconnectedOcrAdapter:

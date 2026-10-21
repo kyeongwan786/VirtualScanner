@@ -4,6 +4,7 @@ from pathlib import Path
 
 from new_work.domain import OcrLine, OcrResult
 from new_work.ocr.id_types import detect_id_type
+from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
 
 
@@ -74,7 +75,7 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "isuePlc=대구광역시 서구청장",
                     "nationClCd=I",
                     "addr=대구광역시 서구",
-                    "mskPos=339%2C257%2C491%2C300",
+                    "mskPos=",
                 ],
             )
 
@@ -107,7 +108,27 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertIn("kaitIdType=1102", content)
         self.assertIn("recogSubCd=1102", content)
         self.assertIn("drvLicenIsueNum=11-22-333333-44", content)
-        self.assertTrue(content.endswith("mskPos=339%2C257%2C491%2C300\n"))
+        self.assertTrue(content.endswith("mskPos=\n"))
+
+    def test_mask_position_is_derived_from_resident_number_box_and_url_encoded(self):
+        detected = detect_mask_position(
+            (OcrLine("900101-1234567", box=(100, 200, 370, 240)),)
+        )
+
+        self.assertEqual(detected, "230%2C200%2C370%2C240")
+
+    def test_mask_position_is_unset_when_number_or_location_is_ambiguous(self):
+        self.assertIsNone(
+            detect_mask_position((OcrLine("900101-1234567"),))
+        )
+        self.assertIsNone(
+            detect_mask_position(
+                (
+                    OcrLine("900101-1234567", box=(0, 0, 270, 40)),
+                    OcrLine("900101-1234567", box=(0, 50, 270, 90)),
+                )
+            )
+        )
 
     def test_unknown_text_stays_unclassified(self):
         detected = detect_id_type(("synthetic unrelated text",))
