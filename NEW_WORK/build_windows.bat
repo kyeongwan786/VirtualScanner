@@ -2,13 +2,16 @@
 setlocal
 cd /d "%~dp0"
 
+if exist .venv-build rmdir /s /q .venv-build
 py -3.12 -m venv .venv-build
 if errorlevel 1 goto :build_failed
 
 call .venv-build\Scripts\activate.bat
-python -m pip install --upgrade pip
+rem Skip pip's local wheel cache so stale or damaged cached archives cannot
+rem trigger a wheel hash mismatch during this clean build.
+python -m pip install --no-cache-dir --upgrade pip
 if errorlevel 1 goto :build_failed
-python -m pip install -r requirements.txt
+python -m pip install --no-cache-dir -r requirements.txt
 if errorlevel 1 goto :build_failed
 
 python package_windows.py
