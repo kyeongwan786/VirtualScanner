@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
-from pathlib import Path
 import subprocess
 import sys
 
@@ -65,23 +64,6 @@ def main() -> int:
         "--collect-data",
         "cv2",
     ]
-    model_cache = Path.home() / ".paddlex" / "official_models"
-    bundled_model_names = (
-        "PP-OCRv5_mobile_det",
-        "korean_PP-OCRv5_mobile_rec",
-        "en_PP-OCRv5_mobile_rec",
-    )
-    bundled_models = [
-        (name, model_cache / name)
-        for name in bundled_model_names
-        if (model_cache / name / "inference.pdiparams").is_file()
-    ]
-    if bundled_models:
-        for name, source in bundled_models:
-            command.extend(("--add-data", f"{source};bundled_models/official_models/{name}"))
-        print("Bundling cached OCR models:", ", ".join(name for name, _ in bundled_models))
-    else:
-        print("No cached OCR models found; the app will download models on first run.")
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
     command.append("run.py")
