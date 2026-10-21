@@ -22,18 +22,17 @@ OCR을 눌러 콘솔에 출력되는 실제 오류를 확인할 수 있습니다
 
 실행
 ----
-dist\new_work.exe를 실행합니다. 최초 OCR 사용 시 PaddleOCR 모델을 내려받으므로
-인터넷 연결이 필요합니다. OCR 결과 sk_report.txt는
+dist\new_work.exe를 실행합니다. 최초 OCR 실행 시 PaddleOCR 모델을 내려받으므로
+VM의 인터넷 연결이 필요합니다. OCR 결과 sk_report.txt는
 C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt에 저장되며, 기존 파일이 있으면
 덮어씁니다. sk_report.txt에는 신분증 개인정보가 포함될 수 있으므로 공유하지 마세요.
 
 주의
 ----
 EXE는 one-file 빌드라 VM에는 dist\new_work.exe 하나만 옮기면 됩니다. OCR 모델은
-빌드 파일에 포함되지 않으며, VM에서 첫 OCR 실행 시 인터넷으로 내려받아 사용자
-캐시에 저장됩니다. 따라서 첫 OCR 실행 때 VM이 Paddle 모델 다운로드 서버에
-접속할 수 있어야 합니다. 패키징 수정은 EXE 초기화 오류를 고치지만, VM의 모델
-다운로드 인터넷 경로까지 해결하는 것은 아닙니다.
+빌드 파일에 포함되지 않으며 VM 첫 OCR 실행 시 사용자 캐시로 내려받습니다. 따라서
+VM이 Paddle 모델 다운로드 서버에 접속할 수 있어야 합니다. 이 패키징 수정은 OCR
+초기화 의존성 오류를 고치지만 모델 다운로드 연결 문제를 해결하지는 않습니다.
 
 실제 Windows에서 빌드 및 실행 검증은 아직 수행되지 않았습니다. 빌드 PC와 VM의
 Windows 아키텍처가 맞는지 확인하고, VM에서 첫 실행 후에도 오류가 나면 실행 로그와
