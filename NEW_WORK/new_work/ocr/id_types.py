@@ -28,9 +28,12 @@ class IdTypeDetection:
     type_code: str | None
     candidate_codes: tuple[str, ...] = ()
     matched_text: str | None = None
+    preferred_code: str | None = None
 
     @property
     def code(self) -> str | None:
+        if self.preferred_code in self.candidate_codes:
+            return self.preferred_code
         return self.candidate_codes[0] if len(self.candidate_codes) == 1 else None
 
 
@@ -56,7 +59,9 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
     """Classify a document family from OCR text without claiming verification.
 
     When multiple legacy codes share the same visible name, all candidates are
-    returned and `code` stays None until a person chooses the exact code.
+    returned. The legacy UI default (1102 for driver licenses, 1301 for welfare
+    cards) is selected automatically; the GUI still lets the operator choose
+    another code from the table.
     """
     normalized = "".join(
         _normalize(line.text if isinstance(line, OcrLine) else str(line))
@@ -73,5 +78,9 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
                     type_code=first["type"],
                     candidate_codes=codes,
                     matched_text=phrase,
+                    preferred_code=(
+                        "1102" if "1102" in codes else
+                        "1301" if "1301" in codes else None
+                    ),
                 )
     return IdTypeDetection(name=None, type_code=None)

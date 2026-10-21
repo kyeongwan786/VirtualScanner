@@ -7,6 +7,7 @@ from new_work.domain import OcrLine
 
 _RRN = re.compile(r"(?<!\d)(\d{6})\D{0,3}(\d{7})(?!\d)")
 _LICENSE = re.compile(r"(?<!\d)(\d{2})\D?(\d{2})\D?(\d{6})\D?(\d{2})(?!\d)")
+_LICENSE_LABEL = re.compile(r"운전\s*면허|면허\s*번호")
 _DATE = re.compile(
     r"(?<!\d)(20\d{2})\s*(?:년|[./-])\s*(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})\s*일?"
 )
@@ -43,13 +44,25 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
     if len(numbered) == 1:
         values["ctzCorpNum"] = numbered[0][1]
 
-    license_numbers: list[str] = []
+    license_numbers: set[str] = set()
     for line in lines:
         match = _LICENSE.search(line.text)
         if match:
-            license_numbers.append("-".join(match.groups()))
-    if len(set(license_numbers)) == 1 and license_numbers:
-        values["drvLicenIsueNum"] = license_numbers[0]
+            license_numbers.add("-".join(match.groups()))
+
+    # PaddleOCR can split the printed label and number into adjacent rows.
+    # Join digit groups only in a short window containing a license label and
+    # only when the combined value has the known 2-2-6-2 digit structure.
+    for start in range(len(lines)):
+        for end in range(start + 1, min(len(lines), start + 4) + 1):
+            window = lines[start:end]
+            if not any(_LICENSE_LABEL.search(line.text) for line in window):
+                continue
+            digits = "".join(re.findall(r"\d", " ".join(line.text for line in window)))
+            if len(digits) == 12:
+                license_numbers.add(f"{digits[:2]}-{digits[2:4]}-{digits[4:10]}-{digits[10:]}")
+    if len(license_numbers) == 1:
+        values["drvLicenIsueNum"] = license_numbers.pop()
 
     date_values: set[str] = set()
     for line in lines:

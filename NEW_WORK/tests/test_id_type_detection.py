@@ -45,6 +45,17 @@ class IdTypeDetectionTests(unittest.TestCase):
 
         self.assertEqual(values["drvLicenIsueNum"], "11-22-123456-78")
 
+    def test_extracts_license_number_split_across_labeled_ocr_lines(self):
+        values = extract_identity_fields(
+            (
+                OcrLine("운전면허번호"),
+                OcrLine("11-22-1234"),
+                OcrLine("56-78"),
+            )
+        )
+
+        self.assertEqual(values["drvLicenIsueNum"], "11-22-123456-78")
+
     def test_joins_issue_date_split_across_adjacent_ocr_lines(self):
         values = extract_identity_fields((OcrLine("2020.3"), OcrLine("26")))
 
@@ -75,13 +86,76 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(detected.candidate_codes, ("2002",))
         self.assertEqual(detected.type_code, "T")
 
-    def test_shared_legacy_names_return_candidates_instead_of_guessing_code(self):
+    def test_driver_license_uses_legacy_default_and_retains_all_code_choices(self):
         detected = detect_id_type(("자동차 운전면허증",))
 
         self.assertEqual(detected.name, "운전면허증")
         self.assertEqual(detected.type_code, "D")
         self.assertEqual(detected.candidate_codes, ("1101", "1102", "1201"))
-        self.assertIsNone(detected.code)
+        self.assertEqual(detected.code, "1102")
+
+    def test_table_code_to_type_mapping_covers_every_user_provided_code(self):
+        from new_work.ocr.id_types import ID_TYPES
+
+        self.assertEqual(
+            {code: data["type"] for code, data in ID_TYPES.items()},
+            {
+                "1001": "R",
+                "1101": "D",
+                "1102": "D",
+                "1201": "D",
+                "1301": "S",
+                "1303": "S",
+                "1302": "N",
+                "1401": "F",
+                "2001": "P",
+                "2002": "T",
+                "3001": "K",
+            },
+        )
+
+    def test_each_document_family_detects_its_numeric_kait_code_and_letter_id_type(self):
+        cases = (
+            ("주민등록증", "1001", "R"),
+            ("운전면허증", "1102", "D"),
+            ("복지카드", "1301", "S"),
+            ("국가유공자증", "1302", "N"),
+            ("외국인등록증", "1401", "F"),
+            ("여권", "2001", "P"),
+            ("외국인 여권", "2002", "T"),
+            ("주민등록증 발급확인서", "3001", "K"),
+        )
+
+        for label, expected_kait_id, expected_id_type in cases:
+            with self.subTest(label=label):
+                detected = detect_id_type((label,))
+                self.assertEqual(detected.code, expected_kait_id)
+                self.assertEqual(detected.type_code, expected_id_type)
+
+    def test_driver_detection_writes_numeric_kait_fields_and_letter_id_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "identity.jpg"
+            image.write_bytes(synthetic_jpeg())
+            detection = detect_id_type(("운전면허증",))
+            output = write_ocr_result(
+                OcrResult(
+                    job_id="synthetic-job",
+                    image_path=image,
+                    lines=(OcrLine("운전면허증"),),
+                    engine_name="synthetic OCR",
+                    engine_version="test",
+                ),
+                detection,
+                path=Path(directory) / "result.txt",
+            )
+
+            first_fields = output.read_text(encoding="utf-8").splitlines()[:3]
+
+        self.assertEqual(first_fields, [
+            "kaitIdType=1102",
+            "recogSubCd=1102",
+            "idType=D",
+        ])
 
     def test_writes_key_value_result_and_omits_empty_driver_license_number(self):
         with tempfile.TemporaryDirectory() as directory:
