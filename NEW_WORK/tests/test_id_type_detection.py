@@ -36,7 +36,7 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(detected.candidate_codes, ("1101", "1102", "1201"))
         self.assertIsNone(detected.code)
 
-    def test_writes_plain_text_result_to_requested_path(self):
+    def test_writes_key_value_result_and_omits_empty_driver_license_number(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.txt"
             result = OcrResult(
@@ -48,15 +48,66 @@ class IdTypeDetectionTests(unittest.TestCase):
             )
 
             written = write_ocr_result(
-                result, detect_id_type(result.lines), output
+                result,
+                detect_id_type(result.lines),
+                values={
+                    "ctzCorpNum": "900101-1234567",
+                    "custNm": "홍길동",
+                    "isueDt": "2020. 3. 26.",
+                    "isuePlc": "대구광역시 서구청장",
+                    "addr": "대구광역시 서구",
+                },
+                path=output,
             )
 
             self.assertEqual(written, output)
             content = output.read_text(encoding="utf-8")
-            self.assertIn("문서 종류: 주민등록증", content)
-            self.assertIn("ID_TYPES 코드 후보: 1001", content)
-            self.assertIn("01. 주민등록증\tconfidence=0.9500", content)
-            self.assertIn("신분증 진위·인증 결과가 아닙니다", content)
+            self.assertEqual(
+                content.splitlines(),
+                [
+                    "kaitIdType=1001",
+                    "recogSubCd=1001",
+                    "idType=R",
+                    "ctzCorpNum=900101-1234567",
+                    "custNm=홍길동",
+                    "isueDt=2020. 3. 26.",
+                    "isuePlc=대구광역시 서구청장",
+                    "nationClCd=I",
+                    "addr=대구광역시 서구",
+                    "mskPos=339%2C257%2C491%2C300",
+                ],
+            )
+
+    def test_manual_type_code_overrides_detected_code_and_keeps_driver_number(self):
+        detected = detect_id_type(("주민등록증",))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.txt"
+            write_ocr_result(
+                OcrResult(
+                    job_id="synthetic-job",
+                    image_path=Path("synthetic.jpg"),
+                    lines=(OcrLine("주민등록증"),),
+                    engine_name="synthetic OCR",
+                    engine_version="test",
+                ),
+                detected,
+                values={
+                    "kaitIdType": "1102",
+                    "recogSubCd": "1102",
+                    "idType": "D",
+                    "drvLicenIsueNum": "11-22-333333-44",
+                    "nationClCd": "I",
+                    "mskPos": "",
+                },
+                path=output,
+            )
+
+            content = output.read_text(encoding="utf-8")
+
+        self.assertIn("kaitIdType=1102", content)
+        self.assertIn("recogSubCd=1102", content)
+        self.assertIn("drvLicenIsueNum=11-22-333333-44", content)
+        self.assertTrue(content.endswith("mskPos=339%2C257%2C491%2C300\n"))
 
     def test_unknown_text_stays_unclassified(self):
         detected = detect_id_type(("synthetic unrelated text",))

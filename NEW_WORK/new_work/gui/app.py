@@ -223,7 +223,11 @@ class NewWorkApp:
         self._id_type_detection = detect_id_type(result.lines)
         self._apply_detected_id_type(self._id_type_detection)
         try:
-            result_path = write_ocr_result(result, self._id_type_detection)
+            result_path = write_ocr_result(
+                result,
+                self._id_type_detection,
+                values={field: entry.get() for field, entry in self._entries.items()},
+            )
         except OSError as exc:
             result_path = None
             messagebox.showwarning(
@@ -279,11 +283,6 @@ class NewWorkApp:
             entry = self._entries[field]
             entry.delete(0, tk.END)
             entry.insert(0, value)
-        if code == "1401":
-            self._entries["nationClCd"].delete(0, tk.END)
-            self._entries["nationClCd"].insert(0, "F")
-            self._entries["mskPos"].delete(0, tk.END)
-
     def _id_type_choice_selected(self, _event=None) -> None:
         self._legacy_type_selected()
         code = ID_TYPE_LABEL_TO_CODE.get(self.id_type_choice.get())
@@ -297,7 +296,11 @@ class NewWorkApp:
             matched_text=self._id_type_detection.matched_text,
         )
         try:
-            path = write_ocr_result(self.draft.result, self._id_type_detection)
+            path = write_ocr_result(
+                self.draft.result,
+                self._id_type_detection,
+                values={field: entry.get() for field, entry in self._entries.items()},
+            )
         except OSError as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
@@ -330,8 +333,20 @@ class NewWorkApp:
             return
         values = {field: entry.get() for field, entry in self._entries.items()}
         self.draft.mark_reviewed(values)
+        try:
+            result_path = write_ocr_result(
+                self.draft.result, self._id_type_detection, values=values
+            )
+        except OSError as exc:
+            messagebox.showwarning(
+                "결과 파일 저장 실패",
+                f"검토값은 현재 메모리에 반영됐지만 result.txt 저장에 실패했습니다: {exc}",
+                parent=self.root,
+            )
+            result_path = None
         self.review_status.set(
-            f"검토 완료(현재 메모리): {len(self.draft.changed_fields)}개 필드 수정"
+            f"검토 완료: {len(self.draft.changed_fields)}개 필드 수정"
+            + (f" · {result_path}" if result_path else "")
         )
 
     def _selected_store(self) -> Store | None:
