@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -20,6 +21,7 @@ RESULT_FIELD_ORDER = (
     "nationClCd",
     "addr",
     "mskPos",
+    "base64DATA",
 )
 def execution_directory() -> Path:
     """Folder beside the source project or frozen executable."""
@@ -56,6 +58,10 @@ def write_ocr_result(
 
     output_lines: list[str] = []
     for field in RESULT_FIELD_ORDER:
+        if field == "base64DATA":
+            image_data = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
+            output_lines.append(f"base64DATA={image_data}")
+            continue
         value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()
         if field == "drvLicenIsueNum" and not value:
             continue

@@ -65,9 +65,11 @@ class IdTypeDetectionTests(unittest.TestCase):
     def test_writes_key_value_result_and_omits_empty_driver_license_number(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.txt"
+            image = Path(directory) / "identity.jpg"
+            image.write_bytes(b"synthetic-jpeg-bytes")
             result = OcrResult(
                 job_id="synthetic-job",
-                image_path=Path("synthetic.jpg"),
+                image_path=image,
                 lines=(OcrLine("주민등록증", 0.95), OcrLine("가나다 123", 0.81)),
                 engine_name="synthetic OCR",
                 engine_version="test",
@@ -101,6 +103,7 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "nationClCd=I",
                     "addr=대구광역시 서구",
                     "mskPos=",
+                    "base64DATA=c3ludGhldGljLWpwZWctYnl0ZXM=",
                 ],
             )
 
@@ -108,10 +111,12 @@ class IdTypeDetectionTests(unittest.TestCase):
         detected = detect_id_type(("주민등록증",))
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.txt"
+            image = Path(directory) / "identity.jpg"
+            image.write_bytes(b"synthetic-jpeg-bytes")
             write_ocr_result(
                 OcrResult(
                     job_id="synthetic-job",
-                    image_path=Path("synthetic.jpg"),
+                    image_path=image,
                     lines=(OcrLine("주민등록증"),),
                     engine_name="synthetic OCR",
                     engine_version="test",
@@ -133,7 +138,7 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertIn("kaitIdType=1102", content)
         self.assertIn("recogSubCd=1102", content)
         self.assertIn("drvLicenIsueNum=11-22-333333-44", content)
-        self.assertTrue(content.endswith("mskPos=\n"))
+        self.assertTrue(content.endswith("base64DATA=c3ludGhldGljLWpwZWctYnl0ZXM=\n"))
 
     def test_mask_position_is_derived_from_resident_number_box_and_url_encoded(self):
         detected = detect_mask_position(
