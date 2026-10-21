@@ -1,12 +1,22 @@
+import base64
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
+
+from PIL import Image
 
 from new_work.domain import OcrLine, OcrResult
 from new_work.ocr.id_types import detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
+
+
+def synthetic_jpeg() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (80, 60), "white").save(output, format="JPEG")
+    return output.getvalue()
 
 
 class IdTypeDetectionTests(unittest.TestCase):
@@ -66,7 +76,8 @@ class IdTypeDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.txt"
             image = Path(directory) / "identity.jpg"
-            image.write_bytes(b"synthetic-jpeg-bytes")
+            image_bytes = synthetic_jpeg()
+            image.write_bytes(image_bytes)
             result = OcrResult(
                 job_id="synthetic-job",
                 image_path=image,
@@ -103,7 +114,8 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "nationClCd=I",
                     "addr=대구광역시 서구",
                     "mskPos=",
-                    "base64DATA=c3ludGhldGljLWpwZWctYnl0ZXM=",
+                    f"base64DATA={base64.b64encode(image_bytes).decode('ascii')}",
+                    "idCrop=",
                 ],
             )
 
@@ -112,7 +124,7 @@ class IdTypeDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.txt"
             image = Path(directory) / "identity.jpg"
-            image.write_bytes(b"synthetic-jpeg-bytes")
+            image.write_bytes(synthetic_jpeg())
             write_ocr_result(
                 OcrResult(
                     job_id="synthetic-job",
@@ -138,7 +150,7 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertIn("kaitIdType=1102", content)
         self.assertIn("recogSubCd=1102", content)
         self.assertIn("drvLicenIsueNum=11-22-333333-44", content)
-        self.assertTrue(content.endswith("base64DATA=c3ludGhldGljLWpwZWctYnl0ZXM=\n"))
+        self.assertTrue(content.endswith("idCrop=\n"))
 
     def test_mask_position_is_derived_from_resident_number_box_and_url_encoded(self):
         detected = detect_mask_position(

@@ -15,5 +15,6 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name new_work ^
   --collect-all paddleocr ^
   --collect-all paddlex ^
   --collect-all paddle ^
+  --collect-data cv2 ^
   run.py
 exit /b %errorlevel%

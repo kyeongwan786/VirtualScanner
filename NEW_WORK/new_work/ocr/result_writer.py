@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping
 
 from new_work.domain import OcrResult
+from new_work.image.face_crop import crop_id_portrait_jpeg
 from new_work.ocr.id_types import IdTypeDetection
 
 
@@ -22,6 +23,7 @@ RESULT_FIELD_ORDER = (
     "addr",
     "mskPos",
     "base64DATA",
+    "idCrop",
 )
 def execution_directory() -> Path:
     """Folder beside the source project or frozen executable."""
@@ -61,6 +63,11 @@ def write_ocr_result(
         if field == "base64DATA":
             image_data = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
             output_lines.append(f"base64DATA={image_data}")
+            continue
+        if field == "idCrop":
+            cropped = crop_id_portrait_jpeg(result.image_path)
+            encoded = base64.b64encode(cropped).decode("ascii") if cropped else ""
+            output_lines.append(f"idCrop={encoded}")
             continue
         value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()
         if field == "drvLicenIsueNum" and not value:
