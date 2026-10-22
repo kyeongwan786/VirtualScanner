@@ -82,7 +82,12 @@ class PaddleOcrAdapter:
         try:
             model_options = (
                 {
+                    "text_detection_model_name": f"{self.ocr_version}_mobile_det",
                     "text_detection_model_dir": str(model_paths["det"]),
+                    "text_recognition_model_name": (
+                        f"{'korean' if language == 'korean' else 'en'}_"
+                        f"{self.ocr_version}_mobile_rec"
+                    ),
                     "text_recognition_model_dir": str(model_paths[language]),
                 }
                 if self._engine_factory is None
@@ -131,7 +136,13 @@ class PaddleOcrAdapter:
 
                 factory = TextRecognition
             model_options = (
-                {"model_dir": str(model_paths[language])}
+                {
+                    "model_name": (
+                        f"{'korean' if language == 'korean' else 'en'}_"
+                        f"{self.ocr_version}_mobile_rec"
+                    ),
+                    "model_dir": str(model_paths[language]),
+                }
                 if self._engine_factory is None
                 else {
                     "model_name": (
