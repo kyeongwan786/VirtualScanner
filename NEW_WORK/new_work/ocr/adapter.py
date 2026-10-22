@@ -13,6 +13,8 @@ from uuid import uuid4
 from new_work.domain import OcrLine, OcrResult
 from new_work.ocr.mask_position import mask_position_from_box
 
+OCR_BUILD_ID = "20261022-name-crop-2"
+
 
 class OcrUnavailableError(RuntimeError):
     pass
@@ -59,7 +61,10 @@ class PaddleOcrAdapter:
     @property
     def status(self) -> str:
         if self.available:
-            return f"PaddleOCR 한국어 {self.ocr_version} 모바일 ({self.device})"
+            return (
+                f"PaddleOCR 한국어 {self.ocr_version} 모바일 ({self.device}) "
+                f"[{OCR_BUILD_ID}]"
+            )
         return "PaddleOCR 설치 필요 (현재 Python 환경에 설치)"
 
     def _create_engine(self, language: str = "korean") -> Any:
@@ -225,7 +230,9 @@ class PaddleOcrAdapter:
             job_id=str(uuid4()),
             image_path=path,
             lines=lines,
-            engine_name=f"PaddleOCR {self.ocr_version} Korean Mobile",
+            engine_name=(
+                f"PaddleOCR {self.ocr_version} Korean Mobile [{OCR_BUILD_ID}]"
+            ),
             engine_version=version,
             elapsed_seconds=perf_counter() - started,
         )
@@ -331,11 +338,10 @@ class PaddleOcrAdapter:
                     top = int(height * top_ratio)
                     bottom = int(height * bottom_ratio)
                     crop_rgb = rgb[top:bottom, left:right]
-                    if face_on_right:
-                        # This layout's printed letters have strong vertical
-                        # security lines. Remove isolated stripe noise without
-                        # blurring the larger character strokes.
-                        crop_rgb = cv2.medianBlur(crop_rgb, 3)
+                    # The vertical security pattern interferes with narrow
+                    # Latin strokes in both portrait layouts. A 3x3 median
+                    # filter suppresses stripes while preserving character edges.
+                    crop_rgb = cv2.medianBlur(crop_rgb, 3)
                     scale = min(5.0, 220.0 / max(1, crop_rgb.shape[0]))
                     crop = cv2.resize(
                         crop_rgb, None, fx=scale, fy=scale,

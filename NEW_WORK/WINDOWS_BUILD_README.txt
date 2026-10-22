@@ -31,6 +31,8 @@ dist\new_work.exe를 실행합니다. PP-OCRv5 검출·한국어 인식·영문 
 EXE에 포함되어 있어 VM에서 모델 다운로드 연결이 필요하지 않습니다. OCR 결과 sk_report.txt는
 C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt에 저장되며, 기존 파일이 있으면
 덮어씁니다. sk_report.txt에는 신분증 개인정보가 포함될 수 있으므로 공유하지 마세요.
+OCR 실행 후 상태줄에 `[20261022-name-crop-2]`가 표시되어야 최신 이름 크롭 코드입니다.
+이 표시가 없으면 ZIP만 받은 상태이거나 이전 EXE를 실행 중이므로 새로 빌드한 EXE로 교체하세요.
 
 주의
 ----

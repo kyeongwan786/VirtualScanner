@@ -268,7 +268,12 @@ def _extract_foreigner_name(lines: tuple[OcrLine, ...]) -> str:
         anchor_bottom = max(box[3] for box in registration_boxes)
         lower_limit = anchor_bottom + 145.0
         candidates = [
-            (line.box[1], line, _latin_name_parts(line.text))
+            (
+                line.box[1], line,
+                _latin_name_parts(
+                    line.text, allow_single_char=line.source == "english_focus"
+                ),
+            )
             for line in lines
             if line.box is not None
             and anchor_bottom + 5 < line.box[1] < lower_limit
@@ -322,7 +327,7 @@ def _extract_foreigner_name(lines: tuple[OcrLine, ...]) -> str:
         for line in lines
         if line.source == "english_focus"
         and not _FIELD_STOP.search(line.text)
-        for part in _latin_name_parts(line.text)
+        for part in _latin_name_parts(line.text, allow_single_char=True)
     ]
     if focused_parts:
         name = " ".join(focused_parts).strip()
@@ -368,12 +373,12 @@ def _contains_foreigner_number(text: str) -> bool:
     return False
 
 
-def _latin_name_parts(text: str) -> list[str]:
+def _latin_name_parts(text: str, *, allow_single_char: bool = False) -> list[str]:
     words = re.findall(r"[A-Za-z][A-Za-z'\-]*", text)
     parts: list[str] = []
     for raw in words:
         word = raw.strip("'-")
-        is_initial = len(word) == 1 and raw.endswith("-")
+        is_initial = len(word) == 1 and (raw.endswith("-") or allow_single_char)
         if (len(word) > 1 or is_initial) and word.upper() not in _FOREIGN_NAME_STOPWORDS:
             if parts and raw.endswith("-") and len(word) > 4:
                 # Several cards print a middle initial as "J-" directly
