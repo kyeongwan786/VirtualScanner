@@ -62,6 +62,20 @@ def main() -> int:
         "--collect-data",
         "cv2",
     ]
+    model_root = os.path.join(os.path.dirname(__file__), "ocr_models")
+    required_models = (
+        "PP-OCRv5_mobile_det",
+        "korean_PP-OCRv5_mobile_rec",
+        "en_PP-OCRv5_mobile_rec",
+    )
+    for model_name in required_models:
+        model_dir = os.path.join(model_root, model_name)
+        for filename in ("inference.yml", "inference.pdiparams"):
+            if not os.path.isfile(os.path.join(model_dir, filename)):
+                raise RuntimeError(
+                    f"Required bundled OCR model is missing: {model_dir}\\{filename}"
+                )
+        command.extend(("--add-data", f"{model_dir};ocr_models/{model_name}"))
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
     command.append("run.py")

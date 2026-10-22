@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import metadata, util
 from pathlib import Path
 import re
+import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
 from time import perf_counter
@@ -38,8 +39,8 @@ class PaddleOcrAdapter:
     ) -> None:
         if device not in {"cpu", "gpu"}:
             raise ValueError("device must be 'cpu' or 'gpu'")
-        if ocr_version not in {"PP-OCRv3", "PP-OCRv4", "PP-OCRv5"}:
-            raise ValueError("ocr_version must be PP-OCRv3, PP-OCRv4, or PP-OCRv5")
+        if ocr_version != "PP-OCRv5":
+            raise ValueError("이 프로젝트는 포함된 PP-OCRv5 모델을 사용합니다")
         self.device = device
         self.ocr_version = ocr_version
         self._engine_factory = engine_factory
@@ -63,6 +64,7 @@ class PaddleOcrAdapter:
 
     def _create_engine(self, language: str = "korean") -> Any:
         factory = self._engine_factory
+        model_paths = _ocr_model_paths(self.ocr_version)
         if factory is None:
             if not self.available:
                 raise OcrUnavailableError(
@@ -78,12 +80,22 @@ class PaddleOcrAdapter:
             factory = PaddleOCR
 
         try:
+            model_options = (
+                {
+                    "text_detection_model_dir": str(model_paths["det"]),
+                    "text_recognition_model_dir": str(model_paths[language]),
+                }
+                if self._engine_factory is None
+                else {
+                    "text_detection_model_name": f"{self.ocr_version}_mobile_det",
+                    "text_recognition_model_name": (
+                        f"{'korean' if language == 'korean' else 'en'}_"
+                        f"{self.ocr_version}_mobile_rec"
+                    ),
+                }
+            )
             return factory(
-                text_detection_model_name=f"{self.ocr_version}_mobile_det",
-                text_recognition_model_name=(
-                    f"{'korean' if language == 'korean' else 'en'}_"
-                    f"{self.ocr_version}_mobile_rec"
-                ),
+                **model_options,
                 device=self.device,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
@@ -113,13 +125,23 @@ class PaddleOcrAdapter:
     def _create_recognizer(self, language: str) -> Any:
         try:
             factory = self._engine_factory
+            model_paths = _ocr_model_paths(self.ocr_version)
             if factory is None:
                 from paddleocr import TextRecognition
 
                 factory = TextRecognition
-            model_language = "korean" if language == "korean" else "en"
+            model_options = (
+                {"model_dir": str(model_paths[language])}
+                if self._engine_factory is None
+                else {
+                    "model_name": (
+                        f"{'korean' if language == 'korean' else 'en'}_"
+                        f"{self.ocr_version}_mobile_rec"
+                    )
+                }
+            )
             return factory(
-                model_name=f"{model_language}_{self.ocr_version}_mobile_rec",
+                **model_options,
                 device=self.device,
             )
         except Exception as exc:
@@ -280,9 +302,13 @@ class PaddleOcrAdapter:
             height, width = rgb.shape[:2]
             face_on_right = _face_on_right(rgb)
             if face_on_right:
+                # Foreign resident cards place the Latin holder name to the
+                # right of the Korean name label. The previous 17%-45% crop
+                # clipped the end (and sometimes most) of that name, with the
+                # exact result varying between native OCR runtimes.
                 left, top, right, bottom = (
-                    int(width * 0.17), int(height * 0.33),
-                    int(width * 0.45), int(height * 0.47),
+                    int(width * 0.17), int(height * 0.31),
+                    int(width * 0.72), int(height * 0.50),
                 )
             else:
                 left, top, right, bottom = (
@@ -387,6 +413,31 @@ def _number_from_focused_lines(lines: list[OcrLine]) -> str:
     if len(joined) == 13 and joined[6] in "5678":
         candidates.add(joined)
     return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _ocr_model_paths(ocr_version: str) -> dict[str, Path]:
+    """Resolve the exact bundled OCR weights for source and frozen runs."""
+    if ocr_version != "PP-OCRv5":
+        raise OcrUnavailableError(
+            "이 빌드에는 PP-OCRv5 모델만 포함되어 있습니다."
+        )
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    model_root = root / "ocr_models"
+    paths = {
+        "det": model_root / "PP-OCRv5_mobile_det",
+        "korean": model_root / "korean_PP-OCRv5_mobile_rec",
+        "en": model_root / "en_PP-OCRv5_mobile_rec",
+    }
+    missing = [
+        str(path) for path in paths.values()
+        if not (path / "inference.pdiparams").is_file()
+        or not (path / "inference.yml").is_file()
+    ]
+    if missing:
+        raise OcrUnavailableError(
+            "포함된 OCR 모델 파일을 찾지 못했습니다: " + ", ".join(missing)
+        )
+    return paths
 
 
 def _face_on_right(image_rgb: Any) -> bool:

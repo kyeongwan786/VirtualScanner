@@ -1,8 +1,8 @@
-Pillow>=10.4,<13
+Pillow==12.3.0
 opencv-contrib-python==4.10.0.84
 paddlepaddle==3.2.0
-paddleocr>=3.3,<4
+paddleocr==3.7.0
 # PaddleX checks these optional OCR packages through distribution metadata.
-paddlex[ocr]
+paddlex[ocr]==3.7.2
 lxml>=5.3,<7
 pyinstaller>=6.11,<7

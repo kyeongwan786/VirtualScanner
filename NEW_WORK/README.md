@@ -16,9 +16,9 @@ python -m pip install -r requirements.txt
 python run.py
 ```
 
-기본 엔진은 CPU의 PaddleOCR 한국어 PP-OCRv5 모바일 파이프라인이다. 이전 v3 기본값은 제공된 신분증 JPG에서 읽기 어려운 결과를 내어 바꿨다. PaddleOCR 공식 다국어 인식 벤치마크는 한국어 v5 모바일 88.0%, v3 모바일 60.21%로 제시하며, CPU 인식 시간은 각각 21.20ms와 8.76ms다. 이는 PaddleOCR 자체 평가 데이터의 인식 단계 수치이지 신분증 전체 OCR의 정확도나 속도 보장은 아니다. `NEW_WORK_OCR_VERSION=PP-OCRv3`로 구버전을 선택할 수 있고, `NEW_WORK_OCR_DEVICE=gpu`도 지정할 수 있다(호환 GPU 런타임 필요). 방향 분류, 문서 펴기, 텍스트 방향 보정 모듈은 꺼 두었으며, OCR 추론은 UI를 막지 않도록 별도 스레드에서 실행한다. [PaddleOCR 한국어 모델·벤치마크](https://www.paddleocr.ai/v3.3.1/en/version3.x/pipeline_usage/OCR.html)
+`run.py`와 Windows EXE는 동일한 CPU PP-OCRv5 모바일 설정과 프로젝트에 포함된 같은 모델 파일 세 개를 사용한다: `PP-OCRv5_mobile_det`, `korean_PP-OCRv5_mobile_rec`, `en_PP-OCRv5_mobile_rec`. 파일 경로를 명시해 실행 중 모델을 새로 내려받지 않는다. 방향 분류, 문서 펴기, 텍스트 방향 보정은 끄고, 텍스트 검출 변의 최대 크기는 640으로 고정했다. OCR 추론은 UI를 막지 않도록 별도 스레드에서 실행한다. `requirements.txt`도 실행 패키지 버전을 고정한다. [PaddleOCR 한국어 모델·벤치마크](https://www.paddleocr.ai/v3.3.1/en/version3.x/pipeline_usage/OCR.html)
 
-최초 OCR 실행 때 PaddleOCR가 모델 파일을 내려받을 수 있도록 네트워크 접근이 필요하다. 모델 파일은 EXE에 포함되지 않으며 Windows 대상 PC 성능·정확도는 별도로 검증해야 한다.
+모델 파일은 `ocr_models/`에 포함되며 Windows EXE 안에 함께 패키징된다. VM에서 OCR 모델을 내려받기 위한 인터넷 연결은 필요하지 않다. Mac과 Windows는 같은 가중치와 파이프라인 설정을 사용하지만, CPU 네이티브 연산과 운영체제 차이에 따른 인식 결과는 Windows에서 확인해야 한다.
 
 인식 결과는 줄별 텍스트와 PaddleOCR 신뢰도로 표시된다. 줄을 선택하고 검토 입력칸을 선택한 뒤 삽입할 수 있다. 업무 필드는 사람이 확인·수정해야 하며, 센서/진위 검증 값을 생성하지 않는다.
 

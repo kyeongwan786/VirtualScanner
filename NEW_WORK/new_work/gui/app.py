@@ -871,7 +871,6 @@ class NewWorkApp:
 
 def main() -> None:
     root = tk.Tk()
-    device = os.environ.get("NEW_WORK_OCR_DEVICE", "cpu").strip().lower()
-    ocr_version = os.environ.get("NEW_WORK_OCR_VERSION", "PP-OCRv5").strip()
-    NewWorkApp(root, ocr=PaddleOcrAdapter(device=device, ocr_version=ocr_version))
+    # Keep the source run and the Windows EXE on the same pipeline.
+    NewWorkApp(root, ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"))
     root.mainloop()
