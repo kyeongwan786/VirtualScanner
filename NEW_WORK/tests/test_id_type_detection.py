@@ -335,7 +335,7 @@ class IdTypeDetectionTests(unittest.TestCase):
 
         self.assertIn("kaitIdType=1102", content)
         self.assertIn("recogSubCd=1102", content)
-        self.assertIn("drvLicenIsueNum=11-22-333333-44", content)
+        self.assertIn("drvLicenIsueNum=112233333344", content)
         self.assertTrue(content.endswith("idCrop=\n"))
 
     def test_mask_position_is_derived_from_resident_number_box_and_url_encoded(self):

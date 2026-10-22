@@ -6,3 +6,4 @@ paddleocr==3.7.0
 paddlex[ocr]==3.7.2
 lxml>=5.3,<7
 pyinstaller>=6.11,<7
+tkinterdnd2==0.6.4

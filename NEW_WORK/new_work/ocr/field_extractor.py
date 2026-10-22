@@ -110,11 +110,11 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
                 digits = "".join(re.findall(r"\d", " ".join(item.text for item in window)))
                 if len(digits) == 12:
                     license_numbers.add(digits)
-        if len(license_numbers) == 1 and not is_foreigner_card:
-            digits = license_numbers.pop()
-            values["drvLicenIsueNum"] = (
-                f"{digits[:2]}-{digits[2:4]}-{digits[4:10]}-{digits[10:]}"
-            )
+    if len(license_numbers) == 1 and not is_foreigner_card:
+        digits = next(iter(license_numbers))
+        values["drvLicenIsueNum"] = (
+            f"{digits[:2]}-{digits[2:4]}-{digits[4:10]}-{digits[10:]}"
+        )
 
     dates: set[str] = set()
     issuer_dates: set[str] = set()
@@ -162,11 +162,59 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
     if is_foreigner_card:
         values["addr"] = _extract_labeled_address(lines) or values["addr"]
         values["custNm"] = _extract_foreigner_name(lines)
+    if not values["custNm"] and values["drvLicenIsueNum"]:
+        values["custNm"] = _extract_driver_license_name(lines, license_numbers)
     if not values["custNm"]:
         values["custNm"] = _extract_korean_name(
             lines, numbered[0][0] if len(numbered) == 1 else None
         )
     return values
+
+
+def _extract_driver_license_name(
+    lines: tuple[OcrLine, ...], license_numbers: set[str]
+) -> str:
+    """Read the isolated name line directly below a Korean driver's license number."""
+    if len(license_numbers) != 1:
+        return ""
+    digits = next(iter(license_numbers))
+    license_rows = [
+        line
+        for line in lines
+        if (match := _LICENSE.search(line.text))
+        and "".join(match.groups()) == digits
+        and line.box is not None
+    ]
+    if not license_rows:
+        return ""
+
+    ranked: list[tuple[float, str]] = []
+    for license_line in license_rows:
+        left, top, right, bottom = license_line.box  # type: ignore[misc]
+        height = max(1.0, bottom - top)
+        for line in lines:
+            if line is license_line or line.box is None:
+                continue
+            text = line.text.strip()
+            if not _KOREAN_NAME.fullmatch(text):
+                continue
+            if line.confidence is not None and line.confidence < 0.5:
+                continue
+            name_left, name_top, name_right, name_bottom = line.box
+            gap = name_top - bottom
+            if gap < -height * 0.15 or gap > height * 1.5:
+                continue
+            # On the card, the holder's name begins beneath the left side of
+            # the printed license number. This excludes text in the lower address/date area.
+            if name_right < left - height * 0.4 or name_left > right + height * 0.4:
+                continue
+            ranked.append((max(0.0, gap), text))
+
+    if not ranked:
+        return ""
+    nearest_gap = min(gap for gap, _ in ranked)
+    nearest_names = {name for gap, name in ranked if gap <= nearest_gap + 3.0}
+    return next(iter(nearest_names)) if len(nearest_names) == 1 else ""
 
 
 def _extract_foreigner_number(lines: tuple[OcrLine, ...]) -> str:

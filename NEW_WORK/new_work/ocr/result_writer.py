@@ -60,10 +60,17 @@ def write_ocr_result(
         "kaitIdType": selected_code,
         "recogSubCd": provided.get("recogSubCd", "").strip() or selected_code,
         "idType": provided.get("idType", "").strip() or detection.type_code or "",
-        "ctzCorpNum": provided.get("ctzCorpNum", ""),
+        "ctzCorpNum": "".join(
+            char for char in provided.get("ctzCorpNum", "") if char.isdecimal()
+        ),
         "custNm": provided.get("custNm", ""),
-        "isueDt": provided.get("isueDt", ""),
-        "drvLicenIsueNum": provided.get("drvLicenIsueNum", "").strip(),
+        "isueDt": "".join(
+            char for char in provided.get("isueDt", "") if char.isdecimal()
+        ),
+        # The UI displays separators; the legacy report stores only digits.
+        "drvLicenIsueNum": "".join(
+            char for char in provided.get("drvLicenIsueNum", "") if char.isdecimal()
+        ),
         "isuePlc": provided.get("isuePlc", ""),
         "nationClCd": provided.get("nationClCd", "").strip() or "I",
         "addr": provided.get("addr", ""),

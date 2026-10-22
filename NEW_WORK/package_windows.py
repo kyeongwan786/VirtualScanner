@@ -61,6 +61,8 @@ def main() -> int:
         "paddle",
         "--collect-data",
         "cv2",
+        "--collect-all",
+        "tkinterdnd2",
     ]
     model_root = os.path.join(os.path.dirname(__file__), "ocr_models")
     required_models = (

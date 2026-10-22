@@ -48,6 +48,13 @@ def render_sk_report(
     if not isinstance(full_image_jpeg, bytes) or not full_image_jpeg:
         raise SkReportInputError("base64DATA에 넣을 이미지 바이트가 비어 있습니다.")
     values = {key: fields[key] for key in SK_REPORT_TEXT_KEYS}
+    for field in ("ctzCorpNum", "isueDt"):
+        values[field] = "".join(
+            char for char in values[field] if char.isdecimal()
+        )
+    values["drvLicenIsueNum"] = "".join(
+        char for char in values["drvLicenIsueNum"] if char.isdecimal()
+    )
     values["base64DATA"] = base64.b64encode(full_image_jpeg).decode("ascii")
     lines = [
         f"{key}={quote_plus(values[key])}"
