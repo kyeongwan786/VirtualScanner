@@ -313,37 +313,45 @@ class PaddleOcrAdapter:
             height, width = rgb.shape[:2]
             face_on_right = _face_on_right(rgb)
             if face_on_right:
-                # Foreign resident cards place the Latin holder name to the
-                # right of the Korean name label. The previous 17%-45% crop
-                # clipped the end (and sometimes most) of that name, with the
-                # exact result varying between native OCR runtimes.
-                left, top, right, bottom = (
-                    int(width * 0.17), int(height * 0.31),
-                    int(width * 0.72), int(height * 0.50),
-                )
+                # The name is left of the portrait on this card layout.
+                x_left, x_right = 0.17, 0.48
             else:
-                left, top, right, bottom = (
-                    int(width * 0.44), int(height * 0.33),
-                    int(width * 0.85), int(height * 0.53),
-                )
-            crop = Image.fromarray(rgb[top:bottom, left:right])
-            scale = 2
-            crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+                # On the opposite layout, names start just right of the
+                # Korean name label and can extend close to the card edge.
+                x_left, x_right = 0.44, 0.96
+            # The printed name can occupy two separate rows. Recognize each
+            # row on its own; TextRecognition does not detect or separate
+            # multiple lines when they are passed as one crop.
+            row_bands = ((0.36, 0.435), (0.425, 0.50))
             with TemporaryDirectory(prefix="new_work_foreigner_name_") as temp_dir:
-                crop_path = Path(temp_dir) / "name_area.png"
-                crop.save(crop_path)
-                focused_outputs = engine.predict(input=str(crop_path))
-            focused_lines = []
-            for line in self._read_lines(focused_outputs):
-                box = line.box
-                mapped_box = None if box is None else (
-                    left + box[0] / scale, top + box[1] / scale,
-                    left + box[2] / scale, top + box[3] / scale,
-                )
-                text = _name_with_visual_spaces(line.text, rgb, mapped_box)
-                focused_lines.append(
-                    OcrLine(text, line.confidence, mapped_box, "english_focus")
-                )
+                focused_lines = []
+                for row_index, (top_ratio, bottom_ratio) in enumerate(row_bands):
+                    left = int(width * x_left)
+                    right = int(width * x_right)
+                    top = int(height * top_ratio)
+                    bottom = int(height * bottom_ratio)
+                    crop_rgb = rgb[top:bottom, left:right]
+                    if face_on_right:
+                        # This layout's printed letters have strong vertical
+                        # security lines. Remove isolated stripe noise without
+                        # blurring the larger character strokes.
+                        crop_rgb = cv2.medianBlur(crop_rgb, 3)
+                    scale = min(5.0, 220.0 / max(1, crop_rgb.shape[0]))
+                    crop = cv2.resize(
+                        crop_rgb, None, fx=scale, fy=scale,
+                        interpolation=cv2.INTER_CUBIC,
+                    )
+                    crop_path = Path(temp_dir) / f"name_row_{row_index}.png"
+                    cv2.imwrite(
+                        str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
+                    )
+                    focused_outputs = engine.predict(input=str(crop_path))
+                    for line in self._read_lines(focused_outputs):
+                        mapped_box = (float(left), float(top), float(right), float(bottom))
+                        text = _name_with_visual_spaces(line.text, rgb, mapped_box)
+                        focused_lines.append(
+                            OcrLine(text, line.confidence, mapped_box, "english_focus")
+                        )
             return tuple(focused_lines)
         except OcrUnavailableError:
             raise
