@@ -33,3 +33,6 @@ NEW_WORK_OCR/dist/
 NEW_WORK_OCR/*.spec
 NEW_WORK_OCR/result.txt
 /NEW_WORK/sk_report.txt
+/NEW_WORK/report.txt
+/NEW_WORK/IMAGE/ORG.jpg
+/NEW_WORK/IMAGE/CR.jpg

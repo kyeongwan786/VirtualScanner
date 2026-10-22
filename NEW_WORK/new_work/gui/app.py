@@ -15,6 +15,10 @@ from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
+from new_work.carrier.kt_report import (
+    write_kt_images,
+    write_kt_report,
+)
 
 
 ID_TYPE_LABEL_TO_CODE: dict[str, str] = {}
@@ -68,6 +72,8 @@ class NewWorkApp:
         self._value_vars: dict[str, tk.StringVar] = {
             field: tk.StringVar(root) for field in REVIEW_TEXT_FIELDS
         }
+        self._id_type_var = tk.StringVar(root, value="유형 선택…")
+        self.portal_var = tk.StringVar(root, value="SK")
         self._preview_resize_job: str | None = None
         self._id_type_detection = IdTypeDetection(None, None)
         root.title("신분증 확인")
@@ -104,15 +110,18 @@ class NewWorkApp:
         settings = ttk.Frame(shell, style="App.TFrame")
         settings.grid(row=0, column=0, sticky="ew", pady=(0, 3))
         settings.columnconfigure(1, weight=1)
-        ttk.Label(settings, text="신분증 종류").grid(row=0, column=0, sticky="w", padx=(0, 5))
-        self.id_type_choice = ttk.Combobox(
-            settings,
-            state="readonly",
-            values=("유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()),
+        ttk.Label(settings, text="포탈", style="FieldName.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(2, 5)
         )
-        self.id_type_choice.current(0)
-        self.id_type_choice.grid(row=0, column=1, sticky="ew")
-        self.id_type_choice.bind("<<ComboboxSelected>>", self._id_type_choice_selected)
+        portal_choices = ttk.Frame(settings, style="App.TFrame")
+        portal_choices.grid(row=0, column=1, sticky="e")
+        for portal in ("SK", "KT"):
+            ttk.Radiobutton(
+                portal_choices,
+                text=portal,
+                variable=self.portal_var,
+                value=portal,
+            ).pack(side="left", padx=(0, 8))
 
         self.result_table = ttk.Frame(shell, style="Card.TFrame", padding=(2, 1))
         self.result_table.grid(row=1, column=0, sticky="ew", pady=(0, 3))
@@ -197,14 +206,33 @@ class NewWorkApp:
     def _current_values(self) -> dict[str, str]:
         return {field: value.get() for field, value in self._value_vars.items()}
 
+    def _write_selected_portal_report(self, result: OcrResult) -> Path:
+        values = self._current_values()
+        if self.portal_var.get() == "KT":
+            return write_kt_report(result, self._id_type_detection, values=values)
+        return write_ocr_result(result, self._id_type_detection, values=values)
+
     def _refresh_result_table(self) -> None:
         if not hasattr(self, "result_table"):
             return
         for child in self.result_table.winfo_children():
             child.destroy()
         self._entries.clear()
+
+        ttk.Label(
+            self.result_table, text="신분증 종류", style="FieldName.TLabel"
+        ).grid(row=0, column=0, sticky="w", padx=(2, 6), pady=1)
+        self.id_type_choice = ttk.Combobox(
+            self.result_table,
+            state="readonly",
+            textvariable=self._id_type_var,
+            values=("유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()),
+        )
+        self.id_type_choice.grid(row=0, column=1, sticky="ew", pady=1)
+        self.id_type_choice.bind("<<ComboboxSelected>>", self._id_type_choice_selected)
+
         specs = self._review_specs()
-        for index, (field, label) in enumerate(specs):
+        for index, (field, label) in enumerate(specs, start=1):
             ttk.Label(self.result_table, text=label, style="FieldName.TLabel").grid(
                 row=index, column=0, sticky="w", padx=(2, 6), pady=1
             )
@@ -470,22 +498,18 @@ class NewWorkApp:
         mask_position = result.values.get("mskPos") or detect_mask_position(result.lines)
         self._value_vars["mskPos"].set(mask_position or "")
         try:
-            result_path = write_ocr_result(
-                result,
-                self._id_type_detection,
-                values=self._current_values(),
-            )
+            result_path = self._write_selected_portal_report(result)
         except OSError as exc:
             result_path = None
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"OCR은 끝났지만 sk_report.txt를 저장하지 못했습니다: {exc}",
+                f"OCR은 끝났지만 결과 파일을 저장하지 못했습니다: {exc}",
                 parent=self.root,
             )
         if self._id_type_detection.name is None:
-            detection_status = "문서 종류를 확인할 수 없습니다. 위에서 종류를 선택하세요"
+            detection_status = "문서 종류를 확인할 수 없습니다. 표에서 종류를 선택하세요"
         elif self._id_type_detection.code is None:
-            detection_status = f"{self._id_type_detection.name} 종류를 위에서 선택하세요"
+            detection_status = f"{self._id_type_detection.name} 종류를 표에서 선택하세요"
         else:
             detection_status = self._id_type_detection.name
         self.review_status.set(f"OCR 완료 · {detection_status}")
@@ -529,15 +553,11 @@ class NewWorkApp:
             matched_text=self._id_type_detection.matched_text,
         )
         try:
-            path = write_ocr_result(
-                self.draft.result,
-                self._id_type_detection,
-                values=self._current_values(),
-            )
+            path = self._write_selected_portal_report(self.draft.result)
         except OSError as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"선택한 문서 유형을 sk_report.txt에 저장하지 못했습니다: {exc}",
+                f"선택한 문서 유형을 결과 파일에 저장하지 못했습니다: {exc}",
                 parent=self.root,
             )
             return
@@ -553,21 +573,27 @@ class NewWorkApp:
             messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
             return
         values = self._current_values()
-        self.draft.mark_reviewed(values)
+        image_paths: tuple[Path, Path] | None = None
         try:
-            result_path = write_ocr_result(
-                self.draft.result, self._id_type_detection, values=values
-            )
-        except OSError as exc:
+            if self.portal_var.get() == "KT":
+                image_paths = write_kt_images(
+                    self.draft.result.image_path, overwrite=True
+                )
+            result_path = self._write_selected_portal_report(self.draft.result)
+            self.draft.mark_reviewed(values)
+        except (OSError, ValueError) as exc:
             messagebox.showwarning(
                 "결과 파일 저장 실패",
-                f"검토값은 현재 메모리에 반영됐지만 sk_report.txt 저장에 실패했습니다: {exc}",
+                f"검토값은 현재 메모리에 반영됐지만 결과 파일 또는 이미지 저장에 실패했습니다: {exc}",
                 parent=self.root,
             )
             result_path = None
         self.review_status.set("저장 완료" if result_path else "저장 실패")
         if result_path:
-            messagebox.showinfo("저장하기", "수정한 OCR 결과를 저장했습니다.", parent=self.root)
+            saved_message = f"수정한 OCR 결과를 저장했습니다.\n{result_path}"
+            if image_paths:
+                saved_message += f"\n{image_paths[0]}\n{image_paths[1]}"
+            messagebox.showinfo("저장하기", saved_message, parent=self.root)
 
 def main() -> None:
     root = TkinterDnD.Tk()
