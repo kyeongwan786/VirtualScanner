@@ -30,6 +30,18 @@ KT_ID_TYPES: dict[str, tuple[str, str, str]] = {
         for code in ("1501", "1502", "1601", "1701", "1702", "1704", "1801", "1901")
     },
 }
+KT_ID_CARD_TYPES = {
+    "1001": "1001",
+    "1101": "1102",
+    "1102": "1102",
+    "1201": "1102",
+    "1301": "1301",
+    "1303": "1301",
+    "1302": "1302",
+    "1401": "1401",
+    "2001": "2001",
+    "2002": "2001",
+}
 
 
 def default_kt_report_path() -> Path:
@@ -92,6 +104,7 @@ def render_kt_report(
     id_card_type_name, id_type, id_type_name = KT_ID_TYPES.get(
         code, ("", "", "")
     )
+    id_card_type = KT_ID_CARD_TYPES.get(code, "")
 
     def digits(value: str) -> str:
         return "".join(char for char in value if char.isdecimal())
@@ -114,6 +127,7 @@ def render_kt_report(
         ("dateIssued", digits(provided.get("isueDt", ""))),
         ("documentType", "A0002"),
         ("idCardTypeName", id_card_type_name),
+        ("idCardType", id_card_type),
         ("idType", id_type),
         ("idTypeNm", id_type_name),
         ("juminNum", digits(provided.get("ctzCorpNum", ""))),
