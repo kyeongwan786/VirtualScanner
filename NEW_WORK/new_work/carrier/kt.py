@@ -222,7 +222,22 @@ def save_kt_submission(
     """Update the latest existing U.Scan paper row with reviewed OCR values."""
     target = Path(database_path) if database_path is not None else default_kt_database_path()
     target = target.expanduser().resolve(strict=True)
-    provided = dict(result.values if values is None else values)
+    provided = dict(result.values)
+    if values is not None:
+        provided.update(values)
+
+    address_keys = ("addr", "address", "ADDR", "custAddr")
+    explicit_address_key = next(
+        (key for key in address_keys if values is not None and key in values),
+        None,
+    )
+    source_address_key = explicit_address_key or next(
+        (key for key in address_keys if key in provided),
+        None,
+    )
+    if source_address_key is None:
+        raise ValueError("OCR 또는 검토값에 주소 키(addr)가 없습니다.")
+    provided["addr"] = provided[source_address_key]
 
     def clean(value: object) -> str:
         return str(value or "").strip()
@@ -291,8 +306,9 @@ def save_kt_submission(
             reviewed["DRV_LICEN_ISUE_NUM"] = digits(provided["drvLicenIsueNum"])
         if "isuePlc" in provided:
             reviewed["ISUE_PLC"] = clean(provided["isuePlc"])
-        if "addr" in provided:
-            reviewed["ADDR"] = clean(provided["addr"])
+        reviewed["ADDR"] = clean(provided["addr"])
+        if reviewed["ADDR"] != clean(provided["addr"]):
+            raise ValueError("검토 주소를 T_SCAN_PAPER.ADDR 값으로 준비하지 못했습니다.")
         if "mskPos" in provided:
             reviewed["MSK_POS"] = clean(provided["mskPos"])
         reviewed["NATION_CL_CD"] = "F" if id_code == "1401" else "I"
