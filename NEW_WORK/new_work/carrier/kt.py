@@ -16,7 +16,8 @@ from new_work.image.legacy_crop import reencode_jpeg
 from new_work.ocr.id_types import IdTypeDetection
 
 
-KT_DB_FIELDS = KT_PAPER_FIELDS
+KT_REVIEW_ORIGIN_FIELDS = ("ADDR_ORIGIN", "WLF_NUM_ORIGIN")
+KT_DB_FIELDS = (*KT_PAPER_FIELDS, *KT_REVIEW_ORIGIN_FIELDS)
 KT_OCR_METADATA_FIELDS = ("FORM_CODE", "APPLF_SEQ", "SDOC_CD", "DOC_TYP_CD")
 KT_REVIEW_TO_DB = {
     "CTZ_CORP_NUM": "ctzCorpNum",
@@ -104,11 +105,14 @@ def update_kt_database_copy(
             values_by_field = dict(zip(KT_DB_FIELDS, selected))
             for field, review_key in KT_REVIEW_TO_DB.items():
                 values_by_field[field] = reviewed_values[review_key].strip()
+            values_by_field["ADDR_ORIGIN"] = reviewed_values["addr"].strip()
             if id_type_code == "1302":
-                values_by_field["WLF_NUM"] = "".join(
+                veteran_number = "".join(
                     char for char in reviewed_values.get("veteranNum", "")
                     if char.isdecimal()
                 )
+                values_by_field["WLF_NUM"] = veteran_number
+                values_by_field["WLF_NUM_ORIGIN"] = veteran_number
             values = [values_by_field[field] for field in KT_DB_FIELDS]
             cursor = connection.execute(sql, values)
             count = cursor.rowcount
@@ -255,7 +259,13 @@ def save_kt_submission(
             raise ValueError("test.db에 T_SCAN_PAPER 테이블이 없습니다.")
 
         fields = ", ".join(
-            ("TMP_ELEMENT_ID", "SEND_ORG_ID", *KT_PAPER_FIELDS, *KT_OCR_METADATA_FIELDS)
+            (
+                "TMP_ELEMENT_ID",
+                "SEND_ORG_ID",
+                *KT_PAPER_FIELDS,
+                *KT_REVIEW_ORIGIN_FIELDS,
+                *KT_OCR_METADATA_FIELDS,
+            )
         )
         existing = connection.execute(
             f"SELECT {fields} FROM T_SCAN_PAPER "
@@ -268,7 +278,12 @@ def save_kt_submission(
         send_org_id = clean(existing[1])
         if not old_element_id:
             raise ValueError("최신 T_SCAN_PAPER 행의 TMP_ELEMENT_ID가 비어 있습니다.")
-        reviewed = dict(zip((*KT_PAPER_FIELDS, *KT_OCR_METADATA_FIELDS), existing[2:]))
+        reviewed = dict(
+            zip(
+                (*KT_PAPER_FIELDS, *KT_REVIEW_ORIGIN_FIELDS, *KT_OCR_METADATA_FIELDS),
+                existing[2:],
+            )
+        )
 
         # Keep existing values for fields absent from this OCR/UI payload.
         # This mirrors com_kt's read-modify-update flow without creating rows.
@@ -291,7 +306,9 @@ def save_kt_submission(
         for field, value in zip(KT_OCR_METADATA_FIELDS, type_metadata):
             reviewed[field] = value
         if id_code == "1302":
-            reviewed["WLF_NUM"] = digits(provided.get("veteranNum", ""))
+            veteran_number = digits(provided.get("veteranNum", ""))
+            reviewed["WLF_NUM"] = veteran_number
+            reviewed["WLF_NUM_ORIGIN"] = veteran_number
 
         if "ctzCorpNum" in provided:
             number = clean(provided["ctzCorpNum"])
@@ -307,6 +324,7 @@ def save_kt_submission(
         if "isuePlc" in provided:
             reviewed["ISUE_PLC"] = clean(provided["isuePlc"])
         reviewed["ADDR"] = clean(provided["addr"])
+        reviewed["ADDR_ORIGIN"] = reviewed["ADDR"]
         if reviewed["ADDR"] != clean(provided["addr"]):
             raise ValueError("검토 주소를 T_SCAN_PAPER.ADDR 값으로 준비하지 못했습니다.")
         if "mskPos" in provided:
@@ -337,7 +355,11 @@ def save_kt_submission(
         if resource_cursor.rowcount != 1:
             raise ValueError("기존 T_SCAN_RESOURCES의 TMP_ELEMENT_ID 갱신에 실패했습니다.")
 
-        update_fields = (*KT_PAPER_FIELDS, *KT_OCR_METADATA_FIELDS)
+        update_fields = (
+            *KT_PAPER_FIELDS,
+            *KT_OCR_METADATA_FIELDS,
+            *KT_REVIEW_ORIGIN_FIELDS,
+        )
         assignments = ", ".join(f"{field} = ?" for field in update_fields)
         cursor = connection.execute(
             f"UPDATE T_SCAN_PAPER SET TMP_ELEMENT_ID = ?, {assignments} "
@@ -348,20 +370,26 @@ def save_kt_submission(
         )
         if cursor.rowcount != 1:
             raise ValueError("기존 T_SCAN_PAPER OCR 결과 업데이트에 실패했습니다.")
-        saved_address = connection.execute(
-            "SELECT ADDR FROM T_SCAN_PAPER WHERE TMP_ELEMENT_ID = ?",
+        saved_addresses = connection.execute(
+            "SELECT ADDR, ADDR_ORIGIN, WLF_NUM, WLF_NUM_ORIGIN "
+            "FROM T_SCAN_PAPER WHERE TMP_ELEMENT_ID = ?",
             (new_element_id,),
         ).fetchone()
         expected_address = reviewed["ADDR"]
-        actual_address = (
-            ""
-            if saved_address is None or saved_address[0] is None
-            else str(saved_address[0])
+        actual_fields = tuple(
+            "" if value is None else str(value)
+            for value in (saved_addresses or (None, None, None, None))
         )
-        if actual_address != expected_address:
+        if actual_fields[:2] != (expected_address, expected_address):
             raise ValueError(
-                "T_SCAN_PAPER.ADDR 저장값이 입력한 주소와 다릅니다. "
+                "T_SCAN_PAPER.ADDR/ADDR_ORIGIN 저장값이 입력한 주소와 다릅니다. "
                 "대상 DB나 DB 트리거를 확인하세요."
             )
+        if id_code == "1302":
+            expected_veteran_number = reviewed["WLF_NUM"]
+            if actual_fields[2:] != (expected_veteran_number, expected_veteran_number):
+                raise ValueError(
+                    "T_SCAN_PAPER.WLF_NUM/WLF_NUM_ORIGIN 저장값이 보훈번호와 다릅니다."
+                )
         connection.commit()
     return target, new_element_id

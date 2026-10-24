@@ -72,7 +72,7 @@
 
 - 전체 `T_SCAN_PAPER`는 80컬럼이지만 이 INSERT는 59컬럼만 지정한다. 나머지 21컬럼을 임의 초기화하거나 채우지 않는다.
 - 원본 이관은 `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_RESOURCES`, `T_SCAN_PAPER` 생성과 처리한 임시행 삭제를 포함한다. 원본에서는 스캐너가 `T_SCAN_TEMP`를 준비한다.
-- 현재 KT 저장은 기존 최신 `T_SCAN_PAPER` 행의 OCR 필드 10개와 문서 분류 메타데이터(`FORM_CODE`, `APPLF_SEQ`, `SDOC_CD`, `DOC_TYP_CD`)를 UPDATE한다. `T_CODE_OCR.OCR_CD`에서 선택한 신분증 코드에 대응하는 메타데이터를 읽으며, `ID_TYPE`은 앱의 신분증 코드 매핑을 사용한다. 동시에 새 `TMP_ELEMENT_ID`를 `unique()` 규칙으로 만들고, `T_SCAN_PAPER`와 같은 키를 쓰는 `T_SCAN_RESOURCES` 행의 키도 한 트랜잭션에서 함께 바꾼다. 새 행이나 리소스 Base64는 INSERT/수정하지 않는다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_CONF`, `T_SCAN_UNKNOWN`은 이 저장에서 건드리지 않는다. 이는 `skt.exe`의 신규 문서 이관이 아니라 `com_kt`의 기존행 수정 흐름을 유지하면서 분류값과 문서/이미지 키 연결을 갱신하는 동작이다.
+- 현재 KT 저장은 기존 최신 `T_SCAN_PAPER` 행의 OCR 필드와 문서 분류 메타데이터(`FORM_CODE`, `APPLF_SEQ`, `SDOC_CD`, `DOC_TYP_CD`)를 UPDATE한다. 검토 주소는 `ADDR`와 `ADDR_ORIGIN`에, 국가유공자증(`1302`) 보훈번호는 `WLF_NUM`과 `WLF_NUM_ORIGIN`에 반영한다. `T_CODE_OCR.OCR_CD`에서 선택한 신분증 코드에 대응하는 메타데이터를 읽으며, `ID_TYPE`은 앱의 신분증 코드 매핑을 사용한다. 동시에 새 `TMP_ELEMENT_ID`를 `unique()` 규칙으로 만들고, `T_SCAN_PAPER`와 같은 키를 쓰는 `T_SCAN_RESOURCES` 행의 키도 한 트랜잭션에서 함께 바꾼다. 새 행이나 리소스 Base64는 INSERT/수정하지 않는다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_CONF`, `T_SCAN_UNKNOWN`은 이 저장에서 건드리지 않는다. 이는 `skt.exe`의 신규 문서 이관이 아니라 `com_kt`의 기존행 수정 흐름을 유지하면서 분류값과 문서/이미지 키 연결을 갱신하는 동작이다.
 - 현재 구현은 `SCAN_ID`, `SEND_ORG_ID`, `SCAN_NM`, `IP_ADDR`, `MAC_ADDR`, `ID_SCANR_SER_NUM`을 DB의 기존 최신 paper 행에서 가져오며, `SEND_ORG_ID`와 환경 변수가 있으면 환경값을 우선한다.
 - 새 `TMP_ELEMENT_ID` 생성은 원본 `unique()`의 기록된 규칙을 따른다: 로컬 시각 `YYYYMMDDHHmmss` + `0-9A-Z` 임의 문자 2개 + 최신 행 `SEND_ORG_ID` 앞 6자. 기존 `ID_KEY`와 `ID_LOG_KEY`는 원본 `com_kt.update_data`처럼 유지한다. 현재 `OcrResult.job_id`는 UUID 작업 추적값이며 DB 키로 쓰지 않는다.
 

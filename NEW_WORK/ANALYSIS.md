@@ -60,7 +60,7 @@
 | 실행 파일/함수 | 복구된 동작 | NEW_WORK 이식 |
 |---|---|---|
 | `com_kt.fetch_data` | `T_SCAN_PAPER`에서 10개 필드(`RECOG_SUB_CD`, `ID_TYPE`, `CTZ_CORP_NUM`, `CUST_NM`, `ISUE_DT`, `DRV_LICEN_ISUE_NUM`, `ISUE_PLC`, `NATION_CL_CD`, `ADDR`, `MSK_POS`)를 `ORDER BY SCAN_DT DESC LIMIT 1`로 읽음 | 동일 최신행 조회를 복사 DB 안에서 수행 |
-| `com_kt.update_data` | 위 10개 값 전체를 `UPDATE T_SCAN_PAPER ... WHERE SCAN_DT=(SELECT MAX(SCAN_DT)...)`로 갱신. GUI가 바꾸는 값은 이름, 주민번호, 주소, 발급일, 면허번호, 발급기관 6개이고 나머지 4개는 조회 행의 값을 유지. 타임스탬프 최댓값 동률 행은 모두 UPDATE 대상 | 동일 기존 OCR 컬럼·최대 SCAN_DT 조건. 추가로 스키마에 확인된 `WLF_NUM`을 국가유공자증 코드 `1302`일 때만 검토값으로 갱신하고, 그 외 문서와 `WLF_NUM_ORIGIN`은 보존. 운영 원본 보호를 위해 DB 백업본을 갱신해 `myCustomer.db` 생성 |
+| `com_kt.update_data` | 위 10개 값 전체를 `UPDATE T_SCAN_PAPER ... WHERE SCAN_DT=(SELECT MAX(SCAN_DT)...)`로 갱신. GUI가 바꾸는 값은 이름, 주민번호, 주소, 발급일, 면허번호, 발급기관 6개이고 나머지 4개는 조회 행의 값을 유지. 타임스탬프 최댓값 동률 행은 모두 UPDATE 대상 | 동일 기존 OCR 컬럼·최대 SCAN_DT 조건. 추가로 `ADDR_ORIGIN`을 검토 주소로 갱신하고, 국가유공자증 코드 `1302`일 때 `WLF_NUM`과 `WLF_NUM_ORIGIN`을 검토값으로 갱신. 운영 원본 보호를 위해 DB 백업본을 갱신해 `myCustomer.db` 생성 |
 | `com_kt.find_latest_image` | 하위 폴더에서 수정시각 최신 m-suffix 이미지를 찾아 카드 중앙 크롭을 `CR.jpg`로 생성 | 현재 UI에서 선택한 원본을 사용하고 얼굴 사진 영역을 crop해 `CR.jpg`로 저장 |
 | `com_kt.save_data` | 원본을 JPEG quality 100으로 `ORG.jpg`, 카드 중앙 크롭을 JPEG quality 100으로 `CR.jpg`에 재인코딩한 뒤 DB 업데이트 진행 | `ORG.jpg`는 선택 원본, `CR.jpg`는 얼굴 사진 crop으로 저장. 두 파일을 `C:\IMAGE`에 같은 이름으로 덮어씀 |
 | `com_sk.fetch_data` / `save_data` | 위 10개 컬럼 최신행을 조회하고 문서유형 선택에 따라 `(RECOG_SUB_CD, ID_TYPE)`를 거주자 `(1001,R)`, 운전면허 `(1102,D)`, 외국인 `(1401,F)`, 복지 `(1301,S)`, 보훈 `(1302,N)`으로 구성. 외국인은 `NATION_CL_CD='F'`, `MSK_POS=''` 설정 | 문서 유형 선택 컨트롤과 코드값 입력 연결. Windows 원본 대비 검증 필요 |
@@ -77,7 +77,7 @@
 
 ## SK 보고서와 KT 출력 형식
 
-현재 KT OCR 저장 버튼은 `com_kt`의 기존행 편집 흐름을 적용한다. 최신 `T_SCAN_PAPER`의 OCR 10개 값과 신분증 유형 코드를 읽어 반영한다. 선택한 코드는 활성 `T_CODE_OCR`와 대조해 `FORM_CODE`, `APPLF_SEQ`, `SDOC_CD`, `DOC_TYP_CD`도 갱신한다. `unique()`로 만든 새 `TMP_ELEMENT_ID`는 paper 행과 연결된 `T_SCAN_RESOURCES` 행에 함께 UPDATE한다. 이미지 Base64 및 나머지 컬럼은 유지한다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_UNKNOWN`, `T_SCAN_CONF`는 수정하지 않으며 `skt.exe`의 `migrate()`/59컬럼 신규 INSERT 경로도 호출하지 않는다. OCR의 `OcrResult.job_id`는 UUID로 UI 작업을 추적할 뿐, DB `TMP_ELEMENT_ID`가 아니다.
+현재 KT OCR 저장 버튼은 `com_kt`의 기존행 편집 흐름을 적용한다. 최신 `T_SCAN_PAPER`의 OCR 값과 신분증 유형 코드를 읽어 반영한다. 검토 주소는 `ADDR`와 `ADDR_ORIGIN`에 저장하고, 국가유공자증은 검토 보훈번호를 `WLF_NUM`과 `WLF_NUM_ORIGIN`에 저장한다. 선택한 코드는 활성 `T_CODE_OCR`와 대조해 `FORM_CODE`, `APPLF_SEQ`, `SDOC_CD`, `DOC_TYP_CD`도 갱신한다. `unique()`로 만든 새 `TMP_ELEMENT_ID`는 paper 행과 연결된 `T_SCAN_RESOURCES` 행에 함께 UPDATE한다. 이미지 Base64 및 나머지 컬럼은 유지한다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_UNKNOWN`, `T_SCAN_CONF`는 수정하지 않으며 `skt.exe`의 `migrate()`/59컬럼 신규 INSERT 경로도 호출하지 않는다. OCR의 `OcrResult.job_id`는 UUID로 UI 작업을 추적할 뿐, DB `TMP_ELEMENT_ID`가 아니다.
 
 `sk_report.txt`의 13개 필드명은 다음과 같다: `kaitIdType`, `recogSubCd`, `idType`, `ctzCorpNum`, `custNm`, `isueDt`, `drvLicenIsueNum`, `isuePlc`, `nationClCd`, `addr`, `mskPos`, `base64DATA`, `idCrop`. 파일은 한 줄당 `key=value`이며 일부 데이터 값에는 줄바꿈이 포함되지 않았다. 현 샘플에서 `drvLicenIsueNum` 값은 빈 문자열이었다. 두 이미지 필드는 URL 디코딩 뒤 JPEG이며 각각 1008×640 및 340×406 픽셀임을 헤더에서 확인했다. 이 규격을 다른 문서 유형에 일반화하지 않는다.
 
