@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Thread
 from time import perf_counter
 import sqlite3
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -18,6 +19,7 @@ from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
+from new_work.windows_lifecycle import create_tray_icon, register_current_user_autostart
 from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
 
 
@@ -98,6 +100,7 @@ class NewWorkApp:
         self._scan_active = False
         self._scan_image_path: Path | None = None
         self._id_type_detection = IdTypeDetection(None, None)
+        self._tray_icon = None
         self._ocr_warmup_finished = not isinstance(self.ocr, PaddleOcrAdapter)
         self._ocr_models_ready = self._ocr_warmup_finished
         self._pending_ocr_path: Path | None = None
@@ -105,8 +108,43 @@ class NewWorkApp:
         root.geometry("560x700")
         root.resizable(False, False)
         self._build()
+        root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
         if isinstance(self.ocr, PaddleOcrAdapter):
             self.root.after_idle(self._begin_ocr_warmup)
+
+    def _handle_window_close(self) -> None:
+        if sys.platform != "win32":
+            self.root.destroy()
+            return
+        self.root.withdraw()
+        if self._tray_icon is not None:
+            return
+        try:
+            self._tray_icon = create_tray_icon(
+                lambda: self.root.after(0, self._restore_window),
+                lambda: self.root.after(0, self._exit_from_tray),
+            )
+            Thread(target=self._tray_icon.run, daemon=True).start()
+        except Exception as exc:
+            self._tray_icon = None
+            self.root.deiconify()
+            messagebox.showerror(
+                "트레이 실행 실패",
+                f"프로그램을 트레이에 숨기지 못했습니다. 창은 계속 열어둡니다.\n{exc}",
+                parent=self.root,
+            )
+
+    def _restore_window(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _exit_from_tray(self) -> None:
+        icon = self._tray_icon
+        self._tray_icon = None
+        if icon is not None:
+            icon.stop()
+        self.root.destroy()
 
     def _begin_ocr_warmup(self) -> None:
         self.ocr_status.set("OCR 모델 준비 중 · 백그라운드에서 불러오는 중")
@@ -852,4 +890,16 @@ def main() -> None:
     root = TkinterDnD.Tk()
     # Keep the source run and the Windows EXE on the same pipeline.
     NewWorkApp(root, ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"))
+    if sys.platform == "win32":
+        try:
+            register_current_user_autostart()
+        except OSError as exc:
+            root.after(
+                1000,
+                lambda error=exc: messagebox.showwarning(
+                    "자동 실행 설정 실패",
+                    f"Windows 로그인 시 자동 실행을 등록하지 못했습니다.\n{error}",
+                    parent=root,
+                ),
+            )
     root.mainloop()

@@ -65,6 +65,8 @@ def main() -> int:
         "cv2",
         "--collect-all",
         "tkinterdnd2",
+        "--collect-all",
+        "pystray",
     ]
     model_root = os.path.join(os.path.dirname(__file__), "ocr_models")
     required_models = (
