@@ -79,6 +79,8 @@ def write_ocr_result(
         "addr": provided.get("addr", ""),
         "mskPos": provided.get("mskPos", "").strip(),
     }
+    if {output_values["kaitIdType"], output_values["recogSubCd"]} & {"1301", "1303"}:
+        output_values["addr"] = ""
 
     output_lines: list[str] = []
     field_order = list(RESULT_FIELD_ORDER)
