@@ -55,7 +55,7 @@ def render_sk_report(
     if not isinstance(full_image_jpeg, bytes) or not full_image_jpeg:
         raise SkReportInputError("base64DATA에 넣을 이미지 바이트가 비어 있습니다.")
     values = {key: fields[key] for key in SK_REPORT_TEXT_KEYS}
-    if values["kaitIdType"] in {"1301", "1303"}:
+    if {values["kaitIdType"], values["recogSubCd"]} & {"1301", "1303"}:
         values["addr"] = ""
     for field in ("ctzCorpNum", "isueDt"):
         values[field] = "".join(
