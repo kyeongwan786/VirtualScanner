@@ -192,17 +192,40 @@ def _new_element_id(connection: sqlite3.Connection, send_org_id: str) -> str:
     salt = send_org_id[:6]
     if not salt:
         raise ValueError("기존 문서의 SEND_ORG_ID가 비어 있어 TMP_ELEMENT_ID를 만들 수 없습니다.")
+    collision_tables = (
+        "T_SCAN_PAPER",
+        "T_SCAN_RESOURCES",
+        "T_SCAN_TEMP",
+        "T_SCAN_UNKNOWN",
+    )
+    existing_tables: list[str] = []
+    for table in collision_tables:
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND upper(name) = ?",
+            (table,),
+        ).fetchone()
+        if table_exists is None:
+            continue
+        columns = {
+            str(row[1]).upper()
+            for row in connection.execute(f'PRAGMA table_info("{table}")')
+        }
+        if "TMP_ELEMENT_ID" in columns:
+            existing_tables.append(table)
+    if "T_SCAN_PAPER" not in existing_tables:
+        raise ValueError("KT DB에 TMP_ELEMENT_ID를 확인할 T_SCAN_PAPER 테이블이 없습니다.")
+
     for _ in range(100):
         candidate = _legacy_unique(salt)
-        exists = connection.execute(
-            "SELECT 1 FROM T_SCAN_PAPER WHERE TMP_ELEMENT_ID = ? "
-            "UNION ALL SELECT 1 FROM T_SCAN_RESOURCES WHERE TMP_ELEMENT_ID = ? "
-            "UNION ALL SELECT 1 FROM T_SCAN_TEMP WHERE TMP_ELEMENT_ID = ? "
-            "UNION ALL SELECT 1 FROM T_SCAN_UNKNOWN WHERE TMP_ELEMENT_ID = ? "
-            "LIMIT 1",
-            (candidate, candidate, candidate, candidate),
-        ).fetchone()
-        if exists is None:
+        collision = any(
+            connection.execute(
+                f'SELECT 1 FROM "{table}" WHERE TMP_ELEMENT_ID = ? LIMIT 1',
+                (candidate,),
+            ).fetchone()
+            is not None
+            for table in existing_tables
+        )
+        if not collision:
             return candidate
     raise RuntimeError("중복되지 않는 TMP_ELEMENT_ID를 생성하지 못했습니다.")
 
