@@ -49,9 +49,9 @@
 
 추가로 Node pkg 스냅샷의 일반 문자열 영역에서 `skt` 메인 스크립트의 소스 행을 회수했다. 실제 호출 순서는 `device() → scan() → migrate()`이며, `device()`는 `EZS_TWAIN_SELECT` 명령, `scan()`은 `EZS_LIB_SCAN` 명령에 DB/라이브러리/데이터 폴더/타임스탬프/접점 코드를 전달한다. `migrate()`는 `T_SCAN_TEMP`에서 `TMP_ELEMENT_ID DESC LIMIT 1`로 한 건을 읽고 `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_RESOURCES`, `T_SCAN_PAPER` 순으로 INSERT한 뒤 해당 임시 행을 삭제한다. INSERT 컬럼을 실제로 세어 `T_SCAN_PAPER` 대상은 59개임을 확인했다. 본문에서 코드 유형 `R/D/S`, `MSK_POS` 검사 및 OCR 필드 수정 입력도 확인된다. 이 결과는 실행 추적이 아닌 EXE 내 문자열/소스 행 복구에 근거하므로 환경 변수 값과 실패 시 DB 상태는 Windows에서 별도 검증 대상이다.
 
-복구된 `migrate()`에는 JPG OCR이 만들 수 없는 기존 장치/검증 컬럼도 들어 있다. 예를 들어 `ID_SCANR_USE_YN='Y'`, 드라이버명 고정값, IR/UV/TR에 `ID_VALUE`를 복사, `SELF_YN='Y'`, 난수 `ID_COLOR_SCORE`가 설정된다. 원본 코드가 이 값을 쓴다는 점만 확인했으며 실제 장치 측정 또는 인증이 유효하다는 뜻은 아니다. 전체 59개 입력의 출처와 새 JPG 경로에서 사용하지 않는 이유는 [`DATABASE_FIELD_AUDIT.md`](DATABASE_FIELD_AUDIT.md)에 기록했다.
+복구된 `migrate()`에는 JPG OCR이 측정할 수 없는 장치/검증 컬럼도 들어 있다. 예를 들어 `ID_SCANR_USE_YN='Y'`, 드라이버명 고정값, IR/UV/TR 값, `SELF_YN='Y'`, 난수 `ID_COLOR_SCORE`가 설정된다. 이 값들은 원본 신규 INSERT 경로의 내용이며 현재 KT 저장은 그 INSERT를 사용하지 않는다. 원본 59개 컬럼의 출처는 [`DATABASE_FIELD_AUDIT.md`](DATABASE_FIELD_AUDIT.md)에 기록했다.
 
-**새 JPG 경로는** `device()`, `scan()`, `pSktLibCbnRun.exe`, `T_SCAN_TEMP` SELECT, 네 테이블 INSERT 및 TEMP DELETE를 호출하지 않는다. `myCustomer.db`/`uscan.skt`에 임시행이 있다는 이유로 이를 새 JPG의 OCR 결과로 취급하지 않는다. 기존 `migrate()`는 첨부 원본의 정적 분석 결과로만 남기고, SK는 OCR 검토 객체에서 직접 보고서를 생성한다. 이 경계는 최신 개발 지시에서 확정했다.
+**원본 `skt.exe` 경로**는 `device()`, `scan()`, `pSktLibCbnRun.exe`, `T_SCAN_TEMP` 조회, 네 운영 테이블 INSERT 및 처리 TEMP DELETE를 호출한다. 원본 `T_SCAN_PAPER` 59컬럼 INSERT는 새 문서를 등록하는 경로다. 현재 NEW_WORK의 KT 저장은 새 문서를 만들지 않고, 기존 최신 `T_SCAN_PAPER` 행의 OCR 필드와 코드표 분류 메타데이터를 갱신한다. 함께 새 `TMP_ELEMENT_ID`를 발급해 연결된 resource 키를 갱신하며, 다른 테이블이나 기존 메타데이터는 보존한다. OCR 검토 객체의 `job_id`는 DB ID로 쓰지 않는다. SK는 OCR 검토 객체에서 직접 보고서를 생성한다.
 
 `com_kt`와 `com_sk`의 Python 3.13 메인 모듈 바이트코드를 xdis로 정적 역어셈블해 함수 본문과 분기 순서를 추가 복구했다. 바이너리를 실행한 것은 아니다. 복구한 구체 동작은 아래에 기록한다.
 
@@ -61,11 +61,11 @@
 |---|---|---|
 | `com_kt.fetch_data` | `T_SCAN_PAPER`에서 10개 필드(`RECOG_SUB_CD`, `ID_TYPE`, `CTZ_CORP_NUM`, `CUST_NM`, `ISUE_DT`, `DRV_LICEN_ISUE_NUM`, `ISUE_PLC`, `NATION_CL_CD`, `ADDR`, `MSK_POS`)를 `ORDER BY SCAN_DT DESC LIMIT 1`로 읽음 | 동일 최신행 조회를 복사 DB 안에서 수행 |
 | `com_kt.update_data` | 위 10개 값 전체를 `UPDATE T_SCAN_PAPER ... WHERE SCAN_DT=(SELECT MAX(SCAN_DT)...)`로 갱신. GUI가 바꾸는 값은 이름, 주민번호, 주소, 발급일, 면허번호, 발급기관 6개이고 나머지 4개는 조회 행의 값을 유지. 타임스탬프 최댓값 동률 행은 모두 UPDATE 대상 | 동일 10개 컬럼·최대 SCAN_DT 조건. 운영 원본 보호를 위해 DB 백업본을 갱신해 `myCustomer.db` 생성 |
-| `com_kt.find_latest_image` | 하위 폴더를 포함해 파일을 모으고 basename이 `m.png`, `m.jpg`, `m.jpeg`로 끝나는 파일 중 수정시각 최신 파일 선택. 기본 크롭은 320×420, `RECOG_SUB_CD == '1001'`이면 340×406. 정수 중앙 좌표로 자르고 RGB/JPEG quality 95로 `CR.jpg` 생성 | 동일 검색 필터/mtime/좌표/크기/품질을 작업별 `data` 폴더에서 실행 |
-| `com_kt.save_data` | 원본 이미지를 JPEG quality 100으로 `ORG.jpg`, 앞서 만든 크롭을 quality 100으로 `CR.jpg`에 재인코딩하고 DB 업데이트/백업 경로 진행 | 같은 JPEG 재인코딩 체인. DB 출력은 복사본만 |
+| `com_kt.find_latest_image` | 하위 폴더에서 수정시각 최신 m-suffix 이미지를 찾아 카드 중앙 크롭을 `CR.jpg`로 생성 | 현재 UI에서 선택한 원본을 사용하고 얼굴 사진 영역을 crop해 `CR.jpg`로 저장 |
+| `com_kt.save_data` | 원본을 JPEG quality 100으로 `ORG.jpg`, 카드 중앙 크롭을 JPEG quality 100으로 `CR.jpg`에 재인코딩한 뒤 DB 업데이트 진행 | `ORG.jpg`는 선택 원본, `CR.jpg`는 얼굴 사진 crop으로 저장. 두 파일을 `C:\IMAGE`에 같은 이름으로 덮어씀 |
 | `com_sk.fetch_data` / `save_data` | 위 10개 컬럼 최신행을 조회하고 문서유형 선택에 따라 `(RECOG_SUB_CD, ID_TYPE)`를 거주자 `(1001,R)`, 운전면허 `(1102,D)`, 외국인 `(1401,F)`, 복지 `(1301,S)`, 보훈 `(1302,N)`으로 구성. 외국인은 `NATION_CL_CD='F'`, `MSK_POS=''` 설정 | 문서 유형 선택 컨트롤과 코드값 입력 연결. Windows 원본 대비 검증 필요 |
 | `com_sk.save_report` | `sk_report.txt`에 11개 텍스트 매핑을 순서대로 `quote_plus` 기록. `RECOG_SUB_CD` 뒤에 `recogSubCd` 추가 기록. 뒤에 `base64DATA`; 코드 `1001/1101/1102`이고 크롭이 유효할 때만 `idCrop` 기록 | 조건부 `idCrop`, UTF-8/CRLF 및 키 순서를 구현 |
-| `work_250106.run_program` | SK는 `com_sk.exe` 종료 후 저장경로의 `classes/sk_report.txt`로 복사. KT는 `com_kt.exe` 종료 후 `C:\\work\\myCustomer.db`, `ORG.jpg`, `CR.jpg`를 저장경로의 `IMAGE`로 복사 | SK는 원본 상대경로로 전달. KT는 파일 생성은 이식했으나 현재 JPG와 기존 최신 paper row 관계가 확인되지 않아 공유폴더 전달을 차단하고 로컬 호환성 산출물로만 보관 |
+| `work_250106.run_program` | SK는 `com_sk.exe` 종료 후 저장경로의 `classes/sk_report.txt`로 복사. KT는 `com_kt.exe` 종료 후 `C:\\work\\myCustomer.db`, `ORG.jpg`, `CR.jpg`를 저장경로의 `IMAGE`로 복사 | 현재 요청 범위는 로컬 `C:\\IMAGE`의 DB와 두 이미지 저장이며, 접점 공유 전달 여부는 별도 |
 
 `work_250106` 접점 레코드는 접점명, `SCAN_ID`, `SEND_ORG_ID`, `SCAN_NM`, `IP_ADDR`, `MAC_ADDR`, `ID_SCANR_SER_NUM`, 저장경로를 포함한다. 별도 `modify_file`은 `TMP_ELEMENT_ID IS NOT NULL`인 `T_SCAN_PAPER` 행 전체에서 스캐너/조직 식별 컬럼 6개를 변경한다. 이 글로벌 UPDATE는 개인정보/업무 DB에 미칠 영향 때문에 아직 이식하지 않았다. 원본 접점의 설정 컬럼 입력과 실제 업무 연계를 더 확인할 때까지 공유폴더 및 DB 템플릿 경로만 NEW_WORK 접점 설정에 저장한다.
 
@@ -77,11 +77,11 @@
 
 ## SK 보고서와 KT 출력 형식
 
-이번 교정 지시의 처리 경계를 적용한다. 신규 SK 작업은 OCR 검토값과 JPG만으로 보고서를 만들고 `reader.py`의 최신행/T_SCAN_TEMP SELECT를 호출하지 않는다. KT는 기존 DB의 최신 paper 행 SELECT와 10개 컬럼 UPDATE 문장을 유지하고, 바이트코드에서 확인된 GUI의 6개 텍스트 편집 필드만 OCR 검토값으로 바꾼다. SQL에 포함된 나머지 4개 컬럼은 기존 최신 행에서 가져온다. 최신 행이 현재 JPG의 신원 기록이라는 증거는 없으므로, KT 출력 복사본은 호환성 확인용으로만 만들고 접점 공유폴더로 자동 전달하지 않는다. 작업 복사본의 영향 행 수를 반환·표시하고 원본은 읽기 전용으로 연다.
+현재 KT OCR 저장 버튼은 `com_kt`의 기존행 편집 흐름을 적용한다. 최신 `T_SCAN_PAPER`의 OCR 10개 값과 신분증 유형 코드를 읽어 반영한다. 선택한 코드는 활성 `T_CODE_OCR`와 대조해 `FORM_CODE`, `APPLF_SEQ`, `SDOC_CD`, `DOC_TYP_CD`도 갱신한다. `unique()`로 만든 새 `TMP_ELEMENT_ID`는 paper 행과 연결된 `T_SCAN_RESOURCES` 행에 함께 UPDATE한다. 이미지 Base64 및 나머지 컬럼은 유지한다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX`, `T_SCAN_UNKNOWN`, `T_SCAN_CONF`는 수정하지 않으며 `skt.exe`의 `migrate()`/59컬럼 신규 INSERT 경로도 호출하지 않는다. OCR의 `OcrResult.job_id`는 UUID로 UI 작업을 추적할 뿐, DB `TMP_ELEMENT_ID`가 아니다.
 
 `sk_report.txt`의 13개 필드명은 다음과 같다: `kaitIdType`, `recogSubCd`, `idType`, `ctzCorpNum`, `custNm`, `isueDt`, `drvLicenIsueNum`, `isuePlc`, `nationClCd`, `addr`, `mskPos`, `base64DATA`, `idCrop`. 파일은 한 줄당 `key=value`이며 일부 데이터 값에는 줄바꿈이 포함되지 않았다. 현 샘플에서 `drvLicenIsueNum` 값은 빈 문자열이었다. 두 이미지 필드는 URL 디코딩 뒤 JPEG이며 각각 1008×640 및 340×406 픽셀임을 헤더에서 확인했다. 이 규격을 다른 문서 유형에 일반화하지 않는다.
 
-두 KT 파일의 이미지 Base64는 모두 30,015바이트 JPEG(320×420)로 디코딩되고 바이트가 같다. 파일 간 키 이름이 `image`와 `imageData`로 다르고, 크기 필드는 `imageSize`와 `imageDataSize`로 다르다. 두 파일은 독립 JSON이 아닌 속성 조각이며, `new_work/carrier/kt_payload.py`에서 실제 키와 선언 크기를 검증해 읽는다. 이는 입력 샘플 파서일 뿐, 각 EXE의 출력 연결·`ORG.jpg`/`CR.jpg` 생성이 확인됐다는 뜻은 아니다.
+두 KT 파일의 이미지 Base64는 모두 30,015바이트 JPEG(320×420)로 디코딩되고 바이트가 같다. 파일 간 키 이름이 `image`와 `imageData`로 다르고, 크기 필드는 `imageSize`와 `imageDataSize`로 다르다. 두 파일은 독립 JSON이 아닌 속성 조각이며, `new_work/carrier/kt_payload.py`에서 실제 키와 선언 크기를 검증해 읽는다. 현재 저장 흐름은 이 payload 대신 사용자가 선택한 JPG로 `ORG.jpg`와 얼굴 사진 `CR.jpg`를 만든다.
 
 ## 참고 가능한 OCR 코드
 

@@ -82,7 +82,10 @@ def write_ocr_result(
         if field == "base64DATA":
             value = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
         elif field == "idCrop":
-            cropped = crop_id_portrait_jpeg(result.image_path)
+            cropped = crop_id_portrait_jpeg(
+                result.image_path,
+                recog_sub_cd=selected_code,
+            )
             value = base64.b64encode(cropped).decode("ascii") if cropped else ""
         else:
             value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()

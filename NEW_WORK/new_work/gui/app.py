@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Thread
 from time import perf_counter
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
+from urllib.parse import unquote_plus
 
 from new_work.domain import REVIEW_TEXT_FIELDS, OcrResult, ReviewDraft
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
@@ -15,10 +17,7 @@ from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
-from new_work.carrier.kt_report import (
-    write_kt_images,
-    write_kt_report,
-)
+from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
 
 
 ID_TYPE_LABEL_TO_CODE: dict[str, str] = {}
@@ -59,6 +58,20 @@ FOCUS_GROUP_BY_CODE = {
     "1301": "welfare", "1303": "welfare", "1302": "veteran",
     "1401": "foreigner", "2001": "passport", "2002": "passport",
 }
+# Temporary visual aid for checking the OCR mask coordinates on the source ID.
+MASK_PREVIEW_ENABLED = True
+
+
+def _parse_mask_position(value: str) -> tuple[int, int, int, int] | None:
+    try:
+        left, top, right, bottom = (
+            int(part.strip()) for part in unquote_plus(value).split(",")
+        )
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
 
 
 class NewWorkApp:
@@ -68,6 +81,7 @@ class NewWorkApp:
         self.draft: ReviewDraft | None = None
         self._preview: ImageTk.PhotoImage | None = None
         self._source_image: Image.Image | None = None
+        self._mask_preview_position: str | None = None
         self._entries: dict[str, ttk.Entry] = {}
         self._value_vars: dict[str, tk.StringVar] = {
             field: tk.StringVar(root) for field in REVIEW_TEXT_FIELDS
@@ -206,10 +220,10 @@ class NewWorkApp:
     def _current_values(self) -> dict[str, str]:
         return {field: value.get() for field, value in self._value_vars.items()}
 
-    def _write_selected_portal_report(self, result: OcrResult) -> Path:
+    def _write_selected_portal_report(self, result: OcrResult) -> Path | None:
         values = self._current_values()
         if self.portal_var.get() == "KT":
-            return write_kt_report(result, self._id_type_detection, values=values)
+            return None
         return write_ocr_result(result, self._id_type_detection, values=values)
 
     def _refresh_result_table(self) -> None:
@@ -276,6 +290,22 @@ class NewWorkApp:
         width = max(1, self.image_label.winfo_width() - 8)
         height = max(1, self.image_label.winfo_height() - 8)
         preview = self._source_image.copy()
+        if MASK_PREVIEW_ENABLED and self._mask_preview_position:
+            bounds = _parse_mask_position(self._mask_preview_position)
+            if bounds is not None:
+                left, top, right, bottom = bounds
+                overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay)
+                outline_width = max(2, round(min(preview.size) / 320))
+                draw.rectangle(
+                    (left, top, right - 1, bottom - 1),
+                    fill=(239, 68, 84, 92),
+                    outline=(211, 47, 62, 255),
+                    width=outline_width,
+                )
+                preview = Image.alpha_composite(
+                    preview.convert("RGBA"), overlay
+                ).convert("RGB")
         preview.thumbnail((width, height), Image.Resampling.LANCZOS)
         self._preview = ImageTk.PhotoImage(preview)
         self.image_label.configure(image=self._preview, text="")
@@ -301,6 +331,7 @@ class NewWorkApp:
 
         result = OcrResult.empty(path)
         self.draft = ReviewDraft.from_result(result)
+        self._mask_preview_position = None
         self._id_type_detection = IdTypeDetection(None, None)
         self.id_type_choice.current(0)
         for field in REVIEW_TEXT_FIELDS:
@@ -407,14 +438,18 @@ class NewWorkApp:
                     self.ocr, "recognize_foreigner_reg_number_details", None
                 )
                 details = None
-                # Most cards already have a full-line number box. Reuse it for
-                # masking rather than running another detector on a crop.
-                has_full_line_mask = bool(
-                    result.values.get("mskPos") or detect_mask_position(result.lines)
-                )
-                if callable(details_reader) and not has_full_line_mask:
+                # Foreign registration cards can merge the number, nearby
+                # labels, and gender into one OCR box. Refine them every time.
+                if callable(details_reader):
                     try:
-                        details = details_reader(image_path)
+                        details = details_reader(image_path, result.lines)
+                    except TypeError:
+                        # Keep compatibility with adapters implementing the
+                        # earlier one-argument focused-number interface.
+                        try:
+                            details = details_reader(image_path)
+                        except Exception:
+                            details = None
                     except Exception:
                         details = None
                 if details and details[0]:
@@ -495,8 +530,15 @@ class NewWorkApp:
             self._format_field_display(field)
         self._id_type_detection = detection
         self._apply_detected_id_type(self._id_type_detection)
-        mask_position = result.values.get("mskPos") or detect_mask_position(result.lines)
+        if detection.code == "1401":
+            mask_position = result.values.get("mskPos", "")
+        else:
+            mask_position = (
+                result.values.get("mskPos") or detect_mask_position(result.lines)
+            )
         self._value_vars["mskPos"].set(mask_position or "")
+        self._mask_preview_position = mask_position or None
+        self._resize_source_preview()
         try:
             result_path = self._write_selected_portal_report(result)
         except OSError as exc:
@@ -573,26 +615,36 @@ class NewWorkApp:
             messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
             return
         values = self._current_values()
-        image_paths: tuple[Path, Path] | None = None
+        database_row_id: str | None = None
         try:
             if self.portal_var.get() == "KT":
-                image_paths = write_kt_images(
-                    self.draft.result.image_path, overwrite=True
+                result_path, database_row_id = save_kt_submission(
+                    self.draft.result,
+                    self._id_type_detection,
+                    values,
                 )
-            result_path = self._write_selected_portal_report(self.draft.result)
+            else:
+                result_path = self._write_selected_portal_report(
+                    self.draft.result
+                )
             self.draft.mark_reviewed(values)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, sqlite3.Error) as exc:
             messagebox.showwarning(
-                "결과 파일 저장 실패",
-                f"검토값은 현재 메모리에 반영됐지만 결과 파일 또는 이미지 저장에 실패했습니다: {exc}",
+                "저장 실패",
+                f"검토값은 현재 메모리에 반영됐지만 저장에 실패했습니다: {exc}",
                 parent=self.root,
             )
             result_path = None
         self.review_status.set("저장 완료" if result_path else "저장 실패")
         if result_path:
             saved_message = f"수정한 OCR 결과를 저장했습니다.\n{result_path}"
-            if image_paths:
-                saved_message += f"\n{image_paths[0]}\n{image_paths[1]}"
+            if database_row_id is not None:
+                saved_message += f"\nT_SCAN_PAPER 문서 ID: {database_row_id}"
+                image_directory = default_kt_image_directory()
+                saved_message += (
+                    f"\n원본 이미지: {image_directory / 'ORG.jpg'}"
+                    f"\n얼굴 이미지: {image_directory / 'CR.jpg'}"
+                )
             messagebox.showinfo("저장하기", saved_message, parent=self.root)
 
 def main() -> None:

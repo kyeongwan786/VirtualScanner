@@ -11,7 +11,6 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from new_work.domain import OcrLine, OcrResult
-from new_work.ocr.mask_position import mask_position_from_box
 
 OCR_BUILD_ID = "20261022-name-crop-2"
 
@@ -243,7 +242,7 @@ class PaddleOcrAdapter:
         return number
 
     def recognize_foreigner_reg_number_details(
-        self, image_path: Path
+        self, image_path: Path, source_lines: tuple[OcrLine, ...] = ()
     ) -> tuple[str, str]:
         """Return the foreign registration number and its six-digit mask box."""
         import cv2
@@ -253,19 +252,28 @@ class PaddleOcrAdapter:
         with Image.open(image_path) as source:
             image = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
             height, width = image.shape[:2]
-            # Determine the card layout once and read only that number band.
-            # TextRecognition skips the detector because the crop is already
-            # a single known text row.
-            if _face_on_right(image):
-                crop_left, crop_top, crop_right, crop_bottom = (
-                    int(width * 0.10), int(height * 0.22),
-                    int(width * 0.63), int(height * 0.39),
-                )
+            number_row = _find_registration_number_row(source_lines)
+            if number_row is not None and number_row.box is not None:
+                row_left, row_top, row_right, row_bottom = number_row.box
+                pad_x = max(8, round((row_right - row_left) * 0.045))
+                pad_y = max(12, round((row_bottom - row_top) * 0.32))
+                crop_left = max(0, int(row_left) - pad_x)
+                crop_top = max(0, int(row_top) - pad_y)
+                crop_right = min(width, int(row_right) + pad_x)
+                crop_bottom = min(height, int(row_bottom) + pad_y)
             else:
-                crop_left, crop_top, crop_right, crop_bottom = (
-                    int(width * 0.35), int(height * 0.17),
-                    int(width * 0.78), int(height * 0.30),
-                )
+                # Keep the historical crop only as a recognition fallback;
+                # never use its broad bounds as a mask position.
+                if _face_on_right(image):
+                    crop_left, crop_top, crop_right, crop_bottom = (
+                        int(width * 0.10), int(height * 0.22),
+                        int(width * 0.63), int(height * 0.39),
+                    )
+                else:
+                    crop_left, crop_top, crop_right, crop_bottom = (
+                        int(width * 0.35), int(height * 0.17),
+                        int(width * 0.78), int(height * 0.30),
+                    )
             crop = image[crop_top:crop_bottom, crop_left:crop_right]
             gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
             denoised = cv2.medianBlur(gray, 3)
@@ -293,12 +301,14 @@ class PaddleOcrAdapter:
                     ))
                     continue
                 if number:
-                    # This recognition-only model does not return text boxes.
-                    # The crop bounds approximate the line bounds for mskPos.
-                    position = mask_position_from_box((
-                        float(crop_left), float(crop_top),
-                        float(crop_right), float(crop_bottom),
-                    )) or ""
+                    # TextRecognition has no detector boxes. Use the linked
+                    # full-card number-row detection and refine its bounds to
+                    # the printed glyphs, independent of portrait placement.
+                    position = (
+                        _mask_position_for_number_row(image, number_row)
+                        if number_row is not None
+                        else ""
+                    )
                     return number, position
         return "", ""
 
@@ -438,6 +448,147 @@ def _number_from_focused_lines(lines: list[OcrLine]) -> str:
     if len(joined) == 13 and joined[6] in "5678":
         candidates.add(joined)
     return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _find_registration_number_row(
+    lines: tuple[OcrLine, ...],
+) -> OcrLine | None:
+    """Pair a numeric OCR row with its nearby registration-number label."""
+    candidates: list[tuple[float, OcrLine]] = []
+    labels: list[OcrLine] = []
+    for line in lines:
+        if line.box is None:
+            continue
+        normalized = re.sub(r"\s+", "", line.text).casefold()
+        if any(word in normalized for word in ("등록", "registration", "번의", "번호")):
+            labels.append(line)
+        digits = "".join(char for char in line.text if char.isdigit())
+        if len(digits) < 5:
+            continue
+        left, top, right, bottom = line.box
+        if right - left < (bottom - top) * 2.5:
+            continue
+        candidates.append((len(digits), line))
+
+    if not candidates:
+        return None
+
+    linked: list[tuple[float, OcrLine]] = []
+    for digit_count, candidate in candidates:
+        assert candidate.box is not None
+        left, top, right, bottom = candidate.box
+        for label in labels:
+            assert label.box is not None
+            label_left, label_top, label_right, label_bottom = label.box
+            # A registration label is normally immediately left of the
+            # number and on the same row, even when the card layout changes.
+            horizontal_gap = max(0.0, left - label_right)
+            vertical_gap = max(0.0, top - label_bottom, label_top - bottom)
+            if label_left > left or horizontal_gap > (right - left) * 0.18:
+                continue
+            if vertical_gap > (bottom - top) * 0.45:
+                continue
+            score = digit_count * 10 - horizontal_gap - vertical_gap
+            linked.append((score, candidate))
+
+    if not linked:
+        return None
+    linked.sort(key=lambda item: item[0], reverse=True)
+    if len(linked) > 1 and abs(linked[0][0] - linked[1][0]) < 0.01:
+        return None
+    return linked[0][1]
+
+
+def _mask_position_for_number_row(
+    image_rgb: Any,
+    line: OcrLine,
+) -> str:
+    """Return tight bounds around only the last six registration digits."""
+    if line.box is None:
+        return ""
+    left, top, right, bottom = line.box
+    try:
+        import cv2
+        import numpy as np
+
+        image_height, image_width = image_rgb.shape[:2]
+        x1, x2 = max(0, int(left)), min(image_width, int(right))
+        y1, y2 = max(0, int(top)), min(image_height, int(bottom))
+        if x2 <= x1 or y2 <= y1:
+            return ""
+        gray = cv2.cvtColor(image_rgb[y1:y2, x1:x2], cv2.COLOR_RGB2GRAY)
+        digit_groups = _registration_digit_groups(gray)
+        if digit_groups is None:
+            return ""
+        _, rear = digit_groups
+        target_left = x1 + rear[1][0]
+        target_right = x1 + rear[-1][1]
+        ink = gray < 70
+
+        target_pixels = ink[
+            :, max(0, target_left - x1):max(1, target_right - x1)
+        ]
+        row_counts = target_pixels.sum(axis=1)
+        active_rows = np.flatnonzero(
+            row_counts > max(2, round(target_pixels.shape[1] * 0.07))
+        )
+        if len(active_rows):
+            tight_top = y1 + int(active_rows[0])
+            tight_bottom = y1 + int(active_rows[-1]) + 1
+        else:
+            tight_top, tight_bottom = round(top), round(bottom)
+        return (
+            f"{target_left},{tight_top},{target_right},{tight_bottom}"
+        )
+    except Exception:
+        return ""
+
+
+def _registration_digit_groups(
+    gray: Any,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]] | None:
+    """Find the six front and seven rear digit glyphs from the detected row."""
+    import cv2
+    import numpy as np
+
+    height = gray.shape[0]
+    for threshold in (50, 60, 70, 80):
+        count, _, stats, _ = cv2.connectedComponentsWithStats(
+            np.uint8(gray < threshold), connectivity=8
+        )
+        components: list[tuple[int, int]] = []
+        for x, _, width, char_height, area in stats[1:count]:
+            if (
+                char_height >= round(height * 0.38)
+                and 3 <= width <= round(height * 0.8)
+                and area >= 10
+            ):
+                components.append((int(x), int(x + width)))
+        components.sort()
+
+        groups: list[list[tuple[int, int]]] = []
+        max_character_gap = round(height * 0.62)
+        for component in components:
+            if (
+                groups
+                and component[0] - groups[-1][-1][1] <= max_character_gap
+            ):
+                groups[-1].append(component)
+            else:
+                groups.append([component])
+
+        for group in groups:
+            if len(group) == 13:
+                return group[:6], group[6:]
+
+        matches = [
+            (groups[index - 1], groups[index])
+            for index in range(1, len(groups))
+            if len(groups[index - 1]) == 6 and len(groups[index]) == 7
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def _ocr_model_paths(ocr_version: str) -> dict[str, Path]:

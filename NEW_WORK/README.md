@@ -1,8 +1,8 @@
 # NEW_WORK
 
-통합 GUI와 첨부 원본의 정적 분석·이식 작업 디렉터리다. JPG 입력, 한국어 PaddleOCR 문자 인식, 원문 표시/검토, SK 보고서 생성 및 접점 `classes/sk_report.txt` 전달, KT 최신행 UPDATE 복사본과 `ORG.jpg`/`CR.jpg` 생성 및 접점 `IMAGE/` 전달이 연결돼 있다. SK 보고서는 DB 없이 OCR 검토 객체에서 직접 생성한다. KT 원본 DB는 읽기만 하며 결과는 작업용 `myCustomer.db` 복사본이다. `com_sk`/`com_kt`의 최신 `m.jpg` 선택 규칙과 중앙 크롭 치수, JPEG 품질 흐름을 이식했다. `skt.exe`의 기존 59컬럼 이관은 새 JPG 경로에서 호출하지 않으며 컬럼별 출처는 [`DATABASE_FIELD_AUDIT.md`](DATABASE_FIELD_AUDIT.md)에 기록했다. 원본 EXE와 Windows 동작 비교는 아직 필요하다.
+통합 GUI와 첨부 원본의 정적 분석·이식 작업 디렉터리다. JPG 입력, 한국어 PaddleOCR 문자 인식, 원문 표시/검토, SK 보고서 생성 및 접점 `classes/sk_report.txt` 전달이 연결돼 있다. KT 저장은 최신 기존 `T_SCAN_PAPER` 행을 갱신하고 `unique()` 규칙으로 새 `TMP_ELEMENT_ID`를 만들며, 연결된 `T_SCAN_RESOURCES` 키도 함께 갱신한다. 또한 선택한 원본을 `ORG.jpg`, 얼굴 사진 영역 크롭을 `CR.jpg`로 저장한다. Windows 경로는 `C:\IMAGE\test.db`, `C:\IMAGE\ORG.jpg`, `C:\IMAGE\CR.jpg`; macOS 소스 실행은 프로젝트 내 `IMAGE/` 폴더를 사용한다. TEMP/INDEX/SUBINDEX/PAPER/RESOURCE 신규 행은 만들지 않는다. `report.txt`는 생성하지 않는다. 저장 버튼의 Windows 실제 동작은 아직 현장에서 확인해야 한다.
 
-`skt.exe`의 기존 `T_SCAN_TEMP` SELECT와 인덱스·하위 인덱스·문서·리소스 레코드 생성은 원본 장치 입력 이관용 분석 자료로만 보존하며 새 JPG 경로에서는 실행하지 않는다. JPG/OCR 경로는 물리 스캐너 인증이나 센서 검증을 통과한 것으로 기록하지 않는다. LG 처리는 사용자 지시에 따라 범위에서 제외한다. 기능별 상태는 [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md), 정적 분석 근거는 [`ANALYSIS.md`](ANALYSIS.md)를 참고한다.
+KT 저장은 기존 DB의 최신 `T_SCAN_PAPER` 행을 조회해 OCR 검토값 10개 필드와 `T_CODE_OCR`에서 조회한 문서 분류 메타데이터를 UPDATE하고, 새 `TMP_ELEMENT_ID`를 생성해 해당 `T_SCAN_RESOURCES` 행과 함께 변경한다. OCR `job_id`는 UI 작업 추적용 UUID이며 DB `TMP_ELEMENT_ID`로 쓰지 않는다. `T_SCAN_TEMP`, `T_SCAN_INDEX`, `T_SCAN_SUBINDEX` 및 `T_SCAN_PAPER_TEST`는 건드리지 않는다. 문서 종류·유형·국적 코드는 선택된 문서 유형 코드에 맞춰 반영한다. LG 처리는 사용자 지시에 따라 범위에서 제외한다. 기능별 상태는 [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md), 정적 분석 근거는 [`ANALYSIS.md`](ANALYSIS.md)를 참고한다.
 
 ## 개발 실행
 
@@ -22,9 +22,9 @@ JPG 한 장을 프로그램 창 위에 끌어다 놓으면 이미지가 표시�
 
 모델 파일은 `ocr_models/`에 포함되며 Windows EXE 안에 함께 패키징된다. VM에서 OCR 모델을 내려받기 위한 인터넷 연결은 필요하지 않다. Mac과 Windows는 같은 가중치와 파이프라인 설정을 사용하지만, CPU 네이티브 연산과 운영체제 차이에 따른 인식 결과는 Windows에서 확인해야 한다.
 
-인식 결과는 선택한 신분증 종류에 맞는 입력칸에 표시된다. 사용자는 원본 사진과 대조해 값을 수정할 수 있으며, 업무 필드는 사람이 확인해야 한다. OCR은 센서/진위 검증 값을 생성하지 않는다.
+인식 결과는 선택한 신분증 종류에 맞는 입력칸에 표시된다. 사용자는 원본 사진과 대조해 값을 수정할 수 있으며, 업무 필드는 사람이 확인해야 한다. KT DB에는 원본 호환을 위해 일부 스캐너/검증 플래그 상수를 기록하지만, 이 프로그램이 해당 센서 측정을 수행하는 것은 아니다.
 
-SK 포탈은 기존대로 UTF-8 `sk_report.txt`를 저장한다. Windows 위치는 `C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt`이고, macOS 소스 실행은 프로젝트 폴더다. KT 포탈은 같은 폴더의 `report.txt`를 그대로 덮어쓰며, Windows에서는 원본 JPG와 얼굴 크롭 JPG도 `C:\IMAGE\ORG.jpg`, `C:\IMAGE\CR.jpg`라는 고정 이름으로 덮어쓴다. macOS 소스 실행은 프로젝트의 `IMAGE/` 폴더를 사용한다. KT 보고서는 `address`, `agencyIssued`, `base64corbImg`, `blackMarkPos`, `cdNm`, `dateIssued`, `documentType`, `idCardTypeName`, `idCardType`, `idType`, `idTypeNm`, `juminNum`, `passportNum`, `elementId`, `name` 순서의 `key=value` 줄을 쓴다. `idCardType`은 주민등록증 `1001`, 운전면허증 `1102`, 복지카드 `1301`, 유공자증 `1302`, 외국인등록증 `1401`, 여권 `2001`로 기록한다. KT 문자열은 UTF-8 `quote_plus`로 인코딩하고, `base64corbImg`는 얼굴 검출 기반 사진 크롭 JPEG의 Base64를 URL 인코딩해 기록한다. `blackMarkPos`는 OCR로 계산한 주민번호 뒷자리 6개의 마스킹 위치(`mskPos`)를 인코딩한다. `documentType=A0002`, `cdNm=신분증k`는 고정값이다. `elementId`는 로컬 현재 시각의 `YYYYMMDDHHMMSS`다. 유형별 KT `idType` 등 문자열 매핑은 `kt_report.py`를 따른다. SK와 KT 결과 파일 및 이미지에는 개인정보가 포함될 수 있으므로 공유하지 않는다.
+SK 포탈은 기존대로 UTF-8 `sk_report.txt`를 저장한다. Windows 위치는 `C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt`이고, macOS 소스 실행은 프로젝트 폴더다. KT 저장은 `report.txt`는 만들지 않는다. Windows에서는 `C:\IMAGE\test.db`, `C:\IMAGE\ORG.jpg`, `C:\IMAGE\CR.jpg`에 저장한다. DB는 최신 `T_SCAN_PAPER` 행의 OCR 10개 컬럼, 선택 신분증 코드의 `T_CODE_OCR` 분류 메타데이터, 새 `TMP_ELEMENT_ID`를 UPDATE하며, 기존 `T_SCAN_RESOURCES` 키도 함께 바꾼다. 원본 이미지는 `ORG.jpg`, 얼굴 사진 영역 크롭은 `CR.jpg`로 같은 이름에 덮어쓴다. 새 문서 행이나 Base64 리소스는 INSERT하지 않으며, 기존 paper/resource 행이나 얼굴 사진 crop을 만들 수 없으면 저장을 중단한다. `test.db`에는 개인정보가 포함될 수 있으므로 공유하지 않는다.
 
 화면에서는 주민등록번호/외국인등록번호에 하이픈을, 발급일자에 점을 표시한다. SK 파일에는 `ctzCorpNum`, `isueDt`, `drvLicenIsueNum`의 숫자만 저장하고, `isueDt`는 `YYYYMMDD`로 기록한다. OCR 문자에서 주민번호·이름·발급일·발급처·주소·운전면허번호를 규칙으로 찾아 검토 입력칸에 미리 채운다. 확실하게 하나로 찾지 못한 값은 비워 두므로 사람이 OCR 원문을 확인해야 한다. `mskPos`는 하드코딩하지 않는다. 주민등록증은 OCR이 13자리 번호와 줄 좌표를 하나만 찾으면, 외국인등록증은 번호 칸을 확대 OCR해 얻은 13자리 번호 상자 좌표를 원본 JPG 좌표로 환산해, 뒷자리 첫 숫자를 제외한 6자리 영역의 좌표 4개를 쉼표로 기록한다. 이 좌표 추정과 필드 규칙은 합성 테스트만 통과했으며 실제 신분증 이미지에서 대조해야 한다. OCR 분류 결과 예: 주민등록증 `1001/R`, 운전면허증 `1102/D`, 복지카드 `1301/S`, 외국인등록증 `1401/F`. 운전면허번호는 12자리 형식으로 추출하며 OCR이 번호를 여러 줄로 나눈 경우 주변에 면허번호 표기가 있을 때만 이어 붙인다. 외국인등록증으로 판별되면 영문 OCR 결과를 한국어 OCR 결과와 합친다. 문서 분류는 이미지 문구를 바탕으로 한 추정이며 신분증 진위 확인이 아니다.
 
