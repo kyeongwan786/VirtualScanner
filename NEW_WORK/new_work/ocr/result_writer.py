@@ -27,7 +27,7 @@ RESULT_FIELD_ORDER = (
     "base64DATA",
     "idCrop",
 )
-URL_ENCODED_FIELDS = frozenset(("custNm", *RESULT_FIELD_ORDER[7:]))
+URL_ENCODED_FIELDS = frozenset(("custNm", *RESULT_FIELD_ORDER[7:], "wlfNum"))
 
 
 def execution_directory() -> Path:
@@ -63,6 +63,9 @@ def write_ocr_result(
         "ctzCorpNum": "".join(
             char for char in provided.get("ctzCorpNum", "") if char.isdecimal()
         ),
+        "wlfNum": "".join(
+            char for char in provided.get("veteranNum", "") if char.isdecimal()
+        ),
         "custNm": provided.get("custNm", ""),
         "isueDt": "".join(
             char for char in provided.get("isueDt", "") if char.isdecimal()
@@ -78,7 +81,10 @@ def write_ocr_result(
     }
 
     output_lines: list[str] = []
-    for field in RESULT_FIELD_ORDER:
+    field_order = list(RESULT_FIELD_ORDER)
+    if selected_code == "1302":
+        field_order.insert(field_order.index("ctzCorpNum"), "wlfNum")
+    for field in field_order:
         if field == "base64DATA":
             value = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
         elif field == "idCrop":
@@ -87,6 +93,8 @@ def write_ocr_result(
                 recog_sub_cd=selected_code,
             )
             value = base64.b64encode(cropped).decode("ascii") if cropped else ""
+        elif field == "wlfNum":
+            value = output_values[field]
         else:
             value = str(output_values[field]).replace("\r", " ").replace("\n", " ").strip()
         if field == "drvLicenIsueNum" and not value:

@@ -56,12 +56,15 @@ def update_kt_database_copy(
     source_database: Path,
     output_database: Path,
     reviewed_values: dict[str, str],
+    *,
+    id_type_code: str | None = None,
 ) -> tuple[Path, int]:
     """Apply the recovered com_kt latest-SCAN_DT UPDATE to a disposable copy.
 
     The supplied source database is only read/copied. The UPDATE predicate and
-    ten fields match the recovered source strings. If SCAN_DT is tied, SQLite
-    updates all rows sharing the maximum timestamp, matching the original SQL.
+    recovered OCR fields. WLF_NUM is additionally updated for veteran cards
+    when explicitly identified; all other existing values remain untouched.
+    If SCAN_DT is tied, SQLite updates all rows sharing the maximum timestamp.
     """
     source = Path(source_database).expanduser().resolve(strict=True)
     output = Path(output_database).expanduser()
@@ -101,6 +104,11 @@ def update_kt_database_copy(
             values_by_field = dict(zip(KT_DB_FIELDS, selected))
             for field, review_key in KT_REVIEW_TO_DB.items():
                 values_by_field[field] = reviewed_values[review_key].strip()
+            if id_type_code == "1302":
+                values_by_field["WLF_NUM"] = "".join(
+                    char for char in reviewed_values.get("veteranNum", "")
+                    if char.isdecimal()
+                )
             values = [values_by_field[field] for field in KT_DB_FIELDS]
             cursor = connection.execute(sql, values)
             count = cursor.rowcount
@@ -267,6 +275,8 @@ def save_kt_submission(
         reviewed["ID_TYPE"] = KT_ID_TYPE_CODES[id_code]
         for field, value in zip(KT_OCR_METADATA_FIELDS, type_metadata):
             reviewed[field] = value
+        if id_code == "1302":
+            reviewed["WLF_NUM"] = digits(provided.get("veteranNum", ""))
 
         if "ctzCorpNum" in provided:
             number = clean(provided["ctzCorpNum"])

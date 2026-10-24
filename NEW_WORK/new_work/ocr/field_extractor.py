@@ -38,6 +38,7 @@ _KOREAN_NAME = re.compile(rf"[{_HANGUL}]{{2,4}}")
 _KOREAN_NAME_LABEL = re.compile(
     rf"(?:\uc131\s*\uba85|\uc774\s*\ub984)\s*[:：]?\s*([{_HANGUL}]{{2,4}})"
 )
+_KOREAN_NAME_LABEL_ONLY = re.compile(r"\uc131\s*\uba85|\uc774\s*\ub984")
 _ISSUER = re.compile(
     r"(?:\uc2dc\uc7a5|\uad70\uc218|\uad6c\uccad\uc7a5|\uad70\uccad\uc7a5|"
     r"\uad6c\uccad|\uad70\uccad|\uc9c0\uccad\uc7a5|\uc18c\uc7a5|\uba74\uc7a5|"
@@ -176,6 +177,10 @@ def extract_identity_fields(
     if is_foreigner_card:
         values["addr"] = _extract_labeled_address(lines) or values["addr"]
         values["custNm"] = _extract_foreigner_name(lines)
+    elif id_type_code == "1302" or any(
+        _VETERAN_NUMBER_LABEL.search(line.text) for line in lines
+    ):
+        values["custNm"] = _extract_veteran_name(lines)
     if not values["custNm"] and values["drvLicenIsueNum"]:
         values["custNm"] = _extract_driver_license_name(lines, license_numbers)
     if not values["custNm"]:
@@ -595,6 +600,79 @@ def _extract_korean_name(lines: tuple[OcrLine, ...], number_line: OcrLine | None
     if not candidates or len({item[1] for item in candidates}) != 1:
         return ""
     return candidates[0][1]
+
+
+def _extract_veteran_name(lines: tuple[OcrLine, ...]) -> str:
+    """Extract 국가유공자증 names from inline or split 성명/이름 OCR boxes."""
+    labeled = {
+        match.group(1)
+        for line in lines
+        for match in _KOREAN_NAME_LABEL.finditer(line.text)
+    }
+    if len(labeled) == 1:
+        return next(iter(labeled))
+    if len(labeled) > 1:
+        return ""
+
+    candidates: set[str] = set()
+    for label_line in lines:
+        label = _KOREAN_NAME_LABEL_ONLY.search(label_line.text)
+        if label is None:
+            continue
+        label_box = label_line.box
+        label_height = (
+            max(1.0, label_box[3] - label_box[1]) if label_box else None
+        )
+        nearby: list[tuple[float, str]] = []
+        for value_line in lines:
+            if value_line is label_line:
+                continue
+            value = _standalone_korean_name(value_line.text)
+            if not value:
+                continue
+            if label_box is None or value_line.box is None:
+                # Geometry-less OCR output is accepted only for the immediate
+                # next recognized line, avoiding unrelated card text.
+                try:
+                    distance = lines.index(value_line) - lines.index(label_line)
+                except ValueError:
+                    continue
+                if distance == 1:
+                    nearby.append((float(distance), value))
+                continue
+
+            left, top, right, bottom = label_box
+            value_left, value_top, value_right, value_bottom = value_line.box
+            value_height = max(1.0, value_bottom - value_top)
+            height = max(label_height or 1.0, value_height)
+            vertical_gap = max(value_top - bottom, top - value_bottom, 0.0)
+            same_row = (
+                abs((value_top + value_bottom - top - bottom) / 2) <= height * 0.7
+                and value_left >= left - height * 0.3
+                and value_left - right <= height * 12
+            )
+            next_row = 0 <= value_top - bottom <= height * 2.5
+            if same_row or next_row:
+                nearby.append((vertical_gap + abs(value_left - right) * 0.01, value))
+        if nearby:
+            nearest_distance = min(distance for distance, _ in nearby)
+            nearest = {
+                value for distance, value in nearby
+                if abs(distance - nearest_distance) <= 1.0
+            }
+            candidates.update(nearest)
+
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _standalone_korean_name(text: str) -> str:
+    candidate = text.strip().strip(" :：·•-—")
+    match = _KOREAN_NAME.fullmatch(candidate)
+    if match is None or _FIELD_STOP.search(candidate):
+        return ""
+    if _ISSUER.search(_strip_issue_date(candidate)) or _DATE.search(candidate):
+        return ""
+    return candidate
 
 
 def _extract_address(lines: tuple[OcrLine, ...]) -> str:

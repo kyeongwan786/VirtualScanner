@@ -16,6 +16,7 @@ KT_PAPER_FIELDS = (
     "NATION_CL_CD",
     "ADDR",
     "MSK_POS",
+    "WLF_NUM",
 )
 
 
@@ -34,7 +35,7 @@ def connect_read_only(database_path: Path) -> sqlite3.Connection:
 
 
 def fetch_latest_kt_data(database_path: Path) -> dict[str, Any] | None:
-    """Port com_kt.fetch_data: its ten fields from the global latest paper row."""
+    """Read KT OCR fields from the global latest paper row."""
     fields = ", ".join(KT_PAPER_FIELDS)
     with connect_read_only(database_path) as connection:
         row = connection.execute(

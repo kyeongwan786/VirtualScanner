@@ -789,6 +789,8 @@ class NewWorkApp:
             extracted = extract_identity_fields(
                 self.draft.result.lines, id_type_code=code
             )
+            if extracted.get("custNm") and not self._value_vars["custNm"].get().strip():
+                self._value_vars["custNm"].set(extracted["custNm"])
             for field in ("ctzCorpNum", "veteranNum"):
                 if extracted.get(field):
                     self._value_vars[field].set(extracted[field])

@@ -19,6 +19,13 @@ SK_REPORT_TEXT_KEYS = (
     "mskPos",
 )
 SK_REPORT_KEYS = (*SK_REPORT_TEXT_KEYS, "base64DATA", "idCrop")
+SK_VETERAN_REPORT_KEYS = (
+    *SK_REPORT_TEXT_KEYS[:3],
+    "wlfNum",
+    *SK_REPORT_TEXT_KEYS[3:],
+    "base64DATA",
+    "idCrop",
+)
 
 
 class SkReportInputError(ValueError):
@@ -52,14 +59,17 @@ def render_sk_report(
         values[field] = "".join(
             char for char in values[field] if char.isdecimal()
         )
+    values["wlfNum"] = "".join(
+        char for char in fields.get("veteranNum", "") if char.isdecimal()
+    )
     values["drvLicenIsueNum"] = "".join(
         char for char in values["drvLicenIsueNum"] if char.isdecimal()
     )
     values["base64DATA"] = base64.b64encode(full_image_jpeg).decode("ascii")
-    lines = [
-        f"{key}={quote_plus(values[key])}"
-        for key in SK_REPORT_TEXT_KEYS
-    ]
+    text_keys = list(SK_REPORT_TEXT_KEYS)
+    if fields["kaitIdType"] == "1302":
+        text_keys.insert(3, "wlfNum")
+    lines = [f"{key}={quote_plus(values[key])}" for key in text_keys]
     # Source includes idCrop only for resident/driver report codes, and only
     # when the crop file exists and can be encoded.
     if fields["kaitIdType"] in {"1001", "1101", "1102"} and id_crop_jpeg:
