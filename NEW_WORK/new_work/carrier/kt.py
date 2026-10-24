@@ -332,5 +332,20 @@ def save_kt_submission(
         )
         if cursor.rowcount != 1:
             raise ValueError("기존 T_SCAN_PAPER OCR 결과 업데이트에 실패했습니다.")
+        saved_address = connection.execute(
+            "SELECT ADDR FROM T_SCAN_PAPER WHERE TMP_ELEMENT_ID = ?",
+            (new_element_id,),
+        ).fetchone()
+        expected_address = reviewed["ADDR"]
+        actual_address = (
+            ""
+            if saved_address is None or saved_address[0] is None
+            else str(saved_address[0])
+        )
+        if actual_address != expected_address:
+            raise ValueError(
+                "T_SCAN_PAPER.ADDR 저장값이 입력한 주소와 다릅니다. "
+                "대상 DB나 DB 트리거를 확인하세요."
+            )
         connection.commit()
     return target, new_element_id
