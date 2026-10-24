@@ -30,8 +30,9 @@ OCR을 눌러 콘솔에 출력되는 실제 오류를 확인할 수 있습니다
 dist\new_work\new_work.exe를 실행합니다. PP-OCRv5 모델은 빌드 폴더에 포함되어 있어
 VM에서 모델 다운로드 연결이 필요하지 않습니다. SK를 선택하면
 OCR 결과는 C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt에 저장되며 기존 파일을
-같은 파일명으로 덮어씁니다. KT를 선택하면 같은 폴더의 report.txt를 덮어쓰고,
-C:\IMAGE\ORG.jpg와 C:\IMAGE\CR.jpg도 고정 파일명으로 덮어씁니다. 번호는 화면에서
+같은 파일명으로 덮어씁니다. 주소 키는 SK 규격인 `addr`입니다. KT를 선택하면
+C:\IMAGE\myCustomer.db의 기존 T_SCAN_PAPER 행을 갱신하고 C:\IMAGE\ORG.jpg와
+C:\IMAGE\CR.jpg를 고정 파일명으로 덮어씁니다. KT DB의 주소 컬럼은 `ADDR`입니다. 번호는 화면에서
 하이픈을 사용해 보여 주지만 SK 보고서에는 숫자만 저장합니다. 발급일자는 화면에 점을
 표시하고 SK 보고서에는 8자리 숫자로 저장합니다. 보고서와 이미지는 개인정보가 포함될
 수 있으므로 공유하지 마세요.
