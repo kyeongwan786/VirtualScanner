@@ -1,8 +1,10 @@
 import hashlib
+from io import BytesIO
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -112,13 +114,25 @@ class KtWorkflowTests(unittest.TestCase):
                 ).fetchall()
             self.assertEqual(rows, [("reviewed-custNm",), ("reviewed-custNm",)])
 
-    def test_kt_images_use_original_center_crop_and_jpeg_outputs(self):
+    def test_kt_images_write_the_required_jpegs_and_fixed_crop_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.jpg"
             Image.new("RGB", (500, 600), "white").save(source, format="JPEG")
+            crop = BytesIO()
+            Image.new("RGB", (340, 406), "blue").save(crop, format="JPEG")
 
-            original_output, crop_output = create_kt_images(source, root / "job", "1001")
+            with patch(
+                "new_work.carrier.kt.crop_id_portrait_jpeg",
+                return_value=crop.getvalue(),
+            ) as cropper:
+                original_output, crop_output = create_kt_images(
+                    source, root / "job", "1001"
+                )
+
+            cropper.assert_called_once_with(
+                source.resolve(), recog_sub_cd="1001", require_face=True
+            )
 
             self.assertEqual(original_output.name, "ORG.jpg")
             self.assertEqual(crop_output.name, "CR.jpg")

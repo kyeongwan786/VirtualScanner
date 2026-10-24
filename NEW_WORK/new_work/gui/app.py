@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Thread
 from time import perf_counter
@@ -80,6 +81,7 @@ class NewWorkApp:
         self.ocr = ocr or PaddleOcrAdapter()
         self.draft: ReviewDraft | None = None
         self._preview: ImageTk.PhotoImage | None = None
+        self._preview_base: Image.Image | None = None
         self._source_image: Image.Image | None = None
         self._mask_preview_position: str | None = None
         self._entries: dict[str, ttk.Entry] = {}
@@ -89,28 +91,72 @@ class NewWorkApp:
         self._id_type_var = tk.StringVar(root, value="유형 선택…")
         self.portal_var = tk.StringVar(root, value="SK")
         self._preview_resize_job: str | None = None
+        self._scan_animation_job: str | None = None
+        self._scan_y = 0
+        self._scan_direction = 1
+        self._scan_active = False
+        self._scan_image_path: Path | None = None
         self._id_type_detection = IdTypeDetection(None, None)
+        self._ocr_warmup_finished = not isinstance(self.ocr, PaddleOcrAdapter)
+        self._ocr_models_ready = self._ocr_warmup_finished
+        self._pending_ocr_path: Path | None = None
         root.title("신분증 확인")
         root.geometry("560x700")
         root.resizable(False, False)
         self._build()
         if isinstance(self.ocr, PaddleOcrAdapter):
-            self.ocr_status.set("OCR 모델 준비 중 · 백그라운드에서 불러오는 중")
-            Thread(target=self._warmup_ocr, daemon=True).start()
+            self.root.after_idle(self._begin_ocr_warmup)
+
+    def _begin_ocr_warmup(self) -> None:
+        self.ocr_status.set("OCR 모델 준비 중 · 백그라운드에서 불러오는 중")
+        self._show_ocr_loading()
+        Thread(target=self._warmup_ocr, daemon=True).start()
+
+    def _show_ocr_loading(self) -> None:
+        overlay = self._loading_overlay
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+    def _hide_ocr_loading(self) -> None:
+        if self._loading_overlay is not None:
+            self._loading_overlay.destroy()
+            self._loading_overlay = None
+        # Removing a full-window child can leave stale pixels on Tk/Aqua until
+        # the pointer crosses them. Flush geometry and redraw work immediately.
+        self.root.update_idletasks()
 
     def _warmup_ocr(self) -> None:
         try:
             self.ocr.warmup()
         except Exception as exc:
             self.root.after(
-                0, self.ocr_status.set,
-                f"OCR 모델 준비 실패 · OCR 실행 시 오류 상세를 표시합니다: {exc}",
+                0, self._ocr_warmup_failed, str(exc),
             )
             return
-        self.root.after(
-            0, self.ocr_status.set,
-            f"OCR 준비됨 · {self.ocr.status}",
-        )
+        self.root.after(0, self._ocr_warmup_succeeded)
+
+    def _ocr_warmup_succeeded(self) -> None:
+        self._ocr_warmup_finished = True
+        self._ocr_models_ready = True
+        self._hide_ocr_loading()
+        self.ocr_button.configure(state="normal")
+        self.ocr_status.set(f"OCR 준비됨 · {self.ocr.status}")
+        pending_path = self._pending_ocr_path
+        self._pending_ocr_path = None
+        if (
+            pending_path is not None
+            and self.draft is not None
+            and self.draft.result.image_path == pending_path
+        ):
+            self._start_ocr(pending_path)
+
+    def _ocr_warmup_failed(self, error: str) -> None:
+        self._ocr_warmup_finished = True
+        self._ocr_models_ready = False
+        self._hide_ocr_loading()
+        self.ocr_button.configure(state="normal")
+        self.ocr_status.set(f"OCR 모델 준비 실패 · 다시 실행하면 재시도합니다: {error}")
+        self._pending_ocr_path = None
 
     def _build(self) -> None:
         self._setup_style()
@@ -153,6 +199,16 @@ class NewWorkApp:
 
         self.review_status = tk.StringVar(value="")
         self.ocr_status = tk.StringVar(value=f"OCR 준비됨 · {self.ocr.status}")
+        self._loading_overlay = tk.Frame(self.root, background="#E9EDF3")
+        tk.Label(
+            self._loading_overlay,
+            text="ㄱㄷ",
+            background="#E9EDF3",
+            foreground="#1D2939",
+            font=("궁서", 72),
+            borderwidth=0,
+            highlightthickness=0,
+        ).place(relx=0.5, rely=0.5, anchor="center")
         preview_area = tk.Frame(shell, background="#FFFFFF", borderwidth=0)
         preview_area.grid(row=3, column=0, sticky="nsew")
         preview_area.rowconfigure(0, weight=1)
@@ -307,8 +363,86 @@ class NewWorkApp:
                     preview.convert("RGBA"), overlay
                 ).convert("RGB")
         preview.thumbnail((width, height), Image.Resampling.LANCZOS)
-        self._preview = ImageTk.PhotoImage(preview)
+        self._preview_base = preview
+        if self._scan_active:
+            self._render_scan_frame()
+        else:
+            self._display_preview(preview)
+
+    def _display_preview(self, preview: Image.Image) -> None:
+        self._preview = ImageTk.PhotoImage(preview, master=self.root)
         self.image_label.configure(image=self._preview, text="")
+
+    def _start_scan_animation(self, image_path: Path) -> None:
+        self._stop_scan_animation(restore=False)
+        if self._preview_base is None:
+            self._resize_source_preview()
+        if self._preview_base is None or self._preview_base.height < 2:
+            return
+        self._scan_active = True
+        self._scan_image_path = image_path
+        self._scan_y = 0
+        self._scan_direction = 1
+        self._animate_scanline()
+
+    def _animate_scanline(self) -> None:
+        self._scan_animation_job = None
+        if not self._scan_active or self._preview_base is None:
+            return
+        self._render_scan_frame()
+        step = max(2, self._preview_base.height // 52)
+        self._scan_y += self._scan_direction * step
+        max_y = self._preview_base.height - 1
+        if self._scan_y >= max_y:
+            self._scan_y = max_y
+            self._scan_direction = -1
+        elif self._scan_y <= 0:
+            self._scan_y = 0
+            self._scan_direction = 1
+        self._scan_animation_job = self.root.after(28, self._animate_scanline)
+
+    def _render_scan_frame(self) -> None:
+        base = self._preview_base
+        if base is None:
+            return
+        height = base.height
+        y = min(max(self._scan_y, 0), height - 1)
+        glow = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(glow)
+        # Subtle warm glow fades on both sides of a thicker, bright center beam.
+        for offset, alpha in ((10, 10), (8, 16), (6, 24), (4, 34), (2, 48)):
+            for band_y in {y - offset, y + offset}:
+                if 0 <= band_y < height:
+                    draw.line(
+                        (0, band_y, base.width, band_y),
+                        fill=(255, 76, 116, alpha),
+                        width=1,
+                    )
+        draw.line(
+            (0, max(0, y - 1), base.width, max(0, y - 1)),
+            fill=(255, 118, 145, 115), width=3,
+        )
+        draw.line(
+            (0, y, base.width, y), fill=(255, 224, 229, 245), width=2
+        )
+        frame = Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
+        self._display_preview(frame)
+
+    def _stop_scan_animation(
+        self, image_path: Path | None = None, *, restore: bool = True
+    ) -> None:
+        if image_path is not None and image_path != self._scan_image_path:
+            return
+        self._scan_active = False
+        self._scan_image_path = None
+        if self._scan_animation_job is not None:
+            try:
+                self.root.after_cancel(self._scan_animation_job)
+            except tk.TclError:
+                pass
+            self._scan_animation_job = None
+        if restore and self._preview_base is not None:
+            self._display_preview(self._preview_base)
 
     def choose_image(self) -> bool:
         selected = filedialog.askopenfilename(
@@ -320,6 +454,7 @@ class NewWorkApp:
         return self._load_image(Path(selected))
 
     def _load_image(self, path: Path) -> bool:
+        self._stop_scan_animation(restore=False)
         try:
             with Image.open(path) as image:
                 image.verify()
@@ -372,8 +507,19 @@ class NewWorkApp:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
         image_path = self.draft.result.image_path
+        if not self._ocr_warmup_finished:
+            self._pending_ocr_path = image_path
+            self.review_status.set("OCR 모델 준비 중 · 준비되면 바로 실행합니다.")
+            return
+        self._start_ocr(image_path)
+
+    def _start_ocr(self, image_path: Path) -> None:
         self.ocr_button.configure(state="disabled")
-        self.review_status.set("PaddleOCR 실행 중… 최초 실행은 모델 준비에 시간이 걸릴 수 있습니다.")
+        self._start_scan_animation(image_path)
+        if self._ocr_models_ready:
+            self.review_status.set("OCR 실행 중…")
+        else:
+            self.review_status.set("OCR 모델 준비를 다시 시도하는 중…")
         Thread(target=self._recognize_in_background, args=(image_path,), daemon=True).start()
 
     def _recognize_in_background(self, image_path: Path) -> None:
@@ -401,26 +547,63 @@ class NewWorkApp:
                         detection = detect_id_type(result.lines)
             if detection.code == "1401":
                 english_reader = getattr(self.ocr, "recognize_english", None)
+                details_reader = getattr(
+                    self.ocr, "recognize_foreigner_reg_number_details", None
+                )
+                source_lines = result.lines
                 english_lines = ()
                 english_engine_used = False
                 english_error = ""
-                if callable(english_reader):
-                    try:
-                        english_lines = english_reader(image_path)
-                    except Exception as exc:
-                        english_lines = ()
-                        english_error = str(exc)
-                    if english_lines:
-                        english_engine_used = True
-                        result = OcrResult(
-                            job_id=result.job_id,
-                            image_path=result.image_path,
-                            values=result.values,
-                            lines=tuple((*result.lines, *english_lines)),
-                            engine_name=f"{result.engine_name} + English",
-                            engine_version=result.engine_version,
-                            elapsed_seconds=result.elapsed_seconds,
+                details = None
+                if (
+                    isinstance(self.ocr, PaddleOcrAdapter)
+                    and callable(english_reader)
+                    and callable(details_reader)
+                ):
+                    # These run on separate, preloaded recognition models.
+                    # Overlap them after the shared Korean full-card pass.
+                    with ThreadPoolExecutor(max_workers=2) as workers:
+                        english_future = workers.submit(english_reader, image_path)
+                        details_future = workers.submit(
+                            details_reader, image_path, source_lines
                         )
+                        try:
+                            english_lines = english_future.result()
+                        except Exception as exc:
+                            english_error = str(exc)
+                        try:
+                            details = details_future.result()
+                        except Exception:
+                            details = None
+                else:
+                    if callable(english_reader):
+                        try:
+                            english_lines = english_reader(image_path)
+                        except Exception as exc:
+                            english_error = str(exc)
+                    if callable(details_reader):
+                        try:
+                            details = details_reader(image_path, result.lines)
+                        except TypeError:
+                            # Keep compatibility with adapters implementing the
+                            # earlier one-argument focused-number interface.
+                            try:
+                                details = details_reader(image_path)
+                            except Exception:
+                                details = None
+                        except Exception:
+                            details = None
+                if english_lines:
+                    english_engine_used = True
+                    result = OcrResult(
+                        job_id=result.job_id,
+                        image_path=result.image_path,
+                        values=result.values,
+                        lines=tuple((*source_lines, *english_lines)),
+                        engine_name=f"{result.engine_name} + English",
+                        engine_version=result.engine_version,
+                        elapsed_seconds=result.elapsed_seconds,
+                    )
                 if callable(english_reader) and not english_engine_used:
                     result = OcrResult(
                         job_id=result.job_id,
@@ -434,24 +617,6 @@ class NewWorkApp:
                         engine_version=result.engine_version,
                         elapsed_seconds=result.elapsed_seconds,
                     )
-                details_reader = getattr(
-                    self.ocr, "recognize_foreigner_reg_number_details", None
-                )
-                details = None
-                # Foreign registration cards can merge the number, nearby
-                # labels, and gender into one OCR box. Refine them every time.
-                if callable(details_reader):
-                    try:
-                        details = details_reader(image_path, result.lines)
-                    except TypeError:
-                        # Keep compatibility with adapters implementing the
-                        # earlier one-argument focused-number interface.
-                        try:
-                            details = details_reader(image_path)
-                        except Exception:
-                            details = None
-                    except Exception:
-                        details = None
                 if details and details[0]:
                     values = {**result.values, "ctzCorpNum": details[0]}
                     if details[1]:
@@ -482,8 +647,28 @@ class NewWorkApp:
                             engine_version=result.engine_version,
                             elapsed_seconds=result.elapsed_seconds,
                         )
+            # Issuing authorities are printed in a small lower-card row and
+            # are often missed by full-card OCR. Keep this focused result out
+            # of `lines` so it cannot change name, number, date, or address.
+            if not extract_identity_fields(result.lines).get("isuePlc"):
+                issuer_reader = getattr(self.ocr, "recognize_issuer", None)
+                if callable(issuer_reader):
+                    try:
+                        issuer = issuer_reader(image_path, detection.code)
+                    except Exception:
+                        issuer = ""
+                    if issuer:
+                        result = OcrResult(
+                            job_id=result.job_id,
+                            image_path=result.image_path,
+                            values={**result.values, "isuePlc": issuer},
+                            lines=result.lines,
+                            engine_name=result.engine_name,
+                            engine_version=result.engine_version,
+                            elapsed_seconds=result.elapsed_seconds,
+                        )
         except Exception as exc:
-            self.root.after(0, self._ocr_failed, exc)
+            self.root.after(0, self._ocr_failed, image_path, exc)
             return
         result = OcrResult(
             job_id=result.job_id,
@@ -496,7 +681,8 @@ class NewWorkApp:
         )
         self.root.after(0, self._ocr_succeeded, image_path, result)
 
-    def _ocr_failed(self, error: Exception) -> None:
+    def _ocr_failed(self, image_path: Path, error: Exception) -> None:
+        self._stop_scan_animation(image_path)
         self.ocr_button.configure(state="normal")
         if isinstance(error, OcrUnavailableError):
             self.ocr_status.set(f"OCR 상태: 오류 — {error}")
@@ -507,6 +693,7 @@ class NewWorkApp:
         self.review_status.set("OCR 실행에 실패했습니다.")
 
     def _ocr_succeeded(self, image_path: Path, result: OcrResult) -> None:
+        self._stop_scan_animation(image_path)
         self.ocr_button.configure(state="normal")
         if self.draft is None or self.draft.result.image_path != image_path:
             return
@@ -534,7 +721,8 @@ class NewWorkApp:
             mask_position = result.values.get("mskPos", "")
         else:
             mask_position = (
-                result.values.get("mskPos") or detect_mask_position(result.lines)
+                result.values.get("mskPos")
+                or detect_mask_position(result.lines, image_path=result.image_path)
             )
         self._value_vars["mskPos"].set(mask_position or "")
         self._mask_preview_position = mask_position or None

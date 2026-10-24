@@ -198,7 +198,7 @@ def _new_element_id(connection: sqlite3.Connection, send_org_id: str) -> str:
 def default_kt_database_path() -> Path:
     """Use the existing Windows DB in C:\\IMAGE or the project DB in development."""
     if os.name == "nt":
-        return Path(r"C:\IMAGE\test.db")
+        return Path(r"C:\IMAGE\myCustomer.db")
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "myCustomer.db"
     return Path(__file__).resolve().parents[2] / "myCustomer.db"

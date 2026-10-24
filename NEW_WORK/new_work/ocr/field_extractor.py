@@ -36,11 +36,13 @@ _ISSUER = re.compile(
     r"(?:\uc2dc\uc7a5|\uad70\uc218|\uad6c\uccad\uc7a5|\uad70\uccad\uc7a5|"
     r"\uad6c\uccad|\uad70\uccad|\uc9c0\uccad\uc7a5|\uc18c\uc7a5|\uba74\uc7a5|"
     r"\uacbd\ucc30\uccad\uc7a5|\ub300\ud45c\uc774\uc0ac|\ubc95\ubb34\ubd80\s*\uc7a5\uad00|"
-    r"\ucd9c\uc785\uad6d(?:\uad00\ub9ac)?(?:\s*[\u00b7\u30fb]\s*\uc678\uad6d\uc778)?"
-    r"\s*(?:\uccad|\uc0ac\ubb34\uc18c)\s*\uc7a5?|"
+    r"\ucd9c\uc785\uad6d(?:\uad00\ub9ac)?(?:\s*[\u00b7\u30fb]?\s*\uc678\uad6d\uc778)?"
+    r"\s*(?:\uccad|\uc0ac\ubb34\uc18c|\uc0ac\ubb34\uc190)\s*\uc7a5?|"
     r"\ucd9c\uc785\uad6d\u00b7\uc678\uad6d\uc778\uccad)\s*$"
 )
-_ISSUER_LABEL = re.compile(r"\ubc1c\uae09\s*(?:\uae30\uad00|\ucc98|\uc790)?")
+# Do not treat "발급일자" as a bare "발급" label. The old optional suffix
+# matched that prefix and extracted the leftover "일자" as the issuer.
+_ISSUER_LABEL = re.compile(r"\ubc1c\uae09\s*(?:\uae30\uad00|\ucc98)(?!\uc77c\uc790)")
 _FOREIGN_NAME_LABEL = re.compile(
     r"\uc131\s*\uba85|\uc0dd\s*\uba85|\uc774\s*\ub984|full\s*name|"
     r"\bname\b|\bn[a]?e\b", re.IGNORECASE
@@ -141,18 +143,18 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
 
     issuers: list[str] = []
     for line in lines:
-        candidate = _strip_issue_date(line.text)
-        if _ISSUER.search(candidate):
+        candidate = _normalize_issuer_ocr(_strip_issue_date(line.text))
+        if _is_issuer_candidate(candidate):
             issuers.append(candidate)
     for index, line in enumerate(lines):
         label = _ISSUER_LABEL.search(line.text)
         if label:
             candidate = _strip_issue_date(line.text[label.end():].strip(" :："))
-            if candidate:
+            if _is_labeled_issuer_value(candidate):
                 issuers.append(candidate)
             elif index + 1 < len(lines):
                 candidate = _strip_issue_date(lines[index + 1].text)
-                if candidate:
+                if _is_labeled_issuer_value(candidate):
                     issuers.append(candidate)
     unique_issuers = list(dict.fromkeys(issuers))
     if len(unique_issuers) == 1:
@@ -169,6 +171,28 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
             lines, numbered[0][0] if len(numbered) == 1 else None
         )
     return values
+
+
+def _is_issuer_candidate(text: str) -> bool:
+    """Accept a complete authority title, not a short matching suffix."""
+    hangul_count = len(re.findall(rf"[{_HANGUL}]", text))
+    return hangul_count >= 4 and bool(_ISSUER.search(text))
+
+
+def _normalize_issuer_ocr(text: str) -> str:
+    """Correct frequent single-character OCR errors in the authority suffix."""
+    return (
+        text.replace("\uc0ac\ubb34\uc190", "\uc0ac\ubb34\uc18c")
+        .replace("\uacbd\ucc30\uc815\uc7a5", "\uacbd\ucc30\uccad\uc7a5")
+    )
+
+
+def _is_labeled_issuer_value(text: str) -> bool:
+    """A specific 발급기관/발급처 label can identify shorter authority names."""
+    cleaned = text.strip(" .,:;-/")
+    if not cleaned or _DATE.search(cleaned) or _FIELD_STOP.search(cleaned):
+        return False
+    return bool(re.search(rf"[{_HANGUL}]", cleaned))
 
 
 def _extract_driver_license_name(

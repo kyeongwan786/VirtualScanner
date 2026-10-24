@@ -40,6 +40,21 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertEqual(values["isueDt"], "20200326")
         self.assertEqual(values["isuePlc"], "서울특별시 종로구청장")
 
+    def test_issuer_extraction_corrects_common_ocr_errors_and_no_separator(self):
+        values = extract_identity_fields((
+            OcrLine("발급일자2023.02.20"),
+            OcrLine("창원출입국 외국인사무손장"),
+        ))
+
+        self.assertEqual(values["isuePlc"], "창원출입국 외국인사무소장")
+        self.assertEqual(values["isueDt"], "20230220")
+
+    def test_issue_date_label_is_not_mistaken_for_issuer(self):
+        values = extract_identity_fields((OcrLine("발급일자2023.02.20"),))
+
+        self.assertEqual(values["isuePlc"], "")
+        self.assertEqual(values["isueDt"], "20230220")
+
     def test_extracts_resident_name_merged_with_registration_number_row(self):
         values = extract_identity_fields(
             (
@@ -293,9 +308,9 @@ class IdTypeDetectionTests(unittest.TestCase):
                     "kaitIdType=1001",
                     "recogSubCd=1001",
                     "idType=R",
-                    "ctzCorpNum=900101-1234567",
+                    "ctzCorpNum=9001011234567",
                     "custNm=%ED%99%8D%EA%B8%B8%EB%8F%99",
-                    "isueDt=2020. 3. 26.",
+                    "isueDt=2020326",
                     "isuePlc=%EB%8C%80%EA%B5%AC%EA%B4%91%EC%97%AD%EC%8B%9C+%EC%84%9C%EA%B5%AC%EC%B2%AD%EC%9E%A5",
                     "nationClCd=I",
                     "addr=%EB%8C%80%EA%B5%AC%EA%B4%91%EC%97%AD%EC%8B%9C+%EC%84%9C%EA%B5%AC",
@@ -338,12 +353,19 @@ class IdTypeDetectionTests(unittest.TestCase):
         self.assertIn("drvLicenIsueNum=112233333344", content)
         self.assertTrue(content.endswith("idCrop=\n"))
 
-    def test_mask_position_is_derived_from_resident_number_box_and_url_encoded(self):
+    def test_mask_position_skips_first_rear_digit_after_standard_hyphen(self):
         detected = detect_mask_position(
             (OcrLine("900101-1234567", box=(100, 200, 370, 240)),)
         )
 
-        self.assertEqual(detected, "250,200,370,240")
+        self.assertEqual(detected, "254,200,370,240")
+
+    def test_mask_position_counts_multiple_recognized_separator_glyphs(self):
+        detected = detect_mask_position(
+            (OcrLine("900101:±1234567", box=(382, 218, 705, 262)),)
+        )
+
+        self.assertEqual(detected, "576,218,705,262")
 
     def test_mask_position_is_unset_when_number_or_location_is_ambiguous(self):
         self.assertIsNone(

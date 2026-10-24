@@ -11,6 +11,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from new_work.domain import OcrLine, OcrResult
+from new_work.ocr.mask_position import _mask_position_for_number_row
 
 OCR_BUILD_ID = "20261022-name-crop-2"
 
@@ -203,6 +204,50 @@ class PaddleOcrAdapter:
             OcrLine(line.text, line.confidence, None, "korean_focus")
             for line in lines
         )
+
+    def recognize_issuer(
+        self, image_path: Path, recog_sub_cd: str | None = None
+    ) -> str:
+        """Read the small issuer row separately without changing other fields."""
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        with Image.open(Path(image_path)) as source:
+            rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+        height, width = rgb.shape[:2]
+        if recog_sub_cd == "1001":
+            box = (0.20, 0.78, 0.97, 0.96)
+        elif recog_sub_cd in {"1101", "1102", "1201"}:
+            box = (0.27, 0.80, 0.96, 0.95)
+        else:
+            # Foreign cards place the issuing office beside the issue date at
+            # the lower right. This crop avoids the portrait and number row.
+            box = (0.27, 0.78, 0.93, 0.91)
+        left, top, right, bottom = box
+        crop = rgb[
+            int(height * top):int(height * bottom),
+            int(width * left):int(width * right),
+        ]
+        if crop.size == 0:
+            return ""
+        crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+
+        with TemporaryDirectory(prefix="new_work_issuer_") as temp_dir:
+            crop_path = Path(temp_dir) / "issuer.png"
+            if not cv2.imwrite(
+                str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
+            ):
+                return ""
+            focused_lines = self._read_lines(
+                self._get_number_recognizer().predict(input=str(crop_path))
+            )
+        from new_work.ocr.field_extractor import extract_identity_fields
+
+        return extract_identity_fields(tuple(
+            OcrLine(line.text, line.confidence, None, "issuer_focus")
+            for line in focused_lines
+        )).get("isuePlc", "")
 
     def recognize(self, image_path: Path) -> OcrResult:
         path = Path(image_path)
@@ -497,98 +542,6 @@ def _find_registration_number_row(
     if len(linked) > 1 and abs(linked[0][0] - linked[1][0]) < 0.01:
         return None
     return linked[0][1]
-
-
-def _mask_position_for_number_row(
-    image_rgb: Any,
-    line: OcrLine,
-) -> str:
-    """Return tight bounds around only the last six registration digits."""
-    if line.box is None:
-        return ""
-    left, top, right, bottom = line.box
-    try:
-        import cv2
-        import numpy as np
-
-        image_height, image_width = image_rgb.shape[:2]
-        x1, x2 = max(0, int(left)), min(image_width, int(right))
-        y1, y2 = max(0, int(top)), min(image_height, int(bottom))
-        if x2 <= x1 or y2 <= y1:
-            return ""
-        gray = cv2.cvtColor(image_rgb[y1:y2, x1:x2], cv2.COLOR_RGB2GRAY)
-        digit_groups = _registration_digit_groups(gray)
-        if digit_groups is None:
-            return ""
-        _, rear = digit_groups
-        target_left = x1 + rear[1][0]
-        target_right = x1 + rear[-1][1]
-        ink = gray < 70
-
-        target_pixels = ink[
-            :, max(0, target_left - x1):max(1, target_right - x1)
-        ]
-        row_counts = target_pixels.sum(axis=1)
-        active_rows = np.flatnonzero(
-            row_counts > max(2, round(target_pixels.shape[1] * 0.07))
-        )
-        if len(active_rows):
-            tight_top = y1 + int(active_rows[0])
-            tight_bottom = y1 + int(active_rows[-1]) + 1
-        else:
-            tight_top, tight_bottom = round(top), round(bottom)
-        return (
-            f"{target_left},{tight_top},{target_right},{tight_bottom}"
-        )
-    except Exception:
-        return ""
-
-
-def _registration_digit_groups(
-    gray: Any,
-) -> tuple[list[tuple[int, int]], list[tuple[int, int]]] | None:
-    """Find the six front and seven rear digit glyphs from the detected row."""
-    import cv2
-    import numpy as np
-
-    height = gray.shape[0]
-    for threshold in (50, 60, 70, 80):
-        count, _, stats, _ = cv2.connectedComponentsWithStats(
-            np.uint8(gray < threshold), connectivity=8
-        )
-        components: list[tuple[int, int]] = []
-        for x, _, width, char_height, area in stats[1:count]:
-            if (
-                char_height >= round(height * 0.38)
-                and 3 <= width <= round(height * 0.8)
-                and area >= 10
-            ):
-                components.append((int(x), int(x + width)))
-        components.sort()
-
-        groups: list[list[tuple[int, int]]] = []
-        max_character_gap = round(height * 0.62)
-        for component in components:
-            if (
-                groups
-                and component[0] - groups[-1][-1][1] <= max_character_gap
-            ):
-                groups[-1].append(component)
-            else:
-                groups.append([component])
-
-        for group in groups:
-            if len(group) == 13:
-                return group[:6], group[6:]
-
-        matches = [
-            (groups[index - 1], groups[index])
-            for index in range(1, len(groups))
-            if len(groups[index - 1]) == 6 and len(groups[index]) == 7
-        ]
-        if len(matches) == 1:
-            return matches[0]
-    return None
 
 
 def _ocr_model_paths(ocr_version: str) -> dict[str, Path]:
