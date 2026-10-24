@@ -48,7 +48,8 @@ FOCUS_FIELDS = {
         ("addr", "주소"), ("isueDt", "발급일자"), ("isuePlc", "발급기관"),
     ),
     "veteran": (
-        ("custNm", "이름"), ("ctzCorpNum", "보훈번호"),
+        ("custNm", "이름"), ("ctzCorpNum", "주민등록번호"),
+        ("veteranNum", "보훈번호"),
         ("addr", "주소"), ("isueDt", "발급일자"), ("isuePlc", "발급기관"),
     ),
     "passport": (("custNm", "성명"), ("ctzCorpNum", "여권번호"), ("isueDt", "발급일자")),
@@ -698,7 +699,9 @@ class NewWorkApp:
         if self.draft is None or self.draft.result.image_path != image_path:
             return
         detection = detect_id_type(result.lines)
-        extracted_values = extract_identity_fields(result.lines)
+        extracted_values = extract_identity_fields(
+            result.lines, id_type_code=detection.code
+        )
         merged_values = {key: value for key, value in extracted_values.items() if value}
         merged_values.update({key: value for key, value in result.values.items() if value})
         result = OcrResult(
@@ -782,6 +785,14 @@ class NewWorkApp:
             candidate_codes=(code,),
             matched_text=self._id_type_detection.matched_text,
         )
+        if code == "1302":
+            extracted = extract_identity_fields(
+                self.draft.result.lines, id_type_code=code
+            )
+            for field in ("ctzCorpNum", "veteranNum"):
+                if extracted.get(field):
+                    self._value_vars[field].set(extracted[field])
+                    self._format_field_display(field)
         try:
             path = self._write_selected_portal_report(self.draft.result)
         except OSError as exc:

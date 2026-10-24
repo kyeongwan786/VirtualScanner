@@ -173,10 +173,13 @@ class PaddleOcrAdapter:
         return self._recognizers["korean"]
 
     def warmup(self) -> None:
-        """Load OCR models before the operator starts a document review."""
+        """Load the common Korean full-card pipeline before review starts.
+
+        Focused Korean-recognition and English-recognition models are loaded
+        on demand. Initializing all three at launch makes startup much slower
+        while most documents only use the full-card Korean pipeline.
+        """
         self._get_engine()
-        self._get_english_engine()
-        self._get_number_recognizer()
 
     def recognize_card_heading(self, image_path: Path) -> tuple[OcrLine, ...]:
         """Re-read the small upper-left document heading when full OCR is unsure."""

@@ -11,7 +11,7 @@ import paddlex
 def main() -> int:
     debug_console = os.environ.get("NEW_WORK_DEBUG", "").strip() == "1"
     # PaddleX checks OCR optional dependencies with importlib.metadata at
-    # runtime. A one-file PyInstaller build must carry metadata for the OCR
+    # runtime. A frozen PyInstaller build must carry metadata for the OCR
     # extra as well as PaddleX's base dependencies, or pipeline creation fails
     # before it can download any models.
     required_metadata = {
@@ -49,7 +49,9 @@ def main() -> int:
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
+        # Paddle's native runtime is large. One-file builds unpack it to a
+        # temporary directory on every launch; onedir starts without that cost.
+        "--onedir",
         "--console" if debug_console else "--windowed",
         "--name",
         "new_work",
@@ -83,8 +85,8 @@ def main() -> int:
     command.append("run.py")
 
     print("Including PaddleX dependency metadata:", ", ".join(metadata_to_copy))
-    print("Building console diagnostic EXE." if debug_console else
-          "Running PyInstaller with PaddleOCR runtime dependencies.")
+    print("Building console diagnostic package." if debug_console else
+          "Running PyInstaller onedir package with PaddleOCR runtime dependencies.")
     subprocess.run(command, check=True)
     return 0
 

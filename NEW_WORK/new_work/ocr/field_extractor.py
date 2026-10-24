@@ -20,6 +20,12 @@ _FOREIGN_REG_LABEL = re.compile(
     r"\ub4f1\ub85d\s*\ubc88(?:\ud638)?)|"
     r"(?:alien\s*)?registration\s*(?:no\.?|number)", re.IGNORECASE,
 )
+_VETERAN_NUMBER_LABEL = re.compile(
+    r"(?:\ubcf4\ud6c8\s*\ubc88\ud638|\uad6d\uac00\s*\uc720\uacf5\s*\ubc88\ud638)"
+)
+_VETERAN_NUMBER_CANDIDATE = re.compile(
+    r"(?<!\d)(?:\d[\s./-]*){4,12}(?!\d)"
+)
 _LICENSE = re.compile(r"(?<!\d)(\d{2})\D?(\d{2})\D?(\d{6})\D?(\d{2})(?!\d)")
 _LICENSE_LABEL = re.compile(r"\uc6b4\uc804\s*\uba74\ud5c8|\uba74\ud5c8\s*\ubc88\ud638")
 _DATE = re.compile(
@@ -71,12 +77,18 @@ _FIELD_STOP = re.compile(
 )
 
 
-def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
+def extract_identity_fields(
+    lines: tuple[OcrLine, ...], id_type_code: str | None = None
+) -> dict[str, str]:
     """Best-effort extraction of visible ID text; missing/ambiguous fields stay blank."""
     values = {
-        "ctzCorpNum": "", "custNm": "", "isueDt": "",
+        "ctzCorpNum": "", "veteranNum": "", "custNm": "", "isueDt": "",
         "drvLicenIsueNum": "", "isuePlc": "", "addr": "", "nationClCd": "I",
     }
+    if id_type_code == "1302" or any(
+        _VETERAN_NUMBER_LABEL.search(line.text) for line in lines
+    ):
+        values["veteranNum"] = _extract_veteran_number(lines)
     numbered: list[tuple[OcrLine, str]] = []
     for line in lines:
         match = _RRN.search(line.text)
@@ -171,6 +183,57 @@ def extract_identity_fields(lines: tuple[OcrLine, ...]) -> dict[str, str]:
             lines, numbered[0][0] if len(numbered) == 1 else None
         )
     return values
+
+
+def _extract_veteran_number(lines: tuple[OcrLine, ...]) -> str:
+    """Read only a number associated with the veteran-number label."""
+    candidates: set[str] = set()
+    for index, line in enumerate(lines):
+        label = _VETERAN_NUMBER_LABEL.search(line.text)
+        if label is None:
+            continue
+
+        same_line = _veteran_number_candidates(line.text[label.end():])
+        if same_line:
+            candidates.update(same_line)
+            continue
+
+        # PaddleOCR may split a label and its value into neighboring boxes.
+        for nearby in lines[index + 1:index + 4]:
+            if line.box is not None and nearby.box is not None:
+                left, top, right, bottom = line.box
+                value_left, value_top, value_right, value_bottom = nearby.box
+                label_height = max(1.0, bottom - top)
+                same_row = (
+                    abs((value_top + value_bottom - top - bottom) / 2)
+                    <= label_height * 0.75
+                    and value_left >= left - label_height * 0.25
+                )
+                next_row = (
+                    value_top >= top
+                    and value_top - bottom <= label_height * 2.5
+                    and value_right >= left
+                )
+                if not (same_row or next_row):
+                    continue
+            numbers = _veteran_number_candidates(nearby.text)
+            if numbers:
+                candidates.update(numbers)
+                break
+
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _veteran_number_candidates(text: str) -> set[str]:
+    found: set[str] = set()
+    for match in _VETERAN_NUMBER_CANDIDATE.finditer(text):
+        digits = "".join(char for char in match.group() if char.isdecimal())
+        if not 4 <= len(digits) <= 12:
+            continue
+        if _DATE.fullmatch(match.group().strip()):
+            continue
+        found.add(digits)
+    return found
 
 
 def _is_issuer_candidate(text: str) -> bool:

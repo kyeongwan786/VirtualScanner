@@ -19,7 +19,7 @@ python package_windows.py
 if errorlevel 1 goto :build_failed
 
 echo.
-echo Build complete: dist\new_work.exe
+echo Build complete: dist\new_work\new_work.exe
 pause
 exit /b 0
 

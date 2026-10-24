@@ -10,6 +10,7 @@ REVIEW_TEXT_FIELDS = (
     "recogSubCd",
     "idType",
     "ctzCorpNum",
+    "veteranNum",
     "custNm",
     "isueDt",
     "drvLicenIsueNum",

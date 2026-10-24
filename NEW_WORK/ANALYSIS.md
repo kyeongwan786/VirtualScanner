@@ -122,4 +122,4 @@ PaddleOCR 3.x 어댑터를 추가하고 `lang="korean"`, 속도 우선 기본값
 
 현재 분석 호스트는 macOS다. Windows EXE를 실행하지 않았고, Windows GUI 호환성이나 빌드를 확인하지 않았다. Python 3.13 바이트코드는 xdis로 정적 역어셈블했으며 실행 추적은 아니다. DB 원본은 URI `mode=ro`로 조회했고 갱신은 합성/독립 복사 DB에서만 검사했다. `DATABASE_FIELD_AUDIT.md`는 회수한 JS의 실제 59개 INSERT 인자 출처와 JPG 경로 금지값을 분류한다. 기능 동등성 검증은 운영 원본이 아닌 독립 복사본에서 해야 한다.
 
-다음 단계는 Windows x64/Python 3.12 환경에서 PaddleOCR 실제 추론, one-file 빌드 및 원본 EXE와의 산출물 동등성을 검증하는 것이다. LG 원본은 현재 범위에서 필요하지 않다.
+다음 단계는 Windows x64/Python 3.12 환경에서 PaddleOCR 실제 추론, onedir 빌드 및 원본 EXE와의 산출물 동등성을 검증하는 것이다. LG 원본은 현재 범위에서 필요하지 않다.
