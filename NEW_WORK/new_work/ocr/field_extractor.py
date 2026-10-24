@@ -662,7 +662,53 @@ def _extract_veteran_name(lines: tuple[OcrLine, ...]) -> str:
             }
             candidates.update(nearest)
 
-    return next(iter(candidates)) if len(candidates) == 1 else ""
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    if candidates:
+        return ""
+
+    # 국가보훈등록증에는 성명 라벨 없이 사진 오른쪽 상단에 이름이 있고,
+    # 바로 아래 줄에 주민등록번호가 인쇄된다. 이 배치를 이용해 번호 줄
+    # 직전의 짧은 한글 단독 줄을 이름으로 고른다.
+    anchors = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if _RRN.search(line.text) or _VETERAN_NUMBER_LABEL.search(line.text)
+    ]
+    anchored_names: list[tuple[float, int, str]] = []
+    for anchor_index, anchor in anchors:
+        anchor_box = anchor.box
+        for index, line in enumerate(lines):
+            if index == anchor_index:
+                candidate_text = _RRN.sub(" ", line.text)
+            else:
+                candidate_text = line.text
+            value = _standalone_korean_name(candidate_text)
+            if not value or index >= anchor_index:
+                continue
+            if anchor_box is None or line.box is None:
+                distance = anchor_index - index
+                if distance <= 2:
+                    anchored_names.append((float(distance), index, value))
+                continue
+
+            _, anchor_top, _, anchor_bottom = anchor_box
+            value_left, value_top, value_right, value_bottom = line.box
+            anchor_left = anchor_box[0]
+            height = max(1.0, anchor_bottom - anchor_top, value_bottom - value_top)
+            vertical_gap = anchor_top - value_bottom
+            horizontally_aligned = abs(value_left - anchor_left) <= height * 2
+            if 0 <= vertical_gap <= height * 2.5 and horizontally_aligned:
+                anchored_names.append((vertical_gap, index, value))
+
+    if not anchored_names:
+        return ""
+    nearest_gap = min(item[0] for item in anchored_names)
+    nearest = {
+        value for gap, _, value in anchored_names
+        if abs(gap - nearest_gap) <= 1.0
+    }
+    return next(iter(nearest)) if len(nearest) == 1 else ""
 
 
 def _standalone_korean_name(text: str) -> str:
