@@ -3,6 +3,8 @@ setlocal
 cd /d "%~dp0"
 
 echo NEW_WORK Receiver build: clean virtual environment, no pip cache
+if exist build rmdir /s /q build
+if exist dist\new_work_receiver rmdir /s /q dist\new_work_receiver
 if exist .venv-receiver rmdir /s /q .venv-receiver
 py -3.12 -m venv .venv-receiver
 if errorlevel 1 goto :build_failed
