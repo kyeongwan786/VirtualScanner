@@ -162,6 +162,7 @@ class ReceiverApp:
         self._scan_order: list[str] = []
         self._completed: set[str] = set()
         self._active: dict | None = None
+        self._drag_start: tuple[ttk.Treeview, str] | None = None
         self._build()
         self._load_queue_state()
         if not all(self.config.get(key) for key in ("station_id", "relay_url", "token")):
@@ -253,10 +254,16 @@ class ReceiverApp:
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(1, weight=1)
         self.notebook.add(tab, text="서류 스캔 대기열")
+        header = ttk.Frame(tab)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        header.columnconfigure(0, weight=1)
         ttk.Label(
-            tab,
-            text="PDF 하나가 서류 폴더 하나로 표시됩니다. 더블클릭하면 페이지를 미리 볼 수 있습니다.",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+            header,
+            text="PDF 하나가 서류 폴더 하나입니다. 더블클릭해 미리 보고, 드래그하거나 버튼으로 두 목록 사이에 옮기세요.",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(header, text="서류 목록 초기화", command=self._reset_document_lists).grid(
+            row=0, column=1, sticky="e", padx=(8, 0)
+        )
         panes = ttk.Panedwindow(tab, orient="horizontal")
         panes.grid(row=1, column=0, sticky="nsew")
         self.scan_frame, self.wait_frame = ttk.LabelFrame(panes, text="스캔할 서류", padding=8), ttk.LabelFrame(panes, text="스캔 서류 대기열", padding=8)
@@ -270,6 +277,9 @@ class ReceiverApp:
         self.wait_tree = self._make_document_tree(self.wait_frame, 0)
         self.scan_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.scan_tree))
         self.wait_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.wait_tree))
+        for tree in (self.scan_tree, self.wait_tree):
+            tree.bind("<ButtonPress-1>", self._drag_press, add="+")
+            tree.bind("<ButtonRelease-1>", self._drag_release, add="+")
         scan_controls = ttk.Frame(self.scan_frame)
         scan_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(scan_controls, text="위로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, -1)).pack(side="left")
@@ -747,6 +757,146 @@ class ReceiverApp:
         if selected and selected[0] in self._items:
             DocumentPreviewDialog(self, self._items[selected[0]])
 
+    def _drag_press(self, event) -> None:
+        tree = event.widget
+        key = tree.identify_row(event.y)
+        self._drag_start = (tree, key) if key else None
+
+    def _drag_release(self, event) -> None:
+        drag = self._drag_start
+        self._drag_start = None
+        if drag is None:
+            return
+        source_tree, dragged_key = drag
+        target = self.root.winfo_containing(event.x_root, event.y_root)
+        if source_tree is self.scan_tree and target is self.wait_tree:
+            source_order, target_order = self._scan_order, self._queue_order
+        elif source_tree is self.wait_tree and target is self.scan_tree:
+            source_order, target_order = self._queue_order, self._scan_order
+        else:
+            return
+        selection = set(source_tree.selection())
+        keys = [key for key in source_order if key in selection] if dragged_key in selection else [dragged_key]
+        self._transfer_documents(source_tree, target, source_order, target_order, keys)
+
+    def _transfer_documents(
+        self,
+        source_tree: ttk.Treeview,
+        target_tree: ttk.Treeview,
+        source_order: list[str],
+        target_order: list[str],
+        keys: list[str],
+    ) -> None:
+        keys = [key for key in keys if key in source_order and key in self._items]
+        if not keys:
+            return
+        active_keys = set()
+        if self._active:
+            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        if source_tree is self.scan_tree and active_keys.intersection(keys):
+            messagebox.showinfo("스캔 진행 중", "현재 스캔 중인 서류는 대기열로 옮길 수 없습니다.", parent=self.root)
+            return
+        selected = set(keys)
+        source_order[:] = [key for key in source_order if key not in selected]
+        target_order.extend(key for key in keys if key not in target_order)
+        self._save_queue_state()
+        self._refresh_queue()
+        for key in keys:
+            target_tree.selection_add(key)
+        self.status.set(
+            f"{len(keys)}개 서류 폴더를 "
+            f"{'스캔할 서류' if target_tree is self.scan_tree else '스캔 서류 대기열'}로 옮겼습니다"
+        )
+
+    def _reset_document_lists(self) -> None:
+        self._sync_active_scan()
+        ready = Path(self.config.get("scanner_ready_path", ""))
+        if self._active or (ready.is_dir() and any(ready.iterdir())):
+            messagebox.showinfo(
+                "스캔 작업 진행 중",
+                "가상 스캐너 ready 폴더에 작업이 남아 있어 초기화하지 않았습니다.\n"
+                "현재 작업을 완료하거나 확인한 뒤 다시 초기화하세요.",
+                parent=self.root,
+            )
+            return
+        if not self._items:
+            messagebox.showinfo("서류 목록 초기화", "초기화할 서류 폴더가 없습니다.", parent=self.root)
+            return
+        count = len(self._items)
+        confirmed = messagebox.askyesno(
+            "서류 목록 초기화",
+            f"Receiver에 있는 서류 폴더 {count}개를 초기화할까요?\n\n"
+            "이 작업은 해당 서류의 변환 JPG를 Receiver 작업 폴더에서 삭제하고 두 목록에서 제거합니다.\n"
+            "신분증 이미지와 OCR 결과, SK 보고서, KT DB, 가상 스캐너 폴더는 삭제하지 않습니다.\n"
+            "삭제한 서류 JPG는 복구할 수 없습니다.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        files_by_job: dict[Path, set[Path]] = {}
+        ids_by_job: dict[Path, set[str]] = {}
+        folders_by_job: dict[Path, set[Path]] = {}
+        try:
+            for item in self._items.values():
+                job_dir = item["job_dir"].resolve()
+                document = item["document"]
+                document_id = str(document.get("document_id", ""))
+                docs_root = (job_dir / "documents").resolve()
+                for relative in document.get("pages", []):
+                    page = self._job_file(job_dir, str(relative)).resolve()
+                    if not page.is_relative_to(docs_root):
+                        raise ValueError("서류 페이지가 documents 폴더 밖을 가리킵니다.")
+                    files_by_job.setdefault(job_dir, set()).add(page)
+                    folders_by_job.setdefault(job_dir, set()).add(page.parent)
+                ids_by_job.setdefault(job_dir, set()).add(document_id)
+        except (OSError, TypeError, ValueError) as exc:
+            messagebox.showerror("서류 목록 초기화 실패", str(exc), parent=self.root)
+            return
+
+        try:
+            for pages in files_by_job.values():
+                for page in pages:
+                    page.unlink(missing_ok=True)
+            for job_dir, folders in folders_by_job.items():
+                docs_root = (job_dir / "documents").resolve()
+                for folder in sorted(folders, key=lambda path: len(path.parts), reverse=True):
+                    if folder != docs_root and folder.is_relative_to(docs_root):
+                        try:
+                            folder.rmdir()
+                        except OSError:
+                            pass
+            for job_dir, document_ids in ids_by_job.items():
+                manifest_path = job_dir / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                documents = manifest.get("documents", [])
+                if isinstance(documents, list):
+                    manifest["documents"] = [
+                        document for document in documents
+                        if not isinstance(document, dict)
+                        or str(document.get("document_id", "")) not in document_ids
+                    ]
+                temporary = manifest_path.with_name(f".{manifest_path.name}.reset.tmp")
+                temporary.write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+                os.replace(temporary, manifest_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showerror(
+                "서류 목록 초기화 일부 실패",
+                f"일부 서류를 삭제하지 못했습니다. 목록을 새로고침해 상태를 확인하세요.\n{exc}",
+                parent=self.root,
+            )
+            self._refresh_queue()
+            return
+
+        self._scan_order.clear()
+        self._queue_order.clear()
+        self._completed.clear()
+        self._save_queue_state()
+        self._refresh_queue()
+        self.status.set(f"서류 목록 초기화 완료 · JPG {count}개 폴더 삭제")
+
     def _move_selected(self, tree: ttk.Treeview, order: list[str], offset: int) -> None:
         selected = tree.selection()
         key = selected[0] if selected else None
@@ -772,30 +922,17 @@ class ReceiverApp:
         if not keys:
             messagebox.showinfo("스캔할 서류", "대기열에서 스캔 대상으로 올릴 서류 폴더를 선택하세요.", parent=self.root)
             return
-        self._queue_order = [key for key in self._queue_order if key not in set(keys)]
-        self._scan_order.extend(key for key in keys if key not in self._scan_order)
-        self._save_queue_state()
-        self._refresh_queue()
-        for key in keys:
-            self.scan_tree.selection_add(key)
+        self._transfer_documents(
+            self.wait_tree, self.scan_tree, self._queue_order, self._scan_order, keys,
+        )
 
     def _demote_selected(self) -> None:
         keys = self._selected_keys(self.scan_tree, self._scan_order)
         if not keys:
             return
-        active_keys = set()
-        if self._active:
-            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
-        if active_keys.intersection(keys):
-            messagebox.showinfo("스캔 진행 중", "현재 스캔 중인 서류는 대기열로 내릴 수 없습니다.", parent=self.root)
-            return
-        selected = set(keys)
-        self._scan_order = [key for key in self._scan_order if key not in selected]
-        self._queue_order.extend(keys)
-        self._save_queue_state()
-        self._refresh_queue()
-        for key in keys:
-            self.wait_tree.selection_add(key)
+        self._transfer_documents(
+            self.scan_tree, self.wait_tree, self._scan_order, self._queue_order, keys,
+        )
 
     def _activate_selected(self) -> None:
         self._sync_active_scan()

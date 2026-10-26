@@ -51,7 +51,9 @@ Receiver polls every five seconds when the GUI is open. Keep it running while th
 
 The Receiver separates **신분증 / 접수 결과** from **서류 스캔 대기열**. The identity tab uses the central OCR field labels with a large identity preview and a selector for received jobs. On the document tab, each PDF is shown as its own folder row. Double-click a row to page through its converted JPGs, then use **목록으로** to return.
 
-New PDFs first appear in **스캔 서류 대기열**. Select one or more folders and choose **스캔할 서류로 올리기** to move them into the separate **스캔할 서류** panel. Reorder each panel with its own up/down buttons. Select one or more folders in **스캔할 서류** and choose **선택 서류 스캔에 올리기** to copy those pages to the virtual scanner's `ready` directory. This allows one folder to scan alone or several selected folders to scan together. After TWAIN removes the active job, Receiver marks those items complete and removes them from the active lists.
+New PDFs first appear in **스캔 서류 대기열**. Select one or more folders and choose **스캔할 서류로 올리기** or drag them to the other panel to move them into **스캔할 서류**. Move them back with **대기열로 내리기** or drag them to the waiting panel. Reorder each panel with its own up/down buttons. Select one or more folders in **스캔할 서류** and choose **선택 서류 스캔에 올리기** to copy those pages to the virtual scanner's `ready` directory. This allows one folder to scan alone or several selected folders to scan together. After TWAIN removes the active job, Receiver marks those items complete and removes them from the active lists.
+
+**서류 목록 초기화** asks for confirmation, blocks while the scanner `ready` folder has a job, then deletes the listed PDF page JPGs and clears those PDF entries from their local manifests. It keeps identity images, OCR values, SK report files, KT databases, and the scanner folder. The removed JPG pages cannot be restored from Receiver.
 
 Folder names are normalized for display so Korean filenames created on macOS do not appear as separated consonants and vowels in the Windows Receiver.
 
