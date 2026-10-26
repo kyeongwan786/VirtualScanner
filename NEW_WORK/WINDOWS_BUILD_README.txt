@@ -3,6 +3,7 @@ NEW_WORK Windows EXE 빌드 안내
 
 이 패키지는 Windows x64에서 NEW_WORK GUI를 빌드하기 위한 소스입니다.
 macOS에서 Windows EXE를 만들 수 없어, 이 ZIP에 완성된 EXE는 들어 있지 않습니다.
+이 패키지는 중앙 PC용입니다. Receiver는 별도 NEW_WORK-Receiver-Windows-Build.zip을 사용하세요.
 
 빌드
 ----

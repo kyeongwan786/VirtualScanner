@@ -2,9 +2,9 @@
 
 NEW_WORK central and Receiver use the existing `KyeongwanReceiver` HTTPS relay. The central PC uploads the selected station's ID image, reviewed portal fields, and converted PDF page images. Receiver polls Render over outbound HTTPS, applies SK or KT data locally, retains PDF pages in its own queue, and acknowledges the relay only after local application succeeds. It does not require an SMB share or an inbound port on the intake PC.
 
-## Confirm the relay service
+## Relay service
 
-The repository contains `render.yaml`, the Render web service entry point, and the relay protocol. The checked-in `KyeongwanReceiver/README.md` says the Blueprint was prepared but not deployed and that no public service URL was recorded. Check the Render dashboard for an existing live service before using this flow. If there is no service, deploy the repository Blueprint and configure its secrets as described in `KyeongwanReceiver/README.md`.
+The deployed Render service is `https://kyeongwan-relay-test.onrender.com`. Its `/health` endpoint reports the relay features. The service uses HTTPS (TCP underneath); central and Receiver PCs make outbound connections, so no inbound port forwarding is needed.
 
 Render settings must contain:
 
@@ -31,13 +31,13 @@ python -m pip install -r requirements.txt
 python .\receiver_run.py
 ```
 
-The full requirements also install the central OCR stack. For a standalone app, build on Windows using the same architecture as the target:
+For a standalone Receiver app without the central OCR dependencies, use the Receiver-specific build files on Windows:
 
 ```powershell
-python .\package_receiver_windows.py
+.\build_receiver_windows.bat
 ```
 
-Run `dist\new_work_receiver\new_work_receiver.exe`. In **Receiver 설정**, enter:
+The package is also available through `NEW_WORK-Receiver-Windows-Build.zip`. Run `dist\new_work_receiver\new_work_receiver.exe`. In **Receiver 설정**, enter:
 
 - Render Relay HTTPS address.
 - `station_id` exactly as configured in Render and the central workstation entry.
