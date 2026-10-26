@@ -38,6 +38,18 @@ def crop_id_portrait_jpeg(
             if require_face:
                 return None
             return _fixed_card_portrait(source)
+        if faces is not None and source.width >= source.height:
+            aspect_ratio = source.width / source.height
+            if 1.35 <= aspect_ratio <= 2.0:
+                # Korean horizontal IDs place the primary portrait on the left;
+                # the right-side micro portrait/printed faces can trigger larger
+                # Haar boxes than the actual portrait. Prefer detections in the
+                # known portrait panel before comparing face-box areas.
+                portrait_faces = [
+                    face for face in faces
+                    if int(face[0]) + int(face[2]) / 2 <= source.width * 0.48
+                ]
+                faces = portrait_faces
         if faces is None or len(faces) == 0:
             if require_face:
                 return None
