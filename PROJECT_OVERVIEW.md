@@ -38,6 +38,12 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 중앙 송신 GUI와 시험 릴레이는 macOS에서도 실행할 수 있다. `make_test_tls.py`는 사설 LAN 시험용 CA/서버 인증서를 만든다. 새 릴레이 모드에서는 Windows VM이 Mac 서버에 아웃바운드 HTTPS로 접속하므로 VM의 인바운드 포트 전달은 필요 없다. 다만 VM과 Mac 사이에 라우팅 경로가 있어야 하며 VMware NAT/브리지 전환은 하지 않는다. 이 시험용 인증서는 운영용이 아니다. 릴레이 서버 배포 및 macOS/Windows 간 전송은 실제 환경에서 아직 확인하지 않았다.
 
+### `NEW_WORK` 중앙 준비 앱과 Receiver
+
+`NEW_WORK`에는 신분증 JPG OCR과 서류 PDF 페이지 변환을 함께 준비하는 GUI가 있다. 중앙 사용자가 접수 PC와 SK/KT 포탈을 선택해 저장하면 이미지 페이지와 OCR 검토값을 기존 `KyeongwanReceiver/relay_server.py` HTTPS 릴레이로 전송한다. 접수 PC의 `receiver_run.py` UI는 Render에서 자기 자리 작업을 폴링해 로컬에 저장하고, SK `sk_report.txt`를 교체하거나 해당 PC의 KT `myCustomer.db`를 갱신한 뒤에만 릴레이에 완료 응답을 보낸다. PDF는 Receiver의 자리별 대기열에서 순서를 정하고, 맨 위의 연속 문서만 가상 스캐너의 `ready` 폴더에 올린다.
+
+Render 연결의 레포지토리 설정(`render.yaml`, 실행 코드, API)은 준비돼 있다. 다만 `KyeongwanReceiver/README.md`의 마지막 기록은 실제 Render 배포와 공개 URL이 없는 상태다. 사용자 Render 대시보드의 현재 상태는 이 저장소만으로 확인할 수 없다. 연결 전에는 배포 주소와 토큰을 확인해야 한다. Render 쪽은 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. 릴레이와 Receiver, 중앙 PC 모두 실제 NEW_WORK 작업으로 아직 종단간 검증되지 않았다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
+
 ## 지금까지 확인된 중요한 점
 
 - 제공된 업무페이지 스캐너 선택 화면에는 TWAIN으로 보이는 장치와 `WIA-...` 장치가 함께 표시된다. 따라서 화면 전체가 TWAIN 전용이라고 단정할 수 없다.

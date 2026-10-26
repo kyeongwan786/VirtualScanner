@@ -137,14 +137,15 @@ PDF는 MuPDF로 페이지별 JPEG를 메모리에서 렌더링한다. 페이지�
 보안 릴레이 API:
 
 - `POST /v1/jobs`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/jobs/{jobId}/complete`, `DELETE /v1/jobs/{jobId}/cancel` — 중앙 토큰과 중앙 출구 IP로 제한
+- `GET /v1/jobs/{jobId}/status` — 중앙 토큰으로 작업 상태(`uploading`, `queued`, `delivered`, `cancelled`) 확인
 - `GET /v1/stations/{stationId}/jobs/next`, `GET /v1/stations/{stationId}/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/stations/{stationId}/jobs/{jobId}/ack` — 해당 자리 전용 토큰과 그 자리 출구 IP로 제한
 - `GET /health` — 비민감 준비 상태만 제공
 
-Relay는 페이지를 암호화해 `relay-data/jobs`에 저장한다. 페이지당 최대 40 MiB, 작업당 최대 512 MiB, 작업당 최대 100페이지다. Receiver가 모든 페이지를 로컬 `ready`에 원자적으로 공개한 뒤 ack를 보내면 Relay는 확인 후 서버 사본을 삭제한다. Render에서는 Receiver가 내려받기 전에 서비스가 재시작되면 대기 작업이 유실될 수 있다.
+Relay는 페이지를 암호화해 `relay-data/jobs`에 저장한다. 페이지당 최대 40 MiB, 작업당 최대 512 MiB, 작업당 최대 100페이지다. 기존 스캐너 페이지 작업은 Receiver가 모든 페이지를 로컬 `ready`에 원자적으로 공개한 뒤 ack하면 작업 디렉터리를 삭제한다. NEW_WORK 작업(`payload_type: new-work-v1`)은 자리별 OCR/문서 정보를 암호화된 메타데이터로 전달한다. NEW_WORK Receiver가 SK/KT 로컬 적용 후 ack하면 이미지와 메타데이터를 삭제하되, 중앙 UI의 적용 확인을 위해 개인정보가 없는 상태 레코드만 남긴다. Render에서는 Receiver가 내려받기 전에 서비스가 재시작되면 대기 작업이 유실될 수 있다.
 
 - 구형 직접 Receiver API (개발 호환 전용): `GET /health`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /complete`, `DELETE /cancel`
 - `PUT /v1/jobs/{jobId}/pages/{pageNumber}` — 인증 헤더 `X-Receiver-Token`과 JPG 본문으로 페이지 업로드
-- `POST /v1/jobs/{jobId}/complete` — 페이지 수와 원본 파일명을 보내 작업 완료 선언
+- `POST /v1/jobs/{jobId}/complete` — 페이지 수와 원본 파일명을 보내 작업 완료 선언. NEW_WORK 패키지는 이 요청의 메타데이터에 `payload_type`, 자리별 검토값, 문서별 페이지 대응 정보를 포함
 - `DELETE /v1/jobs/{jobId}/cancel` — 전송 중 작업 취소. 인증 헤더가 필요하며, 이미 `ready`에 공개된 작업은 취소할 수 없음
 
 Windows 기본 데이터 폴더는 `%ProgramData%\\KyeongwanScanner\\VirtualSource`이며 `incoming`, `ready`, `completed`, `cancelled` 하위 폴더를 사용한다. 작업 완료 전에는 `incoming`에 보관한다. 모든 페이지가 연속해서 도착하고 완료 선언이 확인되면 작업 디렉터리를 `ready/<job-id>`로 이동한다. `manifest.json`에는 자리 ID, 원본 파일명, 페이지 순서, DPI, 페이지 SHA-256이 기록된다. 페이지는 `001.jpg`, `002.jpg`처럼 저장한다. 최대 100페이지, 페이지당 40 MiB다. 동일한 페이지의 재전송은 중복 처리한다.

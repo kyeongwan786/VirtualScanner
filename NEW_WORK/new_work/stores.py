@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -20,6 +21,9 @@ class Store:
     ip_address: str = ""
     mac_address: str = ""
     scanner_serial_number: str = ""
+    relay_station_id: str = ""
+    # Kept only to read old settings; the current transfer uses the HTTPS relay.
+    receiver_inbox: str = ""
 
     @classmethod
     def create(
@@ -34,10 +38,15 @@ class Store:
         ip_address: str = "",
         mac_address: str = "",
         scanner_serial_number: str = "",
+        relay_station_id: str = "",
+        receiver_inbox: str = "",
     ) -> "Store":
         clean_name = name.strip()
         if not clean_name:
             raise ValueError("접점 이름을 입력하세요.")
+        clean_relay_station = relay_station_id.strip()
+        if clean_relay_station and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", clean_relay_station):
+            raise ValueError("Relay 자리 ID는 영문, 숫자, 밑줄, 하이픈으로 1~64자여야 합니다.")
         return cls(
             store_id=store_id or str(uuid4()),
             name=clean_name,
@@ -49,6 +58,8 @@ class Store:
             ip_address=ip_address.strip(),
             mac_address=mac_address.strip(),
             scanner_serial_number=scanner_serial_number.strip(),
+            relay_station_id=clean_relay_station,
+            receiver_inbox=receiver_inbox.strip(),
         )
 
 
@@ -74,6 +85,7 @@ def load_stores(path: Path | None = None) -> list[Store]:
         raise ValueError("접점 설정은 JSON 배열이어야 합니다.")
     stores: list[Store] = []
     seen: set[str] = set()
+    seen_relay_stations: set[str] = set()
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("접점 항목 형식이 올바르지 않습니다.")
@@ -96,15 +108,24 @@ def load_stores(path: Path | None = None) -> list[Store]:
             ip_address=str(item.get("ip_address", "")),
             mac_address=str(item.get("mac_address", "")),
             scanner_serial_number=str(item.get("scanner_serial_number", "")),
+            relay_station_id=str(item.get("relay_station_id", "")),
+            receiver_inbox=str(item.get("receiver_inbox", "")),
         )
         if store.store_id in seen:
             raise ValueError("중복된 접점 ID가 있습니다.")
         seen.add(store.store_id)
+        if store.relay_station_id and store.relay_station_id in seen_relay_stations:
+            raise ValueError("같은 Relay 자리 ID가 두 접점에 등록되어 있습니다.")
+        if store.relay_station_id:
+            seen_relay_stations.add(store.relay_station_id)
         stores.append(store)
     return stores
 
 
 def save_stores(stores: list[Store], path: Path | None = None) -> Path:
+    station_ids = [store.relay_station_id for store in stores if store.relay_station_id]
+    if len(station_ids) != len(set(station_ids)):
+        raise ValueError("같은 Relay 자리 ID가 두 접점에 등록되어 있습니다.")
     config_path = path or default_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = [asdict(store) for store in stores]

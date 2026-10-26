@@ -8,6 +8,9 @@
 | SK 검토값 → report 데이터 객체 | 원본 텍스트 매핑/유형 코드 확인 | DB 없이 검토 객체에서 직렬화기 직접 호출 | exact-byte synthetic fixture 통과 | OCR 줄에서 업무 필드 자동 매핑은 미구현이며 수기 검토값 사용 |
 | DB 스키마 및 원본 파일 차이 | 실제 `uscan.skt`/`myCustomer.db` 읽기 전용 대조 | 개인정보를 출력하지 않는 metadata audit 도구 | 18 테이블/스키마/행수/관계 테스트 통과 | 값 차이는 분석 보고서의 식별 키 기준으로 제한 기록 |
 | JPG 선택 및 미리보기 | NEW_WORK 기능 | 예 | 수동 Windows 확인 전 | Tkinter/Pillow 작성 |
+| 신분증 JPG와 서류 PDF 동시 준비 | 사용자 요청 | 신분증 OCR과 PDF 준비 UI를 별도 패널로 분리; JPG 한 장과 여러 PDF를 각각 선택/드롭; 신분증 원본을 사용자 데이터의 `NEW_WORK/jobs/<job-id>/identity/`에 보존; OCR 및 PDF별 JPG 변환을 백그라운드에서 동시에 시작; PDF 페이지는 같은 작업의 `documents/<pdf>/`에 저장 | 미실행 | PDF별 상태/페이지 수/출력 위치 표시. PDF 서류 종류명 편집 기능은 아직 없음 |
+| 접수 PC 선택 및 원격 저장 | 사용자 요청 | 기존 `KyeongwanReceiver` HTTPS 릴레이 API를 확장해 검토값과 문서별 페이지 맵을 암호화 메타데이터로 전달; 중앙 UI에서 Relay 자리 ID 선택; 모든 JPG 페이지를 순서대로 올린 뒤 Receiver의 로컬 적용 완료 상태를 조회 | 미실행 | `render.yaml`/서버 구현은 있으나 Render 실제 배포 상태와 URL은 대시보드에서 확인 필요. Render 재배포, 토큰/자리 설정 및 Windows 현장 확인 필요 |
+| 접수 PC Receiver UI 및 스캔 대기열 | 사용자 요청 | Render Relay를 outbound HTTPS로 폴링; SK/KT 로컬 적용 후 ack; 신분증 미리보기, PDF 대기열 순서 변경, 맨 위의 연속 문서 묶음만 TWAIN `ready`에 공개 | 미실행 | Receiver가 로컬 적용을 마치면 Relay 이미지/민감 메타데이터를 지우고 상태 레코드만 유지. 완료한 TWAIN 작업이 `ready`에서 사라지면 다음 항목을 대기 상태로 전환. Windows 현장 확인 필요 |
 | 한국어 PaddleOCR | 새 엔진 선택·연결 | 어댑터/UI 연결 | 가짜 엔진 어댑터 테스트 | PP-OCRv5 모바일 기본값. Paddle 공개 벤치마크 참고만 있으며 실제 신분증 성능 검증은 미완료 |
 | OCR 문자 결과/신뢰도 표시 | 새 엔진 출력 형식에 맞춤 | 예 | 어댑터 결과 파싱 테스트 | 줄 단위 원문 표시, 선택 줄을 검토 필드에 삽입 가능 |
 | ID_TYPES 문서 종류 추정 및 `sk_report.txt` | 사용자 제공 코드/라벨 목록 사용 | OCR 키워드 분류, GUI 유형 선택, 지정한 key=value 형식으로 Windows `C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt`에 UTF-8 기록(기존 파일 덮어쓰기); macOS 소스 실행은 프로젝트 폴더에 기록; 주민등록번호 OCR 상자 또는 외국인등록번호 확대 OCR 상자에서 뒷자리 첫 숫자를 제외한 6자리 `mskPos` 계산·인코딩 | 문서군별 숫자 코드/문자형 ID_TYPE 매핑, 복수 하위 코드 선택, 면허번호 단일·분할 OCR 및 결과 필드 합성 테스트 통과 | 6자리 폭은 OCR 줄 상자에서 문자 폭 비율로 추정하므로 실물 이미지 좌표 대조 필요; 개인정보 필드는 검토 입력이며 OCR 자동 추출 아님; 면허증 기본 선택은 원본 일반 선택값 1102이며 1101/1201은 유형 선택에서 지정; 실제 이미지 OCR 좌표와 하위 코드 구분 정확도는 추가 대조 필요 |
@@ -17,10 +20,10 @@
 | SK 보고서 | 필드 순서/인코딩/조건부 crop 원본 확인 | 직렬화, 자동 원본 좌표 크롭, 유형 코드 입력, 버튼 생성·전달 연결 | 합성 데이터 테스트 통과; 제공 샘플 직렬화 바이트 일치 | Windows 원본과 기능 비교 필요 |
 | KT OCR 결과 DB 저장 | `com_kt` 최신행 수정 흐름, OCR 코드표 및 `NEW_WORK/test.db` 관련 테이블 스키마/키 연결 확인 | 기존 최신 `T_SCAN_PAPER` OCR 필드와 `T_CODE_OCR` 분류 메타데이터를 UPDATE. 주소는 `ADDR`와 `ADDR_ORIGIN`에 반영하고, 국가유공자증(`1302`)이면 검토 보훈번호를 `WLF_NUM`과 `WLF_NUM_ORIGIN`에 기록. `unique()`로 만든 새 `TMP_ELEMENT_ID`와 연결된 `T_SCAN_RESOURCES.TMP_ELEMENT_ID`를 한 트랜잭션에서 갱신. TEMP/INDEX/SUBINDEX/PAPER/RESOURCE 신규 INSERT 없음. Windows 경로는 `C:\IMAGE\myCustomer.db` | 미실행 | Windows 실제 DB에서 저장 성공 및 이미지 키 연결 확인 필요 |
 | KT DB / ORG.jpg / CR.jpg 저장 | 사용자가 정한 `C:\IMAGE` 파일명·덮어쓰기 경로와 원본/얼굴 crop 요구 | 저장 버튼에서 선택한 JPG를 `ORG.jpg`, 얼굴 사진 영역을 종류별 크기(`1001`: 340×406, 그 외: 320×420)로 `CR.jpg`에 덮어씀. 얼굴 검출 실패/모호 시 DB 저장 중단. DB 키/분류 갱신과 같은 KT 경로에서 호출 | `테스트.jpg`, `ㅋㅋ.jpg`, `마스킹안되는거.jpg`, `박말분.jpg` crop을 눈으로 확인; 두 출력 크기 확인 | Windows 얼굴 검출, 덮어쓰기 권한 및 저장 결과 확인 필요 |
-| 접점 설정·결과 전달 | 원본 8개 접점 항목 및 SK `classes`, KT `IMAGE` 상대경로 확인 | 접점 메타데이터·경로 관리, 충돌 확인, 재시도·해시검증·개인정보 최소 로그; KT 세 파일 전달 연결 | 전달 실패/로그 및 KT 목적지 매핑 테스트 | 실제 매장 SMB 공유폴더 권한/잠금 확인 필요 |
+| 접점 설정·결과 전달 | 원본 8개 접점 항목 및 SK `classes`, KT `IMAGE` 상대경로 확인 | 중앙 UI에서 Relay 자리 ID 선택; 검토값/문서 맵과 JPG 페이지를 기존 암호화 Relay API로 전송 | 미실행 | 기존 로컬 파일 전달 헬퍼는 별도 코드로 남음. NEW_WORK의 SMB 전송에는 사용하지 않음 |
 | SK / KT 처리 버튼 | 원본 생성/복사 흐름 확인 | 검토 완료 상태에 연결 | 유닛 워크플로 테스트 통과 | 업무페이지가 산출물을 수용하는 Windows 현장 테스트 필요 |
 | LG 처리 | 범위 제외 | 해당 없음 | 해당 없음 | 사용자 지시로 현재 개발 범위에서 제외 |
-| 접점별 공유폴더 전달 | 목적지·파일명·상대폴더 확인 | 저장경로 관리, 덮어쓰기 확인, 임시복사/해시 검증/실패 처리 | 합성 파일시스템과 20개 접점 테스트 통과 | 실제 매장 SMB 공유폴더 권한/잠금 확인 필요 |
+| 기존 접점별 공유폴더 전달 헬퍼 | 이전 로컬 파일 전달 흐름 | `transfer.py`에 임시복사/해시 검증/충돌 처리 | 기존 합성 파일시스템 테스트 결과 유지 | 현재 중앙 저장 버튼의 Relay 경로에서는 호출하지 않음 |
 | Windows onedir package | 빌드 설정만 작성 | 아니오 | 아니오 | BAT 실행, Paddle 네이티브 라이브러리 수집 및 Windows 실행 검증 필요 |
 
 ## 남은 자료·환경

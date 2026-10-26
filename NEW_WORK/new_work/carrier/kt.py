@@ -245,6 +245,7 @@ def save_kt_submission(
     values: Mapping[str, str] | None = None,
     *,
     database_path: Path | None = None,
+    image_directory: Path | None = None,
 ) -> tuple[Path, str]:
     """Update the latest existing U.Scan paper row with reviewed OCR values."""
     target = Path(database_path) if database_path is not None else default_kt_database_path()
@@ -366,7 +367,7 @@ def save_kt_submission(
 
         create_kt_images(
             result.image_path,
-            default_kt_image_directory(),
+            image_directory if image_directory is not None else default_kt_image_directory(),
             id_code,
         )
         new_element_id = _new_element_id(connection, send_org_id)

@@ -24,7 +24,7 @@ import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -357,28 +357,60 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not allowed:
                 self._reply(403, {"error": "source IP is not allowed"})
                 return
-            self._reply(200, {"status": "ready"})
+            self._reply(200, {"status": "ready", "features": [
+                "scanner-pages-v1", "new-work-v1", "job-status-v1"
+            ]})
+            return
+        match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,64})/status", path)
+        if match:
+            if not self._authorize_central():
+                return
+            with self.server.lock:
+                job_id = match.group(1)
+                metadata = self._metadata(self._job_dir(job_id))
+                if not metadata:
+                    self._reply(404, {"error": "job not found"})
+                    return
+                self._reply(200, {"job_id": job_id,
+                                  "station_id": metadata.get("station_id"),
+                                  "status": metadata.get("status")})
             return
         match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/jobs/next", path)
         if match:
             station_id = match.group(1)
             if not self._authorize_station(station_id):
                 return
+            requested_types = parse_qs(urlsplit(self.path).query).get("payload_type", [])
+            if requested_types and requested_types[0] not in {"scanner-pages-v1", "new-work-v1"}:
+                self._reply(400, {"error": "unsupported payload_type filter"})
+                return
+            # Legacy clients that do not send a filter continue to receive
+            # scanner-page jobs and never consume NEW_WORK packages.
+            requested_type = requested_types[0] if requested_types else "scanner-pages-v1"
             with self.server.lock:
                 queued = []
                 for job in self.server.jobs_dir.iterdir():
                     metadata = self._metadata(job)
-                    if metadata and metadata.get("station_id") == station_id and metadata.get("status") == "queued":
+                    payload_type = (metadata or {}).get("payload_type", "scanner-pages-v1")
+                    if (metadata and metadata.get("station_id") == station_id
+                            and metadata.get("status") == "queued"
+                            and payload_type == requested_type):
                         queued.append((metadata.get("created_at", ""), job, metadata))
                 if queued:
                     _, job, metadata = min(queued, key=lambda item: item[0])
                     try:
-                        details = self.server.cipher.decrypt((job / "details.fernet").read_bytes())
-                        source_name = json.loads(details.decode("utf-8")).get("source_name", "relay-job")
+                        details = json.loads(self.server.cipher.decrypt(
+                            (job / "details.fernet").read_bytes()).decode("utf-8"))
+                        source_name = details.get("source_name", "relay-job")
                     except (OSError, InvalidToken, UnicodeDecodeError, json.JSONDecodeError):
+                        details = {}
                         source_name = "relay-job"
-                    self._reply(200, {key: metadata[key] for key in ("job_id", "page_count", "dpi", "created_at")}
-                                | {"source_name": source_name})
+                    response = {key: metadata[key] for key in ("job_id", "page_count", "dpi", "created_at")}
+                    response.update({"source_name": source_name,
+                                     "payload_type": metadata.get("payload_type", "scanner-pages-v1")})
+                    if metadata.get("payload_type") == "new-work-v1":
+                        response["work_package"] = details.get("work_package")
+                    self._reply(200, response)
                     return
             self._reply(204, {})
             return
@@ -409,7 +441,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path == "/v1/jobs":
             if not self._authorize_central():
                 return
-            body = self._body(4096)
+            # new-work adds reviewed values and an ordered document/page map.
+            body = self._body(1024 * 1024)
             if body is None:
                 return
             try:
@@ -423,7 +456,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             job_id, station_id = request.get("job_id"), request.get("station_id")
             page_count, dpi = request.get("page_count"), request.get("dpi")
             source_name = request.get("source_name", "")
-            if not isinstance(job_id, str) or not JOB_RE.fullmatch(job_id) or station_id not in self.server.config["stations"]:
+            payload_type = request.get("payload_type", "scanner-pages-v1")
+            work_package = request.get("work_package")
+            if (not isinstance(job_id, str) or not JOB_RE.fullmatch(job_id)
+                    or not isinstance(station_id, str)
+                    or station_id not in self.server.config["stations"]):
                 self._reply(400, {"error": "invalid job_id or station_id"})
                 return
             if not isinstance(page_count, int) or isinstance(page_count, bool) or not 1 <= page_count <= MAX_PAGES:
@@ -435,8 +472,14 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not isinstance(source_name, str) or len(source_name) > 255 or any(ord(c) < 32 for c in source_name):
                 self._reply(400, {"error": "invalid source_name"})
                 return
+            if not isinstance(payload_type, str) or payload_type not in {"scanner-pages-v1", "new-work-v1"}:
+                self._reply(400, {"error": "unsupported payload_type"})
+                return
+            if payload_type == "new-work-v1" and not isinstance(work_package, dict):
+                self._reply(400, {"error": "new-work payload requires work_package metadata"})
+                return
             metadata = {"job_id": job_id, "station_id": station_id, "page_count": page_count, "dpi": dpi,
-                        "total_bytes": 0, "status": "uploading",
+                        "total_bytes": 0, "status": "uploading", "payload_type": payload_type,
                         "created_at": datetime.now(timezone.utc).isoformat()}
             with self.server.lock:
                 job = self._job_dir(job_id)
@@ -447,6 +490,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 _atomic_write(job / "metadata.json", _json_bytes(metadata))
                 details = {"source_name": source_name.replace("/", "_").replace("\\", "_")}
+                if payload_type == "new-work-v1":
+                    details["work_package"] = work_package
                 _atomic_write(job / "details.fernet", self.server.cipher.encrypt(_json_bytes(details)))
             self._reply(201, {"status": "created", "job_id": job_id})
             return
@@ -492,13 +537,23 @@ class RelayHandler(BaseHTTPRequestHandler):
                     metadata["status"] = "delivered"
                     metadata["delivered_at"] = datetime.now(timezone.utc).isoformat()
                     _atomic_write(job / "metadata.json", _json_bytes(metadata))
-                try:
-                    shutil.rmtree(job)
-                except OSError:
-                    logging.exception("Could not remove delivered relay job %s", job_id)
-                    self._reply(200, {"status": "delivered", "job_id": job_id,
-                                      "cleanup": "pending-render-restart"})
-                    return
+                if metadata.get("payload_type") == "new-work-v1":
+                    # Purge the personal payload but retain a status-only
+                    # record so the central UI can confirm local application.
+                    for child in job.iterdir():
+                        if child.name != "metadata.json":
+                            if child.is_dir():
+                                shutil.rmtree(child)
+                            else:
+                                child.unlink(missing_ok=True)
+                else:
+                    try:
+                        shutil.rmtree(job)
+                    except OSError:
+                        logging.exception("Could not remove delivered relay job %s", job_id)
+                        self._reply(200, {"status": "delivered", "job_id": job_id,
+                                          "cleanup": "pending-render-restart"})
+                        return
             self._reply(200, {"status": "delivered-and-removed", "job_id": job_id})
             return
         self._reply(404, {"error": "not found"})

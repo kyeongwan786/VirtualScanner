@@ -79,7 +79,7 @@ def atomic_write(path: Path, content: bytes):
 def receive_one(config: dict, data_dir: Path) -> bool:
     base = config["relay_url"]
     station = quote(config["station_id"], safe="")
-    status, job = request(f"{base}/v1/stations/{station}/jobs/next", config["token"],
+    status, job = request(f"{base}/v1/stations/{station}/jobs/next?payload_type=scanner-pages-v1", config["token"],
                           ssl_context=config.get("ssl_context"))
     if status == 204:
         return False

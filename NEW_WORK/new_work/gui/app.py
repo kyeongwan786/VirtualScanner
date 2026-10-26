@@ -4,10 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Thread
 from time import perf_counter
-import sqlite3
+import shutil
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
@@ -20,7 +21,16 @@ from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
 from new_work.windows_lifecycle import create_tray_icon, register_current_user_autostart
-from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
+from new_work.pdf_render import default_job_directory, render_pdf_to_jpegs
+from new_work.job_package import create_work_package
+from new_work.stores import Store, load_stores
+from new_work.gui.stores_dialog import StoreManagerDialog
+from new_work.relay_config import load_relay_config, save_relay_config
+from new_work.relay_client import (
+    DeliveryPendingError,
+    get_work_package_status,
+    send_work_package,
+)
 
 
 ID_TYPE_LABEL_TO_CODE: dict[str, str] = {}
@@ -104,9 +114,24 @@ class NewWorkApp:
         self._ocr_warmup_finished = not isinstance(self.ocr, PaddleOcrAdapter)
         self._ocr_models_ready = self._ocr_warmup_finished
         self._pending_ocr_path: Path | None = None
+        self._document_job_id: str | None = None
+        self._document_jobs: list[dict[str, object]] = []
+        self._job_sent = False
+        self._pending_confirmation: tuple[str, str, str, dict[str, str]] | None = None
+        try:
+            self.stores = load_stores()
+        except ValueError as exc:
+            self.stores = []
+            self._store_config_error = str(exc)
+        else:
+            self._store_config_error = ""
+        try:
+            self.relay_config = load_relay_config()
+            self._relay_config_error = ""
+        except ValueError as exc:
+            self.relay_config = None
+            self._relay_config_error = str(exc)
         root.title("신분증 확인")
-        root.geometry("560x700")
-        root.resizable(False, False)
         self._build()
         root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
         if isinstance(self.ocr, PaddleOcrAdapter):
@@ -201,40 +226,69 @@ class NewWorkApp:
         self._setup_style()
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        shell = ttk.Frame(self.root, style="App.TFrame", padding=5)
+        self.root.geometry("1000x760")
+        self.root.minsize(850, 620)
+        self.root.resizable(True, True)
+        shell = ttk.Frame(self.root, style="App.TFrame", padding=8)
         shell.grid(row=0, column=0, sticky="nsew")
-        shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(3, weight=1)
+        shell.columnconfigure(0, weight=3, uniform="work_panels")
+        shell.columnconfigure(1, weight=2, uniform="work_panels")
+        shell.rowconfigure(1, weight=1)
 
         settings = ttk.Frame(shell, style="App.TFrame")
-        settings.grid(row=0, column=0, sticky="ew", pady=(0, 3))
+        settings.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text="포탈", style="FieldName.TLabel").grid(
             row=0, column=0, sticky="w", padx=(2, 5)
         )
         portal_choices = ttk.Frame(settings, style="App.TFrame")
         portal_choices.grid(row=0, column=1, sticky="e")
+        self.portal_buttons = []
         for portal in ("SK", "KT"):
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 portal_choices,
                 text=portal,
                 variable=self.portal_var,
                 value=portal,
-            ).pack(side="left", padx=(0, 8))
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.portal_buttons.append(button)
+        ttk.Label(settings, text="접수 PC", style="FieldName.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(14, 5)
+        )
+        self.store_box = ttk.Combobox(settings, state="readonly", width=24)
+        self.store_box.grid(row=0, column=3, sticky="e")
+        ttk.Button(settings, text="접점 설정", command=self._open_store_manager).grid(
+            row=0, column=4, sticky="e", padx=(6, 0)
+        )
+        ttk.Button(settings, text="Relay 서버", command=self._open_relay_settings).grid(
+            row=0, column=5, sticky="e", padx=(6, 0)
+        )
 
-        self.result_table = ttk.Frame(shell, style="Card.TFrame", padding=(2, 1))
-        self.result_table.grid(row=1, column=0, sticky="ew", pady=(0, 3))
-        self.result_table.columnconfigure(1, weight=1)
+        ocr_panel = ttk.LabelFrame(shell, text="신분증 OCR", padding=7)
+        ocr_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        ocr_panel.columnconfigure(0, weight=1)
+        ocr_panel.rowconfigure(2, weight=1)
 
-        buttons = ttk.Frame(shell, style="App.TFrame")
-        buttons.grid(row=2, column=0, pady=(1, 4))
+        buttons = ttk.Frame(ocr_panel, style="App.TFrame")
+        buttons.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         self.ocr_button = ttk.Button(
-            buttons, text="가져오기", command=self.import_and_ocr
+            buttons, text="신분증 JPG 선택", command=self.import_and_ocr
         )
-        self.ocr_button.pack(side="left", padx=3)
-        ttk.Button(buttons, text="저장하기", command=self.mark_reviewed).pack(
-            side="left", padx=3
+        self.ocr_button.pack(side="left", padx=(0, 5))
+        self.save_button = ttk.Button(
+            buttons, text="선택 PC로 저장", command=self.mark_reviewed
         )
+        self.save_button.pack(side="left")
+        self.status_button = ttk.Button(
+            buttons, text="전송 상태 확인", command=self._check_pending_status,
+            state="disabled",
+        )
+        self.status_button.pack(side="left", padx=(5, 0))
+
+        self.result_table = ttk.Frame(ocr_panel, style="Card.TFrame", padding=(4, 3))
+        self.result_table.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        self.result_table.columnconfigure(1, weight=1)
 
         self.review_status = tk.StringVar(value="")
         self.ocr_status = tk.StringVar(value=f"OCR 준비됨 · {self.ocr.status}")
@@ -248,33 +302,143 @@ class NewWorkApp:
             borderwidth=0,
             highlightthickness=0,
         ).place(relx=0.5, rely=0.5, anchor="center")
-        preview_area = tk.Frame(shell, background="#FFFFFF", borderwidth=0)
-        preview_area.grid(row=3, column=0, sticky="nsew")
+
+        preview_area = tk.Frame(ocr_panel, background="#FFFFFF", borderwidth=0)
+        preview_area.grid(row=2, column=0, sticky="nsew")
         preview_area.rowconfigure(0, weight=1)
         preview_area.columnconfigure(0, weight=1)
         self.image_label = tk.Label(
             preview_area,
-            text="",
+            text="신분증 JPG를 선택하거나 이 영역에 끌어다 놓으세요",
             anchor="center",
             justify="center",
             background="#FFFFFF",
             foreground="#667085",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10),
             borderwidth=0,
             highlightthickness=0,
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
         self.image_label.bind("<Configure>", self._schedule_preview_resize)
-        self._refresh_result_table()
-        self._register_drop_targets(self.root)
+        ttk.Label(
+            ocr_panel, textvariable=self.ocr_status, style="Muted.TLabel"
+        ).grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(
+            ocr_panel, textvariable=self.review_status, style="Status.TLabel"
+        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
 
-    def _register_drop_targets(self, widget: tk.Misc) -> None:
+        documents = ttk.LabelFrame(shell, text="서류 PDF", padding=7)
+        documents.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
+        documents.columnconfigure(0, weight=1)
+        documents.rowconfigure(2, weight=1)
+        ttk.Label(
+            documents,
+            text="PDF는 별도로 관리되며 신분증 OCR과 동시에 변환됩니다.",
+            style="Muted.TLabel",
+            wraplength=330,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 5))
+        self.pdf_button = ttk.Button(
+            documents, text="서류 PDF 추가", command=self.add_pdf_documents
+        )
+        self.pdf_button.grid(row=1, column=0, sticky="w", pady=(0, 5))
+        self.document_table = ttk.Treeview(
+            documents, columns=("status", "pages"), show="headings", height=10
+        )
+        self.document_table.heading("status", text="파일 / 상태")
+        self.document_table.heading("pages", text="페이지 / 저장 위치")
+        self.document_table.column("status", width=190, anchor="w", stretch=False)
+        self.document_table.column("pages", width=420, anchor="w", stretch=False)
+        self.document_table.grid(row=2, column=0, sticky="nsew")
+        document_scroll = ttk.Scrollbar(
+            documents, orient="horizontal", command=self.document_table.xview
+        )
+        document_scroll.grid(row=3, column=0, sticky="ew")
+        self.document_table.configure(xscrollcommand=document_scroll.set)
+        self._refresh_result_table()
+        self._refresh_stores()
+        self._register_drop_targets(ocr_panel, self._handle_id_drop)
+        self._register_drop_targets(documents, self._handle_pdf_drop)
+
+    def _register_drop_targets(self, widget: tk.Misc, handler) -> None:
         if not getattr(widget, "_new_work_drop_target", False):
             widget.drop_target_register(DND_FILES)
-            widget.dnd_bind("<<Drop>>", self._handle_image_drop)
+            widget.dnd_bind("<<Drop>>", handler)
             widget._new_work_drop_target = True
         for child in widget.winfo_children():
-            self._register_drop_targets(child)
+            self._register_drop_targets(child, handler)
+
+    def _refresh_stores(self) -> None:
+        if not hasattr(self, "store_box"):
+            return
+        self.store_box["values"] = [
+            f"{store.name} · {store.relay_station_id or '자리 ID 설정 필요'}"
+            for store in self.stores
+        ]
+        if self.stores:
+            self.store_box.current(0)
+        else:
+            self.store_box.set("접점 설정 필요")
+
+    def _open_store_manager(self) -> None:
+        StoreManagerDialog(self.root, self._stores_changed)
+
+    def _open_relay_settings(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Render Relay 설정")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(dialog, text="Relay HTTPS 주소").grid(
+            row=0, column=0, sticky="w", padx=10, pady=7
+        )
+        url_entry = ttk.Entry(dialog, width=58)
+        url_entry.grid(row=0, column=1, sticky="ew", padx=10, pady=7)
+        ttk.Label(dialog, text="중앙 송신 토큰").grid(
+            row=1, column=0, sticky="w", padx=10, pady=7
+        )
+        token_entry = ttk.Entry(dialog, width=58, show="•")
+        token_entry.grid(row=1, column=1, sticky="ew", padx=10, pady=7)
+        if self.relay_config:
+            url_entry.insert(0, self.relay_config["relay_url"])
+            token_entry.insert(0, self.relay_config["central_token"])
+        ttk.Label(
+            dialog,
+            text="토큰은 이 PC의 사용자 설정 폴더에 저장됩니다. Receiver 자리 토큰과 다릅니다.",
+            wraplength=480,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 8))
+
+        def save() -> None:
+            try:
+                save_relay_config(url_entry.get(), token_entry.get())
+                self.relay_config = load_relay_config()
+                self._relay_config_error = ""
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Relay 설정 오류", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            messagebox.showinfo("Relay 설정", "중앙 Relay 설정을 저장했습니다.", parent=self.root)
+
+        ttk.Button(dialog, text="저장", command=save).grid(
+            row=3, column=1, sticky="e", padx=10, pady=10
+        )
+        dialog.columnconfigure(1, weight=1)
+
+    def _stores_changed(self, stores: list[Store]) -> None:
+        self.stores = stores
+        self._refresh_stores()
+
+    def _selected_store(self) -> Store | None:
+        index = self.store_box.current()
+        return self.stores[index] if 0 <= index < len(self.stores) else None
+
+    def _set_transfer_controls(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget in (self.ocr_button, self.pdf_button, self.store_box, *self.portal_buttons):
+            widget.configure(state=state)
+        for widget in self.result_table.winfo_children():
+            try:
+                widget.configure(state=state)
+            except tk.TclError:
+                pass
 
     def _setup_style(self) -> None:
         style = ttk.Style(self.root)
@@ -319,7 +483,10 @@ class NewWorkApp:
         values = self._current_values()
         if self.portal_var.get() == "KT":
             return None
-        return write_ocr_result(result, self._id_type_detection, values=values)
+        report_path = default_job_directory() / result.job_id / "sk_report.txt"
+        return write_ocr_result(
+            result, self._id_type_detection, values=values, path=report_path
+        )
 
     def _refresh_result_table(self) -> None:
         if not hasattr(self, "result_table"):
@@ -356,7 +523,7 @@ class NewWorkApp:
                 lambda _event, selected=field: self._format_field_display(selected),
             )
             self._entries[field] = entry
-        self._register_drop_targets(self.result_table)
+        self._register_drop_targets(self.result_table, self._handle_id_drop)
 
     def _format_field_display(self, field: str) -> None:
         value = self._value_vars[field].get().strip()
@@ -492,18 +659,27 @@ class NewWorkApp:
             return False
         return self._load_image(Path(selected))
 
-    def _load_image(self, path: Path) -> bool:
+    def _load_image(self, path: Path, *, job_id: str | None = None) -> bool:
         self._stop_scan_animation(restore=False)
         try:
             with Image.open(path) as image:
                 image.verify()
             with Image.open(path) as image:
                 self._source_image = image.convert("RGB")
+            job_id = job_id or str(uuid4())
+            identity_directory = default_job_directory() / job_id / "identity"
+            identity_directory.mkdir(parents=True, exist_ok=True)
+            staged_image = identity_directory / f"identity{path.suffix.lower()}"
+            if path.expanduser().resolve() != staged_image.resolve():
+                shutil.copy2(path, staged_image)
         except Exception as exc:
-            messagebox.showerror("이미지 열기 실패", f"선택한 파일을 읽지 못했습니다: {exc}")
+            messagebox.showerror(
+                "이미지 준비 실패", f"신분증 이미지를 작업 폴더에 준비하지 못했습니다: {exc}"
+            )
             return False
 
-        result = OcrResult.empty(path)
+        self._document_job_id = job_id
+        result = OcrResult(job_id=job_id, image_path=staged_image)
         self.draft = ReviewDraft.from_result(result)
         self._mask_preview_position = None
         self._id_type_detection = IdTypeDetection(None, None)
@@ -515,31 +691,147 @@ class NewWorkApp:
         self._resize_source_preview()
         return True
 
-    def _handle_image_drop(self, event) -> str:
+    def _handle_id_drop(self, event) -> str:
         try:
             dropped_paths = tuple(self.root.tk.splitlist(event.data))
         except tk.TclError:
             dropped_paths = ()
-        if len(dropped_paths) != 1:
+        paths = tuple(Path(item) for item in dropped_paths)
+        if len(paths) != 1 or paths[0].suffix.casefold() not in {".jpg", ".jpeg"}:
             messagebox.showinfo(
-                "이미지 가져오기", "신분증 이미지 한 장씩 끌어다 놓아 주세요.",
+                "신분증 이미지",
+                "신분증 OCR 영역에는 JPG 이미지 한 장을 놓아 주세요.",
                 parent=self.root,
             )
             return COPY
-        path = Path(dropped_paths[0])
-        if path.suffix.lower() not in {".jpg", ".jpeg"}:
+        self._load_new_identity(paths[0])
+        return COPY
+
+    def _handle_pdf_drop(self, event) -> str:
+        try:
+            dropped_paths = tuple(self.root.tk.splitlist(event.data))
+        except tk.TclError:
+            dropped_paths = ()
+        paths = tuple(Path(item) for item in dropped_paths)
+        if not paths or any(path.suffix.casefold() != ".pdf" for path in paths):
             messagebox.showinfo(
-                "이미지 가져오기", "JPG 이미지 파일을 끌어다 놓아 주세요.",
+                "서류 PDF",
+                "서류 영역에는 PDF 파일만 놓아 주세요.",
                 parent=self.root,
             )
             return COPY
-        if self._load_image(path):
-            self.run_ocr()
+        self._queue_pdf_paths(list(paths))
         return COPY
 
     def import_and_ocr(self) -> None:
-        if self.choose_image():
-            self.run_ocr()
+        selected = filedialog.askopenfilename(
+            title="신분증 JPG 선택",
+            filetypes=(("JPEG 이미지", "*.jpg *.jpeg"), ("모든 파일", "*.*")),
+        )
+        if selected:
+            self._load_new_identity(Path(selected))
+
+    def add_pdf_documents(self) -> None:
+        selected = filedialog.askopenfilenames(
+            title="서류 PDF 추가",
+            filetypes=(("PDF 문서", "*.pdf"), ("모든 파일", "*.*")),
+        )
+        if selected:
+            self._queue_pdf_paths([Path(item) for item in selected])
+
+    def _load_new_identity(self, path: Path) -> None:
+        # If PDFs were added first, attach the ID image to that same job.
+        reuse_job = self.draft is None and self._document_job_id is not None
+        job_id = self._document_job_id if reuse_job else str(uuid4())
+        if not self._load_image(path, job_id=job_id):
+            return
+        self._job_sent = False
+        self._pending_confirmation = None
+        if hasattr(self, "status_button"):
+            self.status_button.configure(state="disabled", text="전송 상태 확인")
+        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        self.pdf_button.configure(state="normal")
+        if not reuse_job:
+            self._document_jobs.clear()
+            self._refresh_document_table()
+        # Begin OCR immediately; adding PDFs remains available while it runs.
+        self.run_ocr()
+
+    def _queue_pdf_paths(self, paths: list[Path]) -> None:
+        if self._job_sent:
+            messagebox.showinfo(
+                "새 작업 필요", "전송을 마친 작업에는 PDF를 추가할 수 없습니다. 새 신분증 작업을 시작하세요.",
+                parent=self.root,
+            )
+            return
+        if not self._document_job_id:
+            self._document_job_id = str(uuid4())
+        self._add_pdf_paths(paths, self._document_job_id)
+
+    def _add_pdf_paths(self, paths: list[Path], job_id: str) -> None:
+        jobs_root = default_job_directory() / job_id / "documents"
+        try:
+            jobs_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror(
+                "PDF 작업 폴더 오류", f"변환 폴더를 만들지 못했습니다: {exc}",
+                parent=self.root,
+            )
+            return
+        for source in paths:
+            key = str(uuid4())
+            output_directory = jobs_root / f"{key}_{source.stem}"
+            item: dict[str, object] = {
+                "key": key,
+                "source": source,
+                "output": output_directory,
+                "status": "변환 중",
+                "pages": "",
+            }
+            self._document_jobs.append(item)
+            self._refresh_document_table()
+            Thread(
+                target=self._render_pdf_in_background,
+                args=(key, source, output_directory),
+                daemon=True,
+            ).start()
+
+    def _render_pdf_in_background(
+        self, key: str, source: Path, output_directory: Path
+    ) -> None:
+        try:
+            pages = render_pdf_to_jpegs(source, output_directory)
+        except Exception as exc:
+            self.root.after(0, self._pdf_conversion_failed, key, str(exc))
+            return
+        self.root.after(0, self._pdf_conversion_succeeded, key, pages)
+
+    def _pdf_conversion_succeeded(self, key: str, pages: tuple[Path, ...]) -> None:
+        item = next((row for row in self._document_jobs if row["key"] == key), None)
+        if item is None:
+            return
+        item["status"] = "변환 완료"
+        item["pages"] = f"{len(pages)}페이지 · {item['output']}"
+        self._refresh_document_table()
+
+    def _pdf_conversion_failed(self, key: str, error: str) -> None:
+        item = next((row for row in self._document_jobs if row["key"] == key), None)
+        if item is None:
+            return
+        item["status"] = "변환 실패"
+        item["pages"] = error
+        self._refresh_document_table()
+
+    def _refresh_document_table(self) -> None:
+        if not hasattr(self, "document_table"):
+            return
+        self.document_table.delete(*self.document_table.get_children())
+        for item in self._document_jobs:
+            source = item["source"]
+            self.document_table.insert(
+                "", "end", iid=str(item["key"]),
+                values=(f"{source.name} · {item['status']}", item["pages"]),
+            )
 
     def run_ocr(self) -> None:
         if self.draft is None:
@@ -972,38 +1264,191 @@ class NewWorkApp:
         if not self.draft.result.lines:
             messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
             return
-        values = self._current_values()
-        database_row_id: str | None = None
-        try:
-            if self.portal_var.get() == "KT":
-                result_path, database_row_id = save_kt_submission(
-                    self.draft.result,
-                    self._id_type_detection,
-                    values,
-                )
-            else:
-                result_path = self._write_selected_portal_report(
-                    self.draft.result
-                )
-            self.draft.mark_reviewed(values)
-        except (OSError, ValueError, sqlite3.Error) as exc:
+        store = self._selected_store()
+        if store is None:
+            messagebox.showinfo("접수 PC 선택", "먼저 접점 설정에서 대상 PC를 등록하세요.")
+            return
+        if not store.relay_station_id:
             messagebox.showwarning(
-                "저장 실패",
-                f"검토값은 현재 메모리에 반영됐지만 저장에 실패했습니다: {exc}",
+                "Relay 자리 ID 설정",
+                f"'{store.name}'의 Render Relay 자리 ID를 접점 설정에 입력하세요.",
                 parent=self.root,
             )
-            result_path = None
-        self.review_status.set("저장 완료" if result_path else "저장 실패")
-        if result_path:
-            saved_message = f"수정한 OCR 결과를 저장했습니다.\n{result_path}"
-            if database_row_id is not None:
-                saved_message += f"\nT_SCAN_PAPER 문서 ID: {database_row_id}"
-                image_directory = default_kt_image_directory()
-                saved_message += (
-                    f"\n원본 이미지: {image_directory / 'ORG.jpg'}"
-                    f"\n얼굴 이미지: {image_directory / 'CR.jpg'}"
-                )
-            messagebox.showinfo("저장하기", saved_message, parent=self.root)
+            return
+        if self.relay_config is None:
+            messagebox.showwarning(
+                "Relay 서버 설정",
+                self._relay_config_error or "먼저 Relay 서버 주소와 중앙 송신 토큰을 설정하세요.",
+                parent=self.root,
+            )
+            return
+        incomplete = [
+            str(item["source"].name)
+            for item in self._document_jobs
+            if item["status"] != "변환 완료"
+        ]
+        if incomplete:
+            messagebox.showinfo(
+                "PDF 변환 중",
+                "변환이 완료되지 않은 PDF가 있어 전송하지 않았습니다:\n"
+                + "\n".join(incomplete),
+                parent=self.root,
+            )
+            return
+        values = self._current_values()
+        carrier = self.portal_var.get()
+        if values.get("kaitIdType", "").strip() not in ID_TYPES:
+            messagebox.showinfo(
+                "신분증 종류 확인",
+                "전송 전에 신분증 종류를 선택하고 OCR 항목을 확인하세요.",
+                parent=self.root,
+            )
+            return
+        result = self.draft.result
+        detection = self._id_type_detection
+        documents = list(self._document_jobs)
+        relay_config = dict(self.relay_config)
+        transfer_job_id = str(uuid4())
+        self.save_button.configure(state="disabled", text="전송 중…")
+        self._set_transfer_controls(False)
+        self.review_status.set(f"Render Relay로 {carrier} 작업 전송 중…")
+        Thread(
+            target=self._send_work_package,
+            args=(store, carrier, result, detection, values, documents,
+                  relay_config, transfer_job_id),
+            daemon=True,
+        ).start()
+
+    def _send_work_package(
+        self,
+        store: Store,
+        carrier: str,
+        result: OcrResult,
+        detection: IdTypeDetection,
+        values: dict[str, str],
+        documents: list[dict[str, object]],
+        relay_config: dict[str, str],
+        transfer_job_id: str,
+    ) -> None:
+        try:
+            job_root = default_job_directory() / result.job_id
+            package_path = job_root / (
+                f"{transfer_job_id}_{carrier}.zip"
+            )
+            package = create_work_package(
+                package_path,
+                job_id=transfer_job_id,
+                station_id=store.relay_station_id,
+                carrier=carrier,
+                result=result,
+                detection=detection,
+                reviewed_values=values,
+                document_jobs=documents,
+            )
+            def progress(message: str) -> None:
+                self.root.after(0, self.review_status.set, message)
+
+            job_id = send_work_package(
+                relay_config, store.relay_station_id, package, progress
+            )
+        except DeliveryPendingError as exc:
+            self.root.after(
+                0, self._work_package_pending, store.name, carrier,
+                exc.job_id, values, str(exc),
+            )
+            return
+        except Exception as exc:
+            self.root.after(0, self._work_package_failed, store.name, str(exc))
+            return
+        self.root.after(
+            0, self._work_package_sent, store.name, carrier, job_id, values
+        )
+
+    def _work_package_failed(self, store_name: str, error: str) -> None:
+        self._pending_confirmation = None
+        self.status_button.configure(state="disabled")
+        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        self._set_transfer_controls(True)
+        self.review_status.set("Relay 전송 또는 Receiver 적용 실패")
+        messagebox.showerror(
+            "Receiver 전송 실패",
+            f"{store_name} Receiver에 작업을 저장하지 못했습니다.\n{error}",
+            parent=self.root,
+        )
+
+    def _work_package_pending(
+        self, store_name: str, carrier: str, job_id: str,
+        values: dict[str, str], error: str,
+    ) -> None:
+        self._set_transfer_controls(True)
+        self.save_button.configure(state="disabled", text="Receiver 확인 대기")
+        self.pdf_button.configure(state="disabled")
+        self._pending_confirmation = (store_name, carrier, job_id, values)
+        self.status_button.configure(state="normal")
+        self._job_sent = True
+        self.review_status.set(f"{store_name} Receiver 적용 확인 대기 · {job_id}")
+        messagebox.showwarning("Receiver 확인 대기", error, parent=self.root)
+
+    def _check_pending_status(self) -> None:
+        pending = self._pending_confirmation
+        if pending is None or self.relay_config is None:
+            return
+        store_name, carrier, job_id, values = pending
+        self.status_button.configure(state="disabled", text="확인 중…")
+        Thread(
+            target=self._check_pending_status_worker,
+            args=(store_name, carrier, job_id, values, dict(self.relay_config)),
+            daemon=True,
+        ).start()
+
+    def _check_pending_status_worker(
+        self, store_name: str, carrier: str, job_id: str,
+        values: dict[str, str], relay_config: dict[str, str],
+    ) -> None:
+        try:
+            status = get_work_package_status(relay_config, job_id)
+        except Exception as exc:
+            self.root.after(0, self._pending_status_failed, str(exc))
+            return
+        self.root.after(
+            0, self._pending_status_updated,
+            store_name, carrier, job_id, values, status,
+        )
+
+    def _pending_status_failed(self, error: str) -> None:
+        self.status_button.configure(state="normal", text="전송 상태 확인")
+        self.review_status.set(f"전송 상태 확인 실패 · {error}")
+
+    def _pending_status_updated(
+        self, store_name: str, carrier: str, job_id: str,
+        values: dict[str, str], status: str,
+    ) -> None:
+        self.status_button.configure(state="normal", text="전송 상태 확인")
+        if status == "delivered":
+            self._pending_confirmation = None
+            self.status_button.configure(state="disabled")
+            self._work_package_sent(store_name, carrier, job_id, values)
+        else:
+            self.review_status.set(f"Receiver 작업 상태: {status} · {job_id}")
+
+    def _work_package_sent(
+        self, store_name: str, carrier: str, job_id: str,
+        values: dict[str, str],
+    ) -> None:
+        self._pending_confirmation = None
+        self.status_button.configure(state="disabled", text="전송 상태 확인")
+        self._set_transfer_controls(True)
+        self.pdf_button.configure(state="disabled")
+        self.save_button.configure(state="disabled", text="전송 완료")
+        self._job_sent = True
+        if self.draft is not None:
+            self.draft.mark_reviewed(values)
+        self.review_status.set(f"{store_name} Receiver에서 {carrier} 저장 완료 확인")
+        messagebox.showinfo(
+            "저장 완료",
+            f"{store_name} Receiver가 {carrier} 작업 적용을 완료했습니다.\n작업 ID: {job_id}",
+            parent=self.root,
+        )
 
 def main() -> None:
     root = TkinterDnD.Tk()
