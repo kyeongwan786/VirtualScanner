@@ -47,8 +47,12 @@ The package is also available through `NEW_WORK-Receiver-Windows-Build.zip`. Run
 
 Receiver polls every five seconds when the GUI is open. Keep it running while the central PC sends work. The Receiver stores the complete job locally before applying data; SK replaces the configured report with a timestamped backup, and KT updates the configured local database and image folder. Only after that succeeds does it acknowledge the relay. A failed application stays queued at the relay and Receiver retries after a pause.
 
-## Local PDF scan queue
+## Receiver screen and local PDF scan queue
 
-Each PDF appears as a separate item in the Receiver queue. Move items to choose their order. Select one item at the top to scan it alone, or select a consecutive group starting at the top to scan them together. **선택 서류 스캔에 올리기** copies only that group to the virtual scanner's `ready` directory. After TWAIN removes the active job, Receiver marks those items complete.
+The Receiver separates **신분증 / 접수 결과** from **서류 스캔 대기열**. The identity tab uses the central OCR field labels with a large identity preview and a selector for received jobs. On the document tab, each PDF is shown as its own folder row. Double-click a row to page through its converted JPGs, then use **목록으로** to return.
+
+New PDFs first appear in **스캔 서류 대기열**. Select one or more folders and choose **스캔할 서류로 올리기** to move them into the separate **스캔할 서류** panel. Reorder each panel with its own up/down buttons. Select one or more folders in **스캔할 서류** and choose **선택 서류 스캔에 올리기** to copy those pages to the virtual scanner's `ready` directory. This allows one folder to scan alone or several selected folders to scan together. After TWAIN removes the active job, Receiver marks those items complete and removes them from the active lists.
+
+Folder names are normalized for display so Korean filenames created on macOS do not appear as separated consonants and vowels in the Windows Receiver.
 
 Identity images, reviewed OCR values, locally applied work packages, previous SK reports, KT database backups, and scanner queue data remain on the workstations. Receiver does not automatically clean those local files. The Render relay is a separate cloud copy: its page payload is deleted on successful acknowledgement, while a small status record remains so the central app can confirm delivery.

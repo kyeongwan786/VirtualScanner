@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import sys
 import tkinter as tk
+import unicodedata
 from threading import Thread
 from time import monotonic
 from datetime import datetime
@@ -67,12 +68,83 @@ def _safe_package_path(name: str) -> PurePosixPath:
     return path
 
 
+def _display_text(value: object) -> str:
+    return unicodedata.normalize("NFC", str(value))
+
+
+class DocumentPreviewDialog:
+    def __init__(self, app: "ReceiverApp", item: dict) -> None:
+        self.app = app
+        self.item = item
+        document = item["document"]
+        self.pages = [
+            app._job_file(item["job_dir"], str(relative))
+            for relative in document.get("pages", [])
+        ]
+        self.index = 0
+        self.photo: ImageTk.PhotoImage | None = None
+        self.window = tk.Toplevel(app.root)
+        self.window.title(f"서류 미리보기 · {_display_text(document.get('label', '서류'))}")
+        self.window.geometry("1120x850")
+        self.window.minsize(800, 620)
+        self.window.transient(app.root)
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+
+        toolbar = ttk.Frame(self.window, padding=10)
+        toolbar.grid(row=0, column=0, sticky="ew")
+        ttk.Button(toolbar, text="← 목록으로", command=self.window.destroy).pack(side="left")
+        self.title_var = tk.StringVar(value="")
+        ttk.Label(toolbar, textvariable=self.title_var, style="Title.TLabel").pack(side="left", padx=16)
+        ttk.Button(toolbar, text="이전 페이지", command=lambda: self._show(-1)).pack(side="right")
+        ttk.Button(toolbar, text="다음 페이지", command=lambda: self._show(1)).pack(side="right", padx=6)
+
+        self.image_label = tk.Label(
+            self.window, text="이미지를 불러오는 중", anchor="center",
+            background="#202938", foreground="white",
+        )
+        self.image_label.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.image_label.bind("<Configure>", self._resize_current)
+        self._show(0)
+
+    def _show(self, offset: int) -> None:
+        if not self.pages:
+            self.image_label.configure(image="", text="변환된 JPG 페이지가 없습니다")
+            return
+        self.index = max(0, min(len(self.pages) - 1, self.index + offset))
+        try:
+            with Image.open(self.pages[self.index]) as image:
+                self._render_image(image)
+            self.title_var.set(
+                f"{_display_text(self.item['document'].get('label', '서류'))} · "
+                f"페이지 {self.index + 1} / {len(self.pages)}"
+            )
+        except OSError as exc:
+            self.image_label.configure(image="", text=f"페이지를 열지 못했습니다: {exc}")
+
+    def _resize_current(self, _event=None) -> None:
+        if self.pages:
+            try:
+                with Image.open(self.pages[self.index]) as image:
+                    self._render_image(image)
+            except OSError:
+                return
+
+    def _render_image(self, image: Image.Image) -> None:
+        width = max(100, self.image_label.winfo_width() - 24)
+        height = max(100, self.image_label.winfo_height() - 24)
+        preview = image.convert("RGB")
+        preview.thumbnail((width, height), Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(preview)
+        self.image_label.configure(image=self.photo, text="")
+
+
 class ReceiverApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("NEW_WORK Receiver")
-        self.root.geometry("1000x700")
-        self.root.minsize(820, 560)
+        self.root.geometry("1420x900")
+        self.root.minsize(1120, 720)
         self.config_path = default_receiver_config_path()
         self.config = default_receiver_config()
         if self.config_path.exists():
@@ -84,7 +156,10 @@ class ReceiverApp:
         self._retry_after = 0.0
         self._photo: ImageTk.PhotoImage | None = None
         self._items: dict[str, dict] = {}
+        self._jobs: dict[str, dict] = {}
+        self._job_labels: dict[str, str] = {}
         self._queue_order: list[str] = []
+        self._scan_order: list[str] = []
         self._completed: set[str] = set()
         self._active: dict | None = None
         self._build()
@@ -95,56 +170,136 @@ class ReceiverApp:
         self.root.after(1000, self._poll_inbox)
 
     def _build(self) -> None:
-        shell = ttk.Frame(self.root, padding=10)
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        font_family = "Malgun Gothic" if os.name == "nt" else "Apple SD Gothic Neo"
+        style.configure("TLabel", font=(font_family, 10))
+        style.configure("Title.TLabel", font=(font_family, 13, "bold"))
+        style.configure("Treeview", font=(font_family, 10), rowheight=30)
+        style.configure("Treeview.Heading", font=(font_family, 10, "bold"))
+        style.configure("TButton", font=(font_family, 10), padding=(8, 5))
+        style.configure("TLabelframe.Label", font=(font_family, 10, "bold"))
+
+        shell = ttk.Frame(self.root, padding=12)
         shell.pack(fill="both", expand=True)
-        shell.columnconfigure(0, weight=3)
-        shell.columnconfigure(1, weight=2)
+        shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
         toolbar = ttk.Frame(shell)
-        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(toolbar, text="NEW_WORK Receiver", style="Title.TLabel").pack(side="left", padx=(0, 18))
         ttk.Button(toolbar, text="Receiver 설정", command=self._edit_config).pack(side="left")
         ttk.Button(toolbar, text="새로고침", command=self._refresh_queue).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Relay 다시 확인", command=self._retry_failed).pack(side="left")
         self.status = tk.StringVar(value="수신 대기 중")
-        ttk.Label(toolbar, textvariable=self.status).pack(side="left", padx=12)
+        ttk.Label(toolbar, textvariable=self.status).pack(side="left", padx=14)
 
-        queue_frame = ttk.LabelFrame(shell, text="서류 스캔 대기열", padding=6)
-        queue_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
-        queue_frame.columnconfigure(0, weight=1)
-        queue_frame.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(
-            queue_frame,
-            columns=("carrier", "pages", "state"),
-            show="tree headings",
-            selectmode="extended",
-        )
-        self.tree.heading("#0", text="서류 / 작업")
-        self.tree.heading("carrier", text="포탈")
-        self.tree.heading("pages", text="페이지")
-        self.tree.heading("state", text="상태")
-        self.tree.column("#0", width=270, anchor="w")
-        self.tree.column("carrier", width=65, anchor="center", stretch=False)
-        self.tree.column("pages", width=65, anchor="center", stretch=False)
-        self.tree.column("state", width=90, anchor="center", stretch=False)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(queue_frame, orient="vertical", command=self.tree.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.bind("<<TreeviewSelect>>", self._show_selected)
-        controls = ttk.Frame(queue_frame)
-        controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
-        ttk.Button(controls, text="위로", command=lambda: self._move_selected(-1)).pack(side="left")
-        ttk.Button(controls, text="아래로", command=lambda: self._move_selected(1)).pack(side="left", padx=5)
-        ttk.Button(controls, text="선택 서류 스캔에 올리기", command=self._activate_selected).pack(side="right")
+        self.notebook = ttk.Notebook(shell)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
+        self._build_identity_tab()
+        self._build_documents_tab()
 
-        preview_frame = ttk.LabelFrame(shell, text="수신된 신분증", padding=6)
-        preview_frame.grid(row=1, column=1, sticky="nsew")
-        preview_frame.columnconfigure(0, weight=1)
+    def _build_identity_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=10)
+        tab.columnconfigure(0, weight=3)
+        tab.columnconfigure(1, weight=2)
+        tab.rowconfigure(0, weight=1)
+        self.notebook.add(tab, text="신분증 / 접수 결과")
+
+        preview_frame = ttk.LabelFrame(tab, text="수신된 신분증", padding=8)
+        preview_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         preview_frame.rowconfigure(0, weight=1)
-        self.preview = ttk.Label(preview_frame, text="작업을 선택하면 이미지가 표시됩니다", anchor="center")
+        preview_frame.columnconfigure(0, weight=1)
+        self.preview = tk.Label(
+            preview_frame, text="접수 작업을 선택하면 신분증이 크게 표시됩니다",
+            anchor="center", justify="center", background="#FFFFFF", foreground="#667085",
+        )
         self.preview.grid(row=0, column=0, sticky="nsew")
-        self.detail = tk.Text(preview_frame, height=8, wrap="word", state="disabled")
-        self.detail.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.preview.bind("<Configure>", self._resize_identity_preview)
+
+        result_frame = ttk.LabelFrame(tab, text="중앙 OCR 접수 결과", padding=12)
+        result_frame.grid(row=0, column=1, sticky="nsew")
+        result_frame.columnconfigure(1, weight=1)
+        result_frame.rowconfigure(1, weight=1)
+        ttk.Label(result_frame, text="접수 작업").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 10))
+        self.job_box = ttk.Combobox(result_frame, state="readonly")
+        self.job_box.grid(row=0, column=1, sticky="ew", pady=(0, 10))
+        self.job_box.bind("<<ComboboxSelected>>", self._select_job)
+        fields = ttk.Frame(result_frame)
+        fields.grid(row=1, column=0, columnspan=2, sticky="new")
+        fields.columnconfigure(1, weight=1)
+        self.identity_vars: dict[str, tk.StringVar] = {}
+        field_specs = (
+            ("id_type", "신분증 종류"), ("custNm", "이름"),
+            ("ctzCorpNum", "주민등록번호 / 등록번호"), ("addr", "주소"),
+            ("isueDt", "발급일자"), ("drvLicenIsueNum", "운전면허번호"),
+            ("isuePlc", "발급기관"), ("veteranNum", "보훈번호"),
+        )
+        for row, (key, label) in enumerate(field_specs):
+            ttk.Label(fields, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
+            variable = tk.StringVar(value="")
+            self.identity_vars[key] = variable
+            entry = ttk.Entry(fields, textvariable=variable, state="readonly")
+            entry.grid(row=row, column=1, sticky="ew", pady=6, ipady=4)
+        self.identity_hint = tk.StringVar(value="중앙 PC에서 검토한 OCR 값을 표시합니다.")
+        ttk.Label(result_frame, textvariable=self.identity_hint, wraplength=430).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(14, 0)
+        )
+
+    def _build_documents_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=10)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+        self.notebook.add(tab, text="서류 스캔 대기열")
+        ttk.Label(
+            tab,
+            text="PDF 하나가 서류 폴더 하나로 표시됩니다. 더블클릭하면 페이지를 미리 볼 수 있습니다.",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        panes = ttk.Panedwindow(tab, orient="horizontal")
+        panes.grid(row=1, column=0, sticky="nsew")
+        self.scan_frame, self.wait_frame = ttk.LabelFrame(panes, text="스캔할 서류", padding=8), ttk.LabelFrame(panes, text="스캔 서류 대기열", padding=8)
+        panes.add(self.scan_frame, weight=1)
+        panes.add(self.wait_frame, weight=1)
+        self.scan_frame.columnconfigure(0, weight=1)
+        self.scan_frame.rowconfigure(0, weight=1)
+        self.wait_frame.columnconfigure(0, weight=1)
+        self.wait_frame.rowconfigure(0, weight=1)
+        self.scan_tree = self._make_document_tree(self.scan_frame, 0)
+        self.wait_tree = self._make_document_tree(self.wait_frame, 0)
+        self.scan_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.scan_tree))
+        self.wait_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.wait_tree))
+        scan_controls = ttk.Frame(self.scan_frame)
+        scan_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(scan_controls, text="위로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, -1)).pack(side="left")
+        ttk.Button(scan_controls, text="아래로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, 1)).pack(side="left", padx=5)
+        ttk.Button(scan_controls, text="대기열로 내리기", command=self._demote_selected).pack(side="left", padx=5)
+        ttk.Button(scan_controls, text="선택 서류 스캔에 올리기", command=self._activate_selected).pack(side="right")
+        wait_controls = ttk.Frame(self.wait_frame)
+        wait_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(wait_controls, text="위로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, -1)).pack(side="left")
+        ttk.Button(wait_controls, text="아래로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, 1)).pack(side="left", padx=5)
+        ttk.Button(wait_controls, text="스캔할 서류로 올리기 →", command=self._promote_selected).pack(side="right")
+        self.completed_count = tk.StringVar(value="완료된 서류 0개")
+        ttk.Label(tab, textvariable=self.completed_count).grid(row=2, column=0, sticky="e", pady=(8, 0))
+
+    @staticmethod
+    def _make_document_tree(parent: ttk.LabelFrame, row: int) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=("pages", "carrier", "state"), selectmode="extended")
+        tree.heading("#0", text="서류 폴더")
+        tree.heading("pages", text="페이지")
+        tree.heading("carrier", text="포탈")
+        tree.heading("state", text="상태")
+        tree.column("#0", width=360, anchor="w")
+        tree.column("pages", width=75, anchor="center", stretch=False)
+        tree.column("carrier", width=75, anchor="center", stretch=False)
+        tree.column("state", width=100, anchor="center", stretch=False)
+        tree.grid(row=row, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=row, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        return tree
 
     def _edit_config(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -231,19 +386,31 @@ class ReceiverApp:
             state = json.loads(self._state_path().read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
-        order = state.get("order", [])
-        self._queue_order = [item for item in order if isinstance(item, str)]
+        scan_order = state.get("scan_order", [])
+        queue_order = state.get("queue_order", state.get("order", []))
+        self._scan_order = [item for item in scan_order if isinstance(item, str)]
+        self._queue_order = [item for item in queue_order if isinstance(item, str)]
         completed = state.get("completed", [])
         self._completed = {item for item in completed if isinstance(item, str)}
         active = state.get("active")
         if isinstance(active, dict):
             self._active = active
+            active_keys = self._active.get("keys") or [self._active.get("key", "")]
+            active_keys = [key for key in active_keys if isinstance(key, str)]
+            self._queue_order = [key for key in self._queue_order if key not in active_keys]
+            self._scan_order = list(dict.fromkeys([*active_keys, *self._scan_order]))
 
     def _save_queue_state(self) -> None:
         path = self._state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"order": self._queue_order, "active": self._active, "completed": sorted(self._completed)}, ensure_ascii=False, indent=2) + "\n",
+            json.dumps({
+                "scan_order": self._scan_order,
+                "queue_order": self._queue_order,
+                "order": self._scan_order + self._queue_order,
+                "active": self._active,
+                "completed": sorted(self._completed),
+            }, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -322,8 +489,10 @@ class ReceiverApp:
         self._active = None
         self._save_queue_state()
         for key in keys:
-            if self.tree.exists(str(key)):
-                self.tree.set(str(key), "state", "스캔 완료")
+            if self.scan_tree.exists(str(key)):
+                self.scan_tree.delete(str(key))
+            if self.wait_tree.exists(str(key)):
+                self.wait_tree.delete(str(key))
         self.status.set("가상 스캐너가 작업 완료를 확인했습니다")
 
     def _apply_sk_report(self, source: Path) -> None:
@@ -398,6 +567,7 @@ class ReceiverApp:
     def _refresh_queue(self) -> None:
         self._sync_active_scan()
         self._items.clear()
+        self._jobs.clear()
         work_root = Path(self.config.get("work_path", "")) / "jobs"
         manifests = (
             sorted(
@@ -417,6 +587,12 @@ class ReceiverApp:
                 continue
             if not (manifest_path.parent / "applied.json").exists():
                 continue
+            self._jobs[str(job_id)] = {
+                "job_id": str(job_id),
+                "job_dir": manifest_path.parent,
+                "manifest": manifest,
+                "mtime": manifest_path.stat().st_mtime,
+            }
             documents = manifest.get("documents", [])
             if not isinstance(documents, list):
                 continue
@@ -430,56 +606,203 @@ class ReceiverApp:
                         self._job_file(manifest_path.parent, str(relative))
                 except (TypeError, ValueError):
                     continue
+                display_document = dict(document)
+                display_document["label"] = _display_text(
+                    document.get("source_name") or document.get("label", "서류")
+                )
+                display_document["source_name"] = _display_text(
+                    document.get("source_name") or document.get("label", "서류")
+                )
                 self._items[key] = {
                     "key": key,
                     "job_id": job_id,
                     "job_dir": manifest_path.parent,
                     "carrier": manifest.get("carrier", ""),
-                    "document": document,
+                    "document": display_document,
                     "state": "대기",
                 }
-        valid = [key for key in self._queue_order if key in self._items]
-        valid.extend(key for key in self._items if key not in valid)
-        self._queue_order = valid
+        self._scan_order = [
+            key for key in self._scan_order
+            if key in self._items and key not in self._completed
+        ]
+        self._queue_order = [
+            key for key in self._queue_order
+            if key in self._items and key not in self._completed and key not in self._scan_order
+        ]
+        known = set(self._scan_order) | set(self._queue_order) | self._completed
+        self._queue_order.extend(key for key in self._items if key not in known)
         active_keys = set()
         if self._active:
             active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
         for key, item in self._items.items():
-            if key in self._completed:
-                item["state"] = "스캔 완료"
-            elif key in active_keys:
+            if key in active_keys:
                 item["state"] = "스캔 중"
-        self.tree.delete(*self.tree.get_children())
-        for key in self._queue_order:
-            item = self._items[key]
-            doc = item["document"]
-            self.tree.insert(
-                "", "end", iid=key,
-                text=f"{doc.get('label', '서류')} · {item['job_id'][:8]}",
-                values=(item["carrier"], doc.get("page_count", 0), item["state"]),
-            )
-    def _selected_key(self) -> str | None:
-        selection = self.tree.selection()
-        return selection[0] if selection else None
+        self._render_document_tree(self.scan_tree, self._scan_order, active_keys, "스캔 대상")
+        self._render_document_tree(self.wait_tree, self._queue_order, active_keys, "대기")
+        self.completed_count.set(f"완료된 서류 {len(self._completed)}개")
+        self._refresh_job_selector()
 
-    def _move_selected(self, offset: int) -> None:
-        key = self._selected_key()
-        if key is None:
+    def _render_document_tree(
+        self, tree: ttk.Treeview, order: list[str], active_keys: set[str], idle_state: str,
+    ) -> None:
+        tree.delete(*tree.get_children())
+        for key in order:
+            item = self._items.get(key)
+            if item is None:
+                continue
+            document = item["document"]
+            tree.insert(
+                "", "end", iid=key,
+                text=_display_text(document.get("source_name") or document.get("label", "서류")),
+                values=(document.get("page_count", 0), item["carrier"],
+                        "스캔 중" if key in active_keys else idle_state),
+            )
+
+    def _refresh_job_selector(self) -> None:
+        jobs = sorted(self._jobs.values(), key=lambda item: item["mtime"], reverse=True)
+        self._job_labels.clear()
+        labels = []
+        for job in jobs:
+            manifest = job["manifest"]
+            stamp = datetime.fromtimestamp(job["mtime"]).strftime("%m-%d %H:%M")
+            label = f"{manifest.get('carrier', '접수')} · {stamp} · {job['job_id'][:8]}"
+            self._job_labels[label] = job["job_id"]
+            labels.append(label)
+        self.job_box.configure(values=labels)
+        current_id = getattr(self, "_selected_job_id", None)
+        current_label = next(
+            (label for label, job_id in self._job_labels.items() if job_id == current_id),
+            labels[0] if labels else "",
+        )
+        self.job_box.set(current_label)
+        selected_id = self._job_labels.get(current_label, "")
+        if selected_id:
+            self._show_job(selected_id)
+        else:
+            self._show_job("")
+
+    def _select_job(self, _event=None) -> None:
+        self._show_job(self._job_labels.get(self.job_box.get(), ""))
+
+    def _show_job(self, job_id: str) -> None:
+        self._selected_job_id = job_id
+        job = self._jobs.get(job_id)
+        if job is None:
+            self.preview.configure(image="", text="접수 작업을 선택하면 신분증이 크게 표시됩니다")
+            self._photo = None
+            for variable in self.identity_vars.values():
+                variable.set("")
+            self.identity_hint.set("아직 표시할 접수 결과가 없습니다.")
             return
-        index = self._queue_order.index(key)
+        manifest = job["manifest"]
+        image_name = manifest.get("identity_image", "")
+        try:
+            image_path = self._job_file(job["job_dir"], str(image_name))
+            with Image.open(image_path) as image:
+                self._render_identity_image(image)
+        except (OSError, TypeError, ValueError) as exc:
+            self.preview.configure(image="", text=f"신분증 이미지를 열지 못했습니다\n{exc}")
+            self._photo = None
+        values = manifest.get("reviewed_values", {})
+        if not isinstance(values, dict):
+            values = {}
+        detection = manifest.get("id_type_detection", {})
+        if not isinstance(detection, dict):
+            detection = {}
+        code = str(manifest.get("id_type_code", ""))
+        id_type = detection.get("name") or ID_TYPES.get(code, {}).get("name") or values.get("idType", "")
+        self.identity_vars["id_type"].set(_display_text(id_type))
+        for key in ("custNm", "ctzCorpNum", "addr", "isueDt", "drvLicenIsueNum", "isuePlc", "veteranNum"):
+            self.identity_vars[key].set(_display_text(values.get(key, "")))
+        document_count = len(manifest.get("documents", [])) if isinstance(manifest.get("documents"), list) else 0
+        self.identity_hint.set(
+            f"{manifest.get('carrier', '')} 접수 · 서류 폴더 {document_count}개 · 작업 {job_id[:8]}"
+        )
+
+    def _render_identity_image(self, image: Image.Image) -> None:
+        width = max(400, self.preview.winfo_width() - 24)
+        height = max(400, self.preview.winfo_height() - 24)
+        rendered = image.convert("RGB")
+        rendered.thumbnail((width, height), Image.Resampling.LANCZOS)
+        self._photo = ImageTk.PhotoImage(rendered)
+        self.preview.configure(image=self._photo, text="")
+
+    def _resize_identity_preview(self, _event=None) -> None:
+        job = self._jobs.get(getattr(self, "_selected_job_id", ""))
+        if not job:
+            return
+        try:
+            image_path = self._job_file(job["job_dir"], str(job["manifest"].get("identity_image", "")))
+            with Image.open(image_path) as image:
+                self._render_identity_image(image)
+        except (OSError, TypeError, ValueError):
+            return
+
+    def _selected_keys(self, tree: ttk.Treeview, order: list[str]) -> list[str]:
+        selected = set(tree.selection())
+        return [key for key in order if key in selected]
+
+    def _preview_selected(self, tree: ttk.Treeview) -> None:
+        selected = tree.selection()
+        if selected and selected[0] in self._items:
+            DocumentPreviewDialog(self, self._items[selected[0]])
+
+    def _move_selected(self, tree: ttk.Treeview, order: list[str], offset: int) -> None:
+        selected = tree.selection()
+        key = selected[0] if selected else None
+        if key is None or key not in order:
+            return
+        active_keys = set()
+        if self._active:
+            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        if key in active_keys:
+            self.status.set("스캔 중인 서류는 순서를 바꿀 수 없습니다")
+            return
+        index = order.index(key)
         new_index = index + offset
-        if not 0 <= new_index < len(self._queue_order):
+        if not 0 <= new_index < len(order):
             return
-        self._queue_order[index], self._queue_order[new_index] = self._queue_order[new_index], self._queue_order[index]
+        order[index], order[new_index] = order[new_index], order[index]
         self._save_queue_state()
         self._refresh_queue()
-        self.tree.selection_set(key)
+        tree.selection_set(key)
+
+    def _promote_selected(self) -> None:
+        keys = self._selected_keys(self.wait_tree, self._queue_order)
+        if not keys:
+            messagebox.showinfo("스캔할 서류", "대기열에서 스캔 대상으로 올릴 서류 폴더를 선택하세요.", parent=self.root)
+            return
+        self._queue_order = [key for key in self._queue_order if key not in set(keys)]
+        self._scan_order.extend(key for key in keys if key not in self._scan_order)
+        self._save_queue_state()
+        self._refresh_queue()
+        for key in keys:
+            self.scan_tree.selection_add(key)
+
+    def _demote_selected(self) -> None:
+        keys = self._selected_keys(self.scan_tree, self._scan_order)
+        if not keys:
+            return
+        active_keys = set()
+        if self._active:
+            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        if active_keys.intersection(keys):
+            messagebox.showinfo("스캔 진행 중", "현재 스캔 중인 서류는 대기열로 내릴 수 없습니다.", parent=self.root)
+            return
+        selected = set(keys)
+        self._scan_order = [key for key in self._scan_order if key not in selected]
+        self._queue_order.extend(keys)
+        self._save_queue_state()
+        self._refresh_queue()
+        for key in keys:
+            self.wait_tree.selection_add(key)
 
     def _activate_selected(self) -> None:
         self._sync_active_scan()
-        selected_keys = list(self.tree.selection())
+        selected_keys = self._selected_keys(self.scan_tree, self._scan_order)
+        selected_keys = [key for key in selected_keys if key not in self._completed]
         if not selected_keys or any(key not in self._items for key in selected_keys):
-            messagebox.showinfo("서류 선택", "스캔할 서류를 선택하세요.", parent=self.root)
+            messagebox.showinfo("서류 선택", "‘스캔할 서류’ 칸에서 한 개 이상의 폴더를 선택하세요.", parent=self.root)
             return
         ready = Path(self.config.get("scanner_ready_path", ""))
         if self._active and (ready / self._active.get("scanner_job_id", "")).exists():
@@ -499,24 +822,7 @@ class ReceiverApp:
                     parent=self.root,
                 )
                 return
-        first_pending = next(
-            (queued for queued in self._queue_order if queued not in self._completed),
-            None,
-        )
-        pending = [queued for queued in self._queue_order if queued not in self._completed]
-        selected_in_order = [queued for queued in pending if queued in selected_keys]
-        if (
-            not selected_in_order
-            or selected_in_order[0] != first_pending
-            or set(selected_in_order) != set(pending[:len(selected_in_order)])
-        ):
-            messagebox.showinfo(
-                "대기열 순서",
-                "한 번에 스캔할 서류를 대기열 맨 위에서부터 연속으로 선택하세요.\n"
-                "필요하면 위로/아래로 버튼으로 순서를 바꿀 수 있습니다.",
-                parent=self.root,
-            )
-            return
+        selected_in_order = selected_keys
         selected_items = [self._items[item_key] for item_key in selected_in_order]
         scanner_job_id = uuid4().hex
         staging = ready / f".{scanner_job_id}.incoming"
@@ -531,7 +837,7 @@ class ReceiverApp:
                 pages = document.get("pages", [])
                 if not isinstance(pages, list) or not pages:
                     raise ValueError(f"{document.get('label', '서류')}에 JPG 페이지가 없습니다.")
-                source_names.append(str(document.get("source_name", document.get("label", "documents"))))
+                source_names.append(_display_text(document.get("source_name", document.get("label", "documents"))))
                 for relative in pages:
                     source = self._job_file(item["job_dir"], str(relative))
                     number = len(page_manifest) + 1
@@ -564,31 +870,6 @@ class ReceiverApp:
         labels = [str(item["document"].get("label", "서류")) for item in selected_items]
         self.status.set(f"스캔 대기 중 · {' + '.join(labels)}")
         self._refresh_queue()
-
-    def _show_selected(self, _event=None) -> None:
-        key = self._selected_key()
-        item = self._items.get(key or "")
-        if item is None:
-            return
-        image_path = item["job_dir"] / "identity" / "identity.jpg"
-        if not image_path.is_file():
-            image_path = item["job_dir"] / "identity" / "identity.jpeg"
-        try:
-            with Image.open(image_path) as image:
-                preview = image.convert("RGB")
-                preview.thumbnail((360, 390))
-                self._photo = ImageTk.PhotoImage(preview)
-            self.preview.configure(image=self._photo, text="")
-        except OSError:
-            self._photo = None
-            self.preview.configure(image="", text="신분증 이미지를 열 수 없습니다")
-        manifest = json.loads((item["job_dir"] / "manifest.json").read_text(encoding="utf-8"))
-        values = manifest.get("reviewed_values", {})
-        summary = "\n".join(f"{key}: {value}" for key, value in values.items())
-        self.detail.configure(state="normal")
-        self.detail.delete("1.0", tk.END)
-        self.detail.insert("1.0", summary)
-        self.detail.configure(state="disabled")
 
 
 def main() -> None:
