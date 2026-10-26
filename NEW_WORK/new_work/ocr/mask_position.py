@@ -95,6 +95,14 @@ def _mask_position_for_number_row(image_rgb: Any, line: OcrLine) -> str:
         _, rear = digit_groups
         target_left = x1 + rear[1][0]
         target_right = x1 + rear[-1][1]
+        average_digit_width = sum(right - left for left, right in rear) / len(rear)
+        gap_before_mask = max(0, rear[1][0] - rear[0][1])
+        horizontal_pad = min(
+            max(1, round(average_digit_width * 0.08)),
+            gap_before_mask // 2,
+        )
+        target_left -= horizontal_pad
+        target_right = min(x2, target_right + max(1, round(average_digit_width * 0.08)))
         ink = gray < 70
         target_pixels = ink[
             :, max(0, target_left - x1):max(1, target_right - x1)
@@ -104,8 +112,9 @@ def _mask_position_for_number_row(image_rgb: Any, line: OcrLine) -> str:
             row_counts > max(2, round(target_pixels.shape[1] * 0.07))
         )
         if len(active_rows):
-            tight_top = y1 + int(active_rows[0])
-            tight_bottom = y1 + int(active_rows[-1]) + 1
+            vertical_pad = max(1, round((y2 - y1) * 0.04))
+            tight_top = max(y1, y1 + int(active_rows[0]) - vertical_pad)
+            tight_bottom = min(y2, y1 + int(active_rows[-1]) + 1 + vertical_pad)
         else:
             tight_top, tight_bottom = round(top), round(bottom)
         return f"{target_left},{tight_top},{target_right},{tight_bottom}"

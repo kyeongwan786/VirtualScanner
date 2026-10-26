@@ -13,7 +13,7 @@ from uuid import uuid4
 from new_work.domain import OcrLine, OcrResult
 from new_work.ocr.mask_position import _mask_position_for_number_row
 
-OCR_BUILD_ID = "20261022-name-crop-2"
+OCR_BUILD_ID = "20261026-issuer-date-descreen-1"
 
 
 class OcrUnavailableError(RuntimeError):
@@ -47,6 +47,7 @@ class PaddleOcrAdapter:
         self.ocr_version = ocr_version
         self._engine_factory = engine_factory
         self._engine: Any | None = None
+        self._detail_engine: Any | None = None
         self._english_engine: Any | None = None
         self._recognizers: dict[str, Any] = {}
         self._lock = Lock()
@@ -67,7 +68,9 @@ class PaddleOcrAdapter:
             )
         return "PaddleOCR 설치 필요 (현재 Python 환경에 설치)"
 
-    def _create_engine(self, language: str = "korean") -> Any:
+    def _create_engine(
+        self, language: str = "korean", *, detection_limit: int = 640
+    ) -> Any:
         factory = self._engine_factory
         model_paths = _ocr_model_paths(self.ocr_version)
         if factory is None:
@@ -110,7 +113,7 @@ class PaddleOcrAdapter:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
-                text_det_limit_side_len=640,
+                text_det_limit_side_len=detection_limit,
             )
         except Exception as exc:
             raise OcrUnavailableError(
@@ -124,6 +127,14 @@ class PaddleOcrAdapter:
                 if self._engine is None:
                     self._engine = self._create_engine()
         return self._engine
+
+    def _get_detail_engine(self) -> Any:
+        """Load a larger-input detector only when the first pass misses fields."""
+        if self._detail_engine is None:
+            with self._lock:
+                if self._detail_engine is None:
+                    self._detail_engine = self._create_engine(detection_limit=1024)
+        return self._detail_engine
 
     def _get_english_engine(self) -> Any:
         if self._english_engine is None:
@@ -193,8 +204,10 @@ class PaddleOcrAdapter:
         with Image.open(path) as source:
             rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
         height, width = rgb.shape[:2]
-        crop = rgb[int(height * 0.05):int(height * 0.20),
-                   int(width * 0.05):int(width * 0.40)]
+        # The title can span half the card width on older resident cards.
+        # Keep the whole heading in view instead of truncating its last syllables.
+        crop = rgb[int(height * 0.04):int(height * 0.22),
+                   int(width * 0.04):int(width * 0.62)]
         crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
         with TemporaryDirectory(prefix="new_work_heading_") as temp_dir:
             crop_path = Path(temp_dir) / "heading.png"
@@ -208,10 +221,238 @@ class PaddleOcrAdapter:
             for line in lines
         )
 
+    def recognize_korean_name_near_number(
+        self,
+        image_path: Path,
+        source_lines: tuple[OcrLine, ...],
+        id_type_code: str | None = None,
+    ) -> str:
+        """Focus on the name row positioned next to a detected ID number.
+
+        Korean resident cards commonly place the holder name immediately
+        above the resident number; driver's licenses often put it below the
+        license number. The OCR number box anchors the crop, so card size and
+        resolution can vary without per-image coordinates.
+        """
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        from new_work.ocr.field_extractor import _LICENSE, _RRN
+
+        path = Path(image_path)
+        with Image.open(path) as source:
+            rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+        height, width = rgb.shape[:2]
+
+        license_line = next((
+            line for line in source_lines
+            if line.box is not None and _LICENSE.search(line.text)
+        ), None)
+        number_line = license_line
+        name_above = False
+        if number_line is None and id_type_code not in {"1101", "1102", "1201"}:
+            number_line = next((
+                line for line in source_lines
+                if line.box is not None and _RRN.search(line.text)
+            ), None)
+            name_above = True
+        if number_line is None or number_line.box is None:
+            return ""
+
+        left, top, right, bottom = number_line.box
+        row_height = max(1.0, bottom - top)
+        # Keep the crop width close to the detected row. The old generous
+        # margin forced the recognition model to shrink the actual name and
+        # include more security-print noise than useful text.
+        pad_x = row_height * 0.12
+        crop_left = max(0, int(left - pad_x))
+        crop_right = min(width, int(right + pad_x))
+        if name_above:
+            crop_top = max(0, int(top - row_height * 1.9))
+            crop_bottom = max(crop_top + 1, int(top - row_height * 0.6))
+        else:
+            crop_top = min(height - 1, int(bottom + row_height * 0.35))
+            crop_bottom = min(height, int(bottom + row_height * 1.25))
+        crop = rgb[crop_top:crop_bottom, crop_left:crop_right]
+        if crop.size == 0:
+            return ""
+        crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+
+        with TemporaryDirectory(prefix="new_work_name_focus_") as temp_dir:
+            crop_path = Path(temp_dir) / "name.png"
+            if not cv2.imwrite(
+                str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
+            ):
+                return ""
+            focused_lines = self._read_lines(
+                self._get_number_recognizer().predict(input=str(crop_path))
+            )
+        from new_work.ocr.field_extractor import extract_identity_fields
+
+        focused = tuple(
+            OcrLine(line.text, line.confidence, None, "korean_name_focus")
+            for line in focused_lines
+        )
+        return extract_identity_fields(focused, id_type_code).get("custNm", "")
+
+    def recognize_numeric_fields(
+        self,
+        image_path: Path,
+        source_lines: tuple[OcrLine, ...],
+        id_type_code: str | None,
+    ) -> dict[str, str]:
+        """Re-read detected ID-number rows at high resolution and require consensus."""
+        from collections import Counter
+
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        from new_work.ocr.field_extractor import (
+            _LICENSE,
+            _NUMERIC_OCR_TRANSLATION,
+            _RRN,
+            _structured_rrn_candidates,
+            is_valid_resident_number,
+        )
+
+        rrn_codes = {"1001", "1101", "1102", "1201", "1301", "1302", "1303"}
+        license_codes = {"1101", "1102", "1201"}
+        jobs: list[tuple[str, OcrLine]] = []
+
+        def ranked_row(field: str, pattern: Any, expected_digits: int) -> OcrLine | None:
+            candidates: list[tuple[tuple[float, ...], OcrLine]] = []
+            for line in source_lines:
+                if line.box is None:
+                    continue
+                normalized = line.text.translate(_NUMERIC_OCR_TRANSLATION)
+                digits = "".join(char for char in normalized if char.isdecimal())
+                if len(digits) < 9:
+                    continue
+                left, top, right, bottom = line.box
+                width = right - left
+                height = max(1.0, bottom - top)
+                if width < height * 2.2:
+                    continue
+                matched = bool(pattern.search(normalized))
+                if field == "ctzCorpNum" and not matched:
+                    matched = bool(_structured_rrn_candidates(normalized))
+                if not matched:
+                    continue
+                confidence = line.confidence if line.confidence is not None else 0.0
+                rank = (float(matched), -float(abs(len(digits) - expected_digits)), confidence)
+                candidates.append((rank, line))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
+
+        if id_type_code in rrn_codes:
+            row = ranked_row("ctzCorpNum", _RRN, 13)
+            if row is not None:
+                jobs.append(("ctzCorpNum", row))
+        if id_type_code in license_codes:
+            row = ranked_row("drvLicenIsueNum", _LICENSE, 12)
+            if row is not None:
+                jobs.append(("drvLicenIsueNum", row))
+        if not jobs:
+            return {}
+
+        with Image.open(Path(image_path)) as source:
+            rgb = np.asarray(ImageOps.exif_transpose(source).convert("RGB"))
+        image_height, image_width = rgb.shape[:2]
+        recognized: dict[str, list[str]] = {field: [] for field, _ in jobs}
+        with TemporaryDirectory(prefix="new_work_numeric_focus_") as temp_dir:
+            engine = self._get_number_recognizer()
+            for job_index, (field, line) in enumerate(jobs):
+                assert line.box is not None
+                left, top, right, bottom = line.box
+                row_height = max(1.0, bottom - top)
+                pad_x = max(6, round(row_height * 0.30))
+                pad_y = max(3, round(row_height * 0.28))
+                crop = rgb[
+                    max(0, int(top - pad_y)):min(image_height, int(bottom + pad_y)),
+                    max(0, int(left - pad_x)):min(image_width, int(right + pad_x)),
+                ]
+                if crop.size == 0:
+                    continue
+                scale = min(6.0, max(3.0, 120.0 / max(1, crop.shape[0])))
+                color_variant = cv2.resize(
+                    crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+                )
+                gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+                contrast = cv2.createCLAHE(
+                    clipLimit=2.0, tileGridSize=(8, 8)
+                ).apply(gray)
+                contrast_variant = cv2.resize(
+                    contrast, None, fx=scale, fy=scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                for variant_index, variant in enumerate(
+                    (color_variant, contrast_variant)
+                ):
+                    crop_path = Path(temp_dir) / f"{job_index}_{variant_index}.png"
+                    if variant.ndim == 3:
+                        variant = cv2.cvtColor(variant, cv2.COLOR_RGB2BGR)
+                    if not cv2.imwrite(str(crop_path), variant):
+                        continue
+                    outputs = engine.predict(input=str(crop_path))
+                    variant_candidates: set[str] = set()
+                    for recognized_line in self._read_lines(outputs):
+                        normalized = recognized_line.text.translate(
+                            _NUMERIC_OCR_TRANSLATION
+                        )
+                        if field == "ctzCorpNum":
+                            match = _RRN.search(normalized)
+                            if match:
+                                variant_candidates.add("".join(match.groups()))
+                            variant_candidates.update(
+                                _structured_rrn_candidates(normalized)
+                            )
+                        else:
+                            match = _LICENSE.search(normalized)
+                            if match:
+                                variant_candidates.add("".join(match.groups()))
+                            else:
+                                digits = "".join(
+                                    char for char in normalized if char.isdecimal()
+                                )
+                                if len(digits) == 12:
+                                    variant_candidates.add(digits)
+                    recognized[field].extend(variant_candidates)
+
+        focused: dict[str, str] = {}
+        for field, candidates in recognized.items():
+            counts = Counter(candidates)
+            if field == "ctzCorpNum":
+                checksum_valid = {
+                    value for value in counts if is_valid_resident_number(value)
+                }
+                if len(checksum_valid) == 1:
+                    focused[field] = next(iter(checksum_valid))
+                    continue
+            if counts:
+                value, count = counts.most_common(1)[0]
+                if count >= 2:
+                    focused[field] = value
+        return focused
+
     def recognize_issuer(
         self, image_path: Path, recog_sub_cd: str | None = None
     ) -> str:
         """Read the small issuer row separately without changing other fields."""
+        return self.recognize_issuer_fields(image_path, recog_sub_cd).get("isuePlc", "")
+
+    def recognize_issuer_fields(
+        self,
+        image_path: Path,
+        recog_sub_cd: str | None = None,
+        source_lines: tuple[OcrLine, ...] = (),
+    ) -> dict[str, str]:
+        """Re-read the issuing row with contrast variants and vote on fields."""
+        from collections import Counter
+
         import cv2
         import numpy as np
         from PIL import Image, ImageOps
@@ -232,25 +473,141 @@ class PaddleOcrAdapter:
             int(height * top):int(height * bottom),
             int(width * left):int(width * right),
         ]
-        if crop.size == 0:
-            return ""
-        crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        from new_work.ocr.field_extractor import (
+            _ISSUER,
+            _dates_in_text,
+            _strip_issue_date,
+            extract_identity_fields,
+        )
 
-        with TemporaryDirectory(prefix="new_work_issuer_") as temp_dir:
-            crop_path = Path(temp_dir) / "issuer.png"
-            if not cv2.imwrite(
-                str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
-            ):
-                return ""
-            focused_lines = self._read_lines(
-                self._get_number_recognizer().predict(input=str(crop_path))
+        field_votes: dict[str, list[str]] = {"isueDt": [], "isuePlc": []}
+        original = extract_identity_fields(source_lines, id_type_code=recog_sub_cd)
+        for field in field_votes:
+            if original.get(field):
+                field_votes[field].append(original[field])
+
+        # When full-card OCR has already linked an issue date to the issuing
+        # authority, crop that detected text row instead of the whole lower
+        # band. The broad fallback band contains expiry dates and security
+        # print that can turn a printed 11 into 01.
+        issuer_rows = [
+            line for line in source_lines
+            if line.box is not None and _ISSUER.search(_strip_issue_date(line.text))
+        ]
+        date_row_crop = False
+        if issuer_rows:
+            issuer_row = max(
+                issuer_rows,
+                key=lambda line: line.confidence if line.confidence is not None else 0.0,
             )
-        from new_work.ocr.field_extractor import extract_identity_fields
+            left, top, right, bottom = issuer_row.box
+            row_height = max(1.0, bottom - top)
+            row_center = (top + bottom) / 2
+            related_rows = [issuer_row]
+            for line in source_lines:
+                if line is issuer_row or line.box is None or not _dates_in_text(line.text):
+                    continue
+                date_left, date_top, date_right, date_bottom = line.box
+                date_center = (date_top + date_bottom) / 2
+                date_height = max(1.0, date_bottom - date_top)
+                if abs(date_center - row_center) <= max(row_height, date_height) * 0.8:
+                    related_rows.append(line)
+            row_left = min(line.box[0] for line in related_rows if line.box)
+            row_top = min(line.box[1] for line in related_rows if line.box)
+            row_right = max(line.box[2] for line in related_rows if line.box)
+            row_bottom = max(line.box[3] for line in related_rows if line.box)
+            pad_x = max(3, round(row_height * 0.35))
+            pad_y = max(2, round(row_height * 0.30))
+            crop = rgb[
+                max(0, int(row_top - pad_y)):min(height, int(row_bottom + pad_y)),
+                max(0, int(row_left - pad_x)):min(width, int(row_right + pad_x)),
+            ]
+        elif recog_sub_cd == "1401":
+            # Foreign resident cards print the explicit issue date on its own
+            # row above the issuing office. Use that detected row instead of
+            # the whole lower card band, which can include patterned security
+            # print that turns 08 into 10 during OCR.
+            date_rows = [
+                line for line in source_lines
+                if line.box is not None and _dates_in_text(line.text)
+                and line.box[1] >= height * 0.65
+            ]
+            if date_rows:
+                date_row = max(date_rows, key=lambda line: line.box[1])
+                left, top, right, bottom = date_row.box
+                row_height = max(1.0, bottom - top)
+                pad_x = max(8, round(row_height * 0.5))
+                pad_y = max(5, round(row_height * 0.3))
+                crop = rgb[
+                    max(0, int(top - pad_y)):min(height, int(bottom + pad_y)),
+                    max(0, int(left - pad_x)):min(width, int(right + pad_x)),
+                ]
+                date_row_crop = True
+        if crop.size == 0:
+            return {}
+        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        contrast = cv2.createCLAHE(
+            clipLimit=2.0, tileGridSize=(8, 8)
+        ).apply(gray)
+        if date_row_crop:
+            # Fine vertical security lines on foreign cards confuse digit
+            # recognition. Median filtering suppresses that pattern while
+            # retaining the printed digit strokes.
+            variants = [
+                cv2.medianBlur(gray, 3),
+                cv2.medianBlur(gray, 5),
+                cv2.medianBlur(contrast, 3),
+            ]
+        else:
+            variants = [
+                crop,
+                contrast,
+                cv2.threshold(
+                    contrast, 0, 255,
+                    cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+                )[1],
+            ]
+        variants = [
+            cv2.resize(variant, None, fx=5 if date_row_crop else 4,
+                       fy=5 if date_row_crop else 4,
+                       interpolation=cv2.INTER_CUBIC)
+            for variant in variants
+        ]
+        with TemporaryDirectory(prefix="new_work_issuer_") as temp_dir:
+            engine = self._get_number_recognizer()
+            for index, variant in enumerate(variants):
+                crop_path = Path(temp_dir) / f"issuer_{index}.png"
+                if variant.ndim == 3:
+                    variant = cv2.cvtColor(variant, cv2.COLOR_RGB2BGR)
+                if not cv2.imwrite(str(crop_path), variant):
+                    continue
+                focused_lines = self._read_lines(
+                    engine.predict(input=str(crop_path))
+                )
+                fields = extract_identity_fields(
+                    tuple(
+                        OcrLine(line.text, line.confidence, None, "issuer_focus")
+                        for line in focused_lines
+                    ),
+                    id_type_code=recog_sub_cd,
+                )
+                for field in field_votes:
+                    if fields.get(field):
+                        field_votes[field].append(fields[field])
 
-        return extract_identity_fields(tuple(
-            OcrLine(line.text, line.confidence, None, "issuer_focus")
-            for line in focused_lines
-        )).get("isuePlc", "")
+        selected: dict[str, str] = {}
+        for field, candidates in field_votes.items():
+            if not candidates:
+                continue
+            counts = Counter(candidates)
+            value, count = counts.most_common(1)[0]
+            # A single focused read can supply a missing value; when reads
+            # disagree, require a majority rather than taking a lucky parse.
+            if count >= 2 or len(candidates) == 1:
+                selected[field] = value
+                if field == "isueDt" and count >= 2:
+                    selected["_isueDt_consensus"] = "1"
+        return selected
 
     def recognize(self, image_path: Path) -> OcrResult:
         path = Path(image_path)
@@ -269,6 +626,115 @@ class PaddleOcrAdapter:
         except Exception as exc:
             raise OcrUnavailableError(f"PaddleOCR 인식 실패: {exc}") from exc
 
+        # Small print on card photos can disappear when the detector scales a
+        # full-resolution image down to its fast default input size. Only then
+        # run the same bundled OCR models on a larger detector canvas. Keep the
+        # pass whose OCR actually extracts more useful fields; this adds no
+        # latency to images already read well by the first pass.
+        detail_used = False
+        try:
+            from new_work.ocr.field_extractor import (
+                extract_identity_fields,
+                is_valid_resident_number,
+            )
+            from new_work.ocr.id_types import detect_id_type
+
+            primary_type = detect_id_type(lines)
+            primary_fields = extract_identity_fields(lines, primary_type.code)
+            def review_fields(code: str | None) -> tuple[str, ...]:
+                fields = ("ctzCorpNum", "isueDt")
+                if code != "1401":
+                    fields = ("custNm", *fields)
+                if code in {"1101", "1102", "1201"}:
+                    fields = (*fields, "drvLicenIsueNum")
+                if code == "1302":
+                    fields = (*fields, "veteranNum")
+                return fields
+
+            required_fields = review_fields(primary_type.code)
+            primary_number = "".join(
+                char for char in primary_fields.get("ctzCorpNum", "")
+                if char.isdecimal()
+            )
+            primary_license = "".join(
+                char for char in primary_fields.get("drvLicenIsueNum", "")
+                if char.isdecimal()
+            )
+            needs_numeric_retry = (
+                primary_type.code in {"1001", "1101", "1102", "1201", "1301", "1302", "1303"}
+                and bool(primary_number)
+                and not is_valid_resident_number(primary_number)
+            ) or (
+                primary_type.code in {"1101", "1102", "1201"}
+                and bool(primary_license)
+                and len(primary_license) != 12
+            )
+            needs_low_confidence_retry = any(
+                line.confidence is not None
+                and line.confidence < 0.88
+                and sum(char.isdecimal() for char in line.text) >= 6
+                for line in lines
+            )
+            if (
+                primary_type.code is None
+                or any(not primary_fields.get(field) for field in required_fields)
+                or needs_numeric_retry
+                or needs_low_confidence_retry
+            ):
+                detail_outputs = self._get_detail_engine().predict(input=str(path))
+                detail_lines = tuple(
+                    OcrLine(line.text, line.confidence, line.box, "korean_detail")
+                    for line in self._read_lines(detail_outputs)
+                )
+                detail_type = detect_id_type(detail_lines)
+                detail_fields = extract_identity_fields(
+                    detail_lines, detail_type.code
+                )
+                def quality_score(
+                    fields: dict[str, str], code: str | None,
+                    source_lines: tuple[OcrLine, ...],
+                ) -> float:
+                    score = float(
+                        sum(bool(fields.get(field)) for field in review_fields(code))
+                    )
+                    number = "".join(
+                        char for char in fields.get("ctzCorpNum", "")
+                        if char.isdecimal()
+                    )
+                    if code in {"1001", "1101", "1102", "1201", "1301", "1302", "1303"}:
+                        score += 2.0 if is_valid_resident_number(number) else -1.0
+                    if code in {"1101", "1102", "1201"}:
+                        license_digits = "".join(
+                            char for char in fields.get("drvLicenIsueNum", "")
+                            if char.isdecimal()
+                        )
+                        score += 1.0 if len(license_digits) == 12 else -0.5
+                    numeric_confidence = [
+                        line.confidence for line in source_lines
+                        if line.confidence is not None
+                        and any(char.isdecimal() for char in line.text)
+                    ]
+                    if numeric_confidence:
+                        score += sum(numeric_confidence) / len(numeric_confidence)
+                    return score
+
+                primary_score = quality_score(
+                    primary_fields, primary_type.code, lines
+                )
+                detail_score = quality_score(
+                    detail_fields, detail_type.code, detail_lines
+                )
+                if (
+                    detail_score > primary_score
+                    or (primary_type.code is None and detail_type.code is not None)
+                ):
+                    lines = detail_lines
+                    detail_used = True
+        except Exception:
+            # The high-detail pass is a recovery path. A failed optional pass
+            # must not discard a usable result from the normal OCR pass.
+            pass
+
         try:
             version = metadata.version("paddleocr")
         except metadata.PackageNotFoundError:
@@ -278,7 +744,8 @@ class PaddleOcrAdapter:
             image_path=path,
             lines=lines,
             engine_name=(
-                f"PaddleOCR {self.ocr_version} Korean Mobile [{OCR_BUILD_ID}]"
+                f"PaddleOCR {self.ocr_version} Korean Mobile"
+                f"{' + high-detail retry' if detail_used else ''} [{OCR_BUILD_ID}]"
             ),
             engine_version=version,
             elapsed_seconds=perf_counter() - started,

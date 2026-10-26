@@ -11,6 +11,15 @@ from new_work.domain import OcrLine
 # Korean labels in this module.
 _HANGUL = r"\uac00-\ud7a3"
 _RRN = re.compile(r"(?<!\d)(\d{6})\D{0,3}(\d)\D{0,3}(\d{6})(?!\d)")
+# These Latin glyphs are commonly substituted for visually similar digits by
+# OCR. Apply the substitutions only while looking for fixed-format numeric
+# fields; never rewrite the original text shown to the reviewer.
+_NUMERIC_OCR_TRANSLATION = str.maketrans({
+    "O": "0", "o": "0", "Q": "0", "D": "0",
+    "I": "1", "l": "1", "|": "1",
+    "Z": "2", "z": "2", "S": "5", "s": "5",
+    "G": "6", "B": "8",
+})
 _FOREIGN_CARD = re.compile(
     r"(?:\uc678\uad6d\uc778\s*\ub4f1\ub85d|alien\s*registration|residence\s*card)",
     re.IGNORECASE,
@@ -93,6 +102,8 @@ def extract_identity_fields(
     numbered: list[tuple[OcrLine, str]] = []
     for line in lines:
         match = _RRN.search(line.text)
+        if match is None:
+            match = _RRN.search(line.text.translate(_NUMERIC_OCR_TRANSLATION))
         if match:
             numbered.append((line, "".join(match.groups())))
 
@@ -105,6 +116,25 @@ def extract_identity_fields(
         or line.source == "english_focus"
         for line in lines
     )
+    if not numbered and not is_foreigner_card:
+        # The detector often returns the whole resident number row, but OCR
+        # can insert stray digits or punctuation so the strict 6-1-6 regex
+        # misses it. Recover only a unique 13-digit window with a valid birth
+        # date and registration-category digit; ambiguous rows stay blank.
+        structured_numbers = [
+            (line, candidate)
+            for line in lines
+            if line.box is not None
+            and (line.box[2] - line.box[0]) >= (line.box[3] - line.box[1]) * 2.5
+            for candidate in _structured_rrn_candidates(line.text)
+        ]
+        unique_numbers = {number for _, number in structured_numbers}
+        if len(unique_numbers) == 1:
+            number = next(iter(unique_numbers))
+            number_line = next(
+                line for line, candidate in structured_numbers if candidate == number
+            )
+            numbered.append((number_line, number))
     if len(numbered) == 1:
         values["ctzCorpNum"] = numbered[0][1]
     if is_foreigner_card:
@@ -116,6 +146,8 @@ def extract_identity_fields(
     license_numbers: set[str] = set()
     for line in lines:
         match = _LICENSE.search(line.text)
+        if match is None:
+            match = _LICENSE.search(line.text.translate(_NUMERIC_OCR_TRANSLATION))
         if match:
             license_numbers.add("".join(match.groups()))
     for start in range(len(lines)):
@@ -156,7 +188,9 @@ def extract_identity_fields(
 
     issuers: list[str] = []
     for line in lines:
-        candidate = _normalize_issuer_ocr(_strip_issue_date(line.text))
+        candidate = _normalize_issuer_ocr(
+            _trim_issuer_prefix_noise(_strip_issue_date(line.text))
+        )
         if _is_issuer_candidate(candidate):
             issuers.append(candidate)
     for index, line in enumerate(lines):
@@ -253,6 +287,13 @@ def _normalize_issuer_ocr(text: str) -> str:
         text.replace("\uc0ac\ubb34\uc190", "\uc0ac\ubb34\uc18c")
         .replace("\uacbd\ucc30\uc815\uc7a5", "\uacbd\ucc30\uccad\uc7a5")
     )
+
+
+def _trim_issuer_prefix_noise(text: str) -> str:
+    """Keep a Korean authority name while dropping OCR-merged date digits."""
+    text = re.sub(r"^\s*(?:\ubc1c\uae09\s*(?:\uae30\uad00|\ucc98))\s*", "", text)
+    first_hangul = re.search(rf"[{_HANGUL}]", text)
+    return text[first_hangul.start():] if first_hangul else text
 
 
 def _is_labeled_issuer_value(text: str) -> bool:
@@ -558,6 +599,41 @@ def _dates_in_text(text: str) -> set[str]:
         except ValueError:
             pass
     return values
+
+
+def _structured_rrn_candidates(text: str) -> set[str]:
+    normalized = text.translate(_NUMERIC_OCR_TRANSLATION)
+    digits = "".join(char for char in normalized if char.isdecimal())
+    candidates: set[str] = set()
+    if not 13 <= len(digits) <= 18:
+        return candidates
+    for offset in range(len(digits) - 12):
+        number = digits[offset:offset + 13]
+        if number[6] not in "12345678":
+            continue
+        year = int(number[:2])
+        century = 1900 if number[6] in "1256" else 2000
+        try:
+            date(century + year, int(number[2:4]), int(number[4:6]))
+        except ValueError:
+            continue
+        candidates.add(number)
+    return candidates
+
+
+def is_valid_resident_number(value: str) -> bool:
+    """Validate a fully read Korean resident number without repairing it."""
+    digits = "".join(char for char in value if char.isdecimal())
+    if len(digits) != 13 or digits[6] not in "12345678":
+        return False
+    century = 1900 if digits[6] in "1256" else 2000
+    try:
+        date(century + int(digits[:2]), int(digits[2:4]), int(digits[4:6]))
+    except ValueError:
+        return False
+    weights = (2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5)
+    checksum = (11 - sum(int(digit) * weight for digit, weight in zip(digits, weights)) % 11) % 10
+    return checksum == int(digits[12])
 
 
 def _strip_issue_date(text: str) -> str:

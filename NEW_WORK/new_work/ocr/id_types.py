@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Iterable
 
 from new_work.domain import OcrLine
@@ -113,4 +114,49 @@ def detect_id_type(lines: Iterable[OcrLine | str]) -> IdTypeDetection:
                         "1301" if "1301" in codes else None
                     ),
                 )
+    # A tightly cropped card-heading OCR pass can still substitute a couple
+    # of Hangul syllables (for example, 주민등록증 -> 주만능록증). Use fuzzy
+    # matching only on that isolated heading crop, and only when one card type
+    # is a clear best match; this avoids guessing from arbitrary card text.
+    heading_texts = [
+        _normalize(line.text)
+        for line in source_lines
+        if isinstance(line, OcrLine) and line.source == "korean_focus"
+    ]
+    heading_matches: dict[tuple[str, ...], tuple[float, str]] = {}
+    for phrases, codes in _RULES:
+        for phrase in phrases:
+            target = _normalize(phrase)
+            if len(target) < 4:
+                continue
+            for heading in heading_texts:
+                for width in range(max(4, len(target) - 1), len(target) + 2):
+                    for start in range(max(0, len(heading) - width + 1)):
+                        candidate = heading[start:start + width]
+                        score = SequenceMatcher(None, target, candidate).ratio()
+                        if score > heading_matches.get(codes, (0.0, ""))[0]:
+                            heading_matches[codes] = (score, phrase)
+    if heading_matches:
+        ranked = sorted(
+            ((score, codes, phrase)
+             for codes, (score, phrase) in heading_matches.items()),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        if (
+            ranked[0][0] >= 0.60
+            and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.10)
+        ):
+            score, codes, phrase = ranked[0]
+            first = ID_TYPES[codes[0]]
+            return IdTypeDetection(
+                name=first["name"],
+                type_code=first["type"],
+                candidate_codes=codes,
+                matched_text=phrase,
+                preferred_code=(
+                    "1102" if "1102" in codes else
+                    "1301" if "1301" in codes else None
+                ),
+            )
     return IdTypeDetection(name=None, type_code=None)

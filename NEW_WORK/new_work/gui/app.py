@@ -584,6 +584,24 @@ class NewWorkApp:
                             elapsed_seconds=result.elapsed_seconds,
                         )
                         detection = detect_id_type(result.lines)
+            numeric_reader = getattr(self.ocr, "recognize_numeric_fields", None)
+            if detection.code and callable(numeric_reader):
+                try:
+                    numeric_fields = numeric_reader(
+                        image_path, result.lines, detection.code
+                    ) or {}
+                except Exception:
+                    numeric_fields = {}
+                if numeric_fields:
+                    result = OcrResult(
+                        job_id=result.job_id,
+                        image_path=result.image_path,
+                        values={**result.values, **numeric_fields},
+                        lines=result.lines,
+                        engine_name=f"{result.engine_name} + focused numbers",
+                        engine_version=result.engine_version,
+                        elapsed_seconds=result.elapsed_seconds,
+                    )
             if detection.code == "1401":
                 english_reader = getattr(self.ocr, "recognize_english", None)
                 details_reader = getattr(
@@ -686,10 +704,83 @@ class NewWorkApp:
                             engine_version=result.engine_version,
                             elapsed_seconds=result.elapsed_seconds,
                         )
-            # Issuing authorities are printed in a small lower-card row and
-            # are often missed by full-card OCR. Keep this focused result out
-            # of `lines` so it cannot change name, number, date, or address.
-            if not extract_identity_fields(result.lines).get("isuePlc"):
+            # Some Korean cards print the holder name in an unlabelled row
+            # immediately above the resident number. If full-card OCR missed
+            # it, use the detected number box as a dynamic anchor and reread
+            # only the adjacent row.
+            name_fields = extract_identity_fields(
+                result.lines, id_type_code=detection.code
+            )
+            if detection.code not in {"1401", "2001", "2002"}:
+                name_reader = getattr(
+                    self.ocr, "recognize_korean_name_near_number", None
+                )
+                if callable(name_reader):
+                    try:
+                        name = name_reader(image_path, result.lines, detection.code)
+                    except Exception:
+                        name = ""
+                    current_name = (
+                        result.values.get("custNm")
+                        or name_fields.get("custNm", "")
+                    )
+                    if name and (
+                        not current_name
+                        or (
+                            len(name) > len(current_name)
+                            and current_name in name
+                        )
+                    ):
+                        result = OcrResult(
+                            job_id=result.job_id,
+                            image_path=result.image_path,
+                            values={**result.values, "custNm": name},
+                            lines=result.lines,
+                            engine_name=result.engine_name,
+                            engine_version=result.engine_version,
+                            elapsed_seconds=result.elapsed_seconds,
+                        )
+            # Use the full-card result when its date is visibly tied to the
+            # issuing authority. Focused OCR is only a recovery path for a
+            # missing issuer or an unanchored/missing date.
+            full_card_fields = extract_identity_fields(
+                result.lines, id_type_code=detection.code
+            )
+            from new_work.ocr.field_extractor import (
+                _ISSUER,
+                _dates_in_text,
+                _strip_issue_date,
+            )
+
+            full_card_issue_date = full_card_fields.get("isueDt", "")
+            source_date_is_linked_to_issuer = bool(full_card_issue_date) and any(
+                _ISSUER.search(_strip_issue_date(line.text))
+                and full_card_issue_date in _dates_in_text(line.text)
+                for line in result.lines
+            )
+            needs_focused_issuer_read = (
+                not full_card_fields.get("isuePlc")
+                or not source_date_is_linked_to_issuer
+            )
+            focused_fields: dict[str, str] = {}
+            focused_reader = getattr(self.ocr, "recognize_issuer_fields", None)
+            if needs_focused_issuer_read and callable(focused_reader):
+                try:
+                    try:
+                        focused_fields = focused_reader(
+                            image_path, detection.code, result.lines
+                        ) or {}
+                    except TypeError:
+                        focused_fields = focused_reader(
+                            image_path, detection.code
+                        ) or {}
+                except Exception:
+                    focused_fields = {}
+            if (
+                needs_focused_issuer_read
+                and not callable(focused_reader)
+                and not focused_fields.get("isuePlc")
+            ):
                 issuer_reader = getattr(self.ocr, "recognize_issuer", None)
                 if callable(issuer_reader):
                     try:
@@ -697,15 +788,43 @@ class NewWorkApp:
                     except Exception:
                         issuer = ""
                     if issuer:
-                        result = OcrResult(
-                            job_id=result.job_id,
-                            image_path=result.image_path,
-                            values={**result.values, "isuePlc": issuer},
-                            lines=result.lines,
-                            engine_name=result.engine_name,
-                            engine_version=result.engine_version,
-                            elapsed_seconds=result.elapsed_seconds,
-                        )
+                        focused_fields["isuePlc"] = issuer
+            focused_updates: dict[str, str] = {}
+            focused_date = focused_fields.get("isueDt", "")
+            # A focused crop can contain nearby expiry/security dates and
+            # misread digits. Never replace a date already extracted from
+            # the full card; use it only when the full-card pass found none.
+            existing_issue_date = (
+                result.values.get("isueDt") or full_card_issue_date
+            )
+            focused_date_consensus = (
+                focused_fields.get("_isueDt_consensus") == "1"
+            )
+            if focused_date and (
+                not existing_issue_date
+                or (
+                    focused_date_consensus
+                    and focused_date != existing_issue_date
+                )
+            ):
+                focused_updates["isueDt"] = focused_date
+            focused_issuer = focused_fields.get("isuePlc", "")
+            if (
+                focused_issuer
+                and not result.values.get("isuePlc")
+                and not full_card_fields.get("isuePlc")
+            ):
+                focused_updates["isuePlc"] = focused_issuer
+            if focused_updates:
+                result = OcrResult(
+                    job_id=result.job_id,
+                    image_path=result.image_path,
+                    values={**result.values, **focused_updates},
+                    lines=result.lines,
+                    engine_name=result.engine_name,
+                    engine_version=result.engine_version,
+                    elapsed_seconds=result.elapsed_seconds,
+                )
         except Exception as exc:
             self.root.after(0, self._ocr_failed, image_path, exc)
             return
