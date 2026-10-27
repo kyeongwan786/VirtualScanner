@@ -172,6 +172,7 @@ class ReceiverApp:
         self._queue_order: list[str] = []
         self._scan_order: list[str] = []
         self._completed: set[str] = set()
+        self._document_undo_stack: list[dict] = []
         self._active: dict | None = None
         self._drag_start: tuple[ttk.Treeview, str] | None = None
         self._preview_dialogs: set[DocumentPreviewDialog] = set()
@@ -180,6 +181,7 @@ class ReceiverApp:
         self._pending_received_reset: tuple[Path, Path | None, int, int, int] | None = None
         self._build()
         self._load_queue_state()
+        self.root.bind_all("<Control-z>", self._undo_document_delete)
         if not all(self.config.get(key) for key in ("station_id", "relay_url", "token")):
             self.status.set("Receiver 설정 필요 · Relay 주소, 자리 ID, 자리 토큰을 지정하세요")
         self._refresh_queue()
@@ -282,6 +284,9 @@ class ReceiverApp:
         ttk.Button(header, text="서류 목록 초기화", command=self._reset_document_lists).grid(
             row=0, column=1, sticky="e", padx=(8, 0)
         )
+        ttk.Button(header, text="삭제 취소 (Ctrl+Z)", command=self._undo_document_delete).grid(
+            row=0, column=2, sticky="e", padx=(8, 0)
+        )
         panes = ttk.Panedwindow(tab, orient="horizontal")
         panes.grid(row=1, column=0, sticky="nsew")
         self.scan_frame, self.wait_frame = ttk.LabelFrame(panes, text="스캔할 서류", padding=8), ttk.LabelFrame(panes, text="스캔 서류 대기열", padding=8)
@@ -296,6 +301,9 @@ class ReceiverApp:
         self.scan_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.scan_tree))
         self.wait_tree.bind("<Double-1>", lambda _event: self._preview_selected(self.wait_tree))
         for tree in (self.scan_tree, self.wait_tree):
+            tree.bind("<Delete>", lambda _event, target=tree: self._delete_selected_documents(target))
+            tree.bind("<Control-z>", self._undo_document_delete)
+            tree.bind("<Control-Z>", self._undo_document_delete)
             tree.bind("<ButtonPress-1>", self._drag_press, add="+")
             tree.bind("<ButtonRelease-1>", self._drag_release, add="+")
         scan_controls = ttk.Frame(self.scan_frame)
@@ -303,11 +311,13 @@ class ReceiverApp:
         ttk.Button(scan_controls, text="위로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, -1)).pack(side="left")
         ttk.Button(scan_controls, text="아래로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, 1)).pack(side="left", padx=5)
         ttk.Button(scan_controls, text="대기열로 내리기", command=self._demote_selected).pack(side="left", padx=5)
+        ttk.Button(scan_controls, text="선택 서류 삭제", command=lambda: self._delete_selected_documents(self.scan_tree)).pack(side="left", padx=5)
         ttk.Button(scan_controls, text="선택 서류 스캔에 올리기", command=self._activate_selected).pack(side="right")
         wait_controls = ttk.Frame(self.wait_frame)
         wait_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(wait_controls, text="위로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, -1)).pack(side="left")
         ttk.Button(wait_controls, text="아래로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, 1)).pack(side="left", padx=5)
+        ttk.Button(wait_controls, text="선택 서류 삭제", command=lambda: self._delete_selected_documents(self.wait_tree)).pack(side="left", padx=5)
         ttk.Button(wait_controls, text="스캔할 서류로 올리기 →", command=self._promote_selected).pack(side="right")
         self.completed_count = tk.StringVar(value="완료된 서류 0개")
         ttk.Label(tab, textvariable=self.completed_count).grid(row=2, column=0, sticky="e", pady=(8, 0))
@@ -420,6 +430,12 @@ class ReceiverApp:
         self._queue_order = [item for item in queue_order if isinstance(item, str)]
         completed = state.get("completed", [])
         self._completed = {item for item in completed if isinstance(item, str)}
+        undo_stack = state.get("document_undo_stack", [])
+        if isinstance(undo_stack, list):
+            self._document_undo_stack = [
+                item for item in undo_stack
+                if isinstance(item, dict) and isinstance(item.get("entries"), list)
+            ]
         active = state.get("active")
         if isinstance(active, dict):
             self._active = active
@@ -438,6 +454,7 @@ class ReceiverApp:
                 "order": self._scan_order + self._queue_order,
                 "active": self._active,
                 "completed": sorted(self._completed),
+                "document_undo_stack": self._document_undo_stack,
             }, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -699,6 +716,7 @@ class ReceiverApp:
             self._scan_order.clear()
             self._queue_order.clear()
             self._completed.clear()
+            self._document_undo_stack.clear()
             self._active = None
             self._drag_start = None
             self._selected_job_id = ""
@@ -765,6 +783,8 @@ class ReceiverApp:
                     continue
                 doc_id = document.get("document_id")
                 key = f"{job_id}:{doc_id}"
+                if self._is_document_deleted(key):
+                    continue
                 try:
                     for relative in document.get("pages", []):
                         self._job_file(manifest_path.parent, str(relative))
@@ -821,6 +841,190 @@ class ReceiverApp:
                 values=(document.get("page_count", 0), item["carrier"],
                         "스캔 중" if key in active_keys else idle_state),
             )
+
+    def _is_document_deleted(self, key: str) -> bool:
+        return any(
+            entry.get("key") == key
+            for action in self._document_undo_stack
+            for entry in action.get("entries", [])
+            if isinstance(entry, dict)
+        )
+
+    def _delete_selected_documents(self, tree: ttk.Treeview) -> str:
+        self._sync_active_scan()
+        order = self._scan_order if tree is self.scan_tree else self._queue_order
+        selected = set(tree.selection())
+        keys = [key for key in order if key in selected and key in self._items]
+        if not keys:
+            return "break"
+
+        active_keys = set()
+        if self._active:
+            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        if active_keys.intersection(keys):
+            messagebox.showinfo(
+                "스캔 진행 중", "현재 스캔 중인 서류는 삭제할 수 없습니다.", parent=self.root,
+            )
+            return "break"
+
+        names = [
+            str(self._items[key]["document"].get("source_name", "서류")) for key in keys
+        ]
+        confirmed = messagebox.askyesno(
+            "서류 삭제",
+            f"선택한 서류 {len(keys)}개를 목록에서 삭제할까요?\n\n"
+            + "\n".join(names[:8])
+            + (f"\n외 {len(names) - 8}개" if len(names) > 8 else "")
+            + "\n\n삭제한 서류는 휴지통에 보관되며 Ctrl+Z로 되돌릴 수 있습니다.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return "break"
+
+        work_root = Path(self.config.get("work_path", "")).expanduser().resolve()
+        action_id = uuid4().hex
+        entries: list[dict] = []
+        moved: list[tuple[Path, Path]] = []
+        previous_scan_order = list(self._scan_order)
+        previous_queue_order = list(self._queue_order)
+        previous_completed = set(self._completed)
+        try:
+            for key in keys:
+                item = self._items[key]
+                job_dir = Path(item["job_dir"]).resolve()
+                job_dir.relative_to(work_root)
+                docs_root = (job_dir / "documents").resolve()
+                document = item["document"]
+                pages = document.get("pages", [])
+                if not isinstance(pages, list) or not pages:
+                    raise ValueError("서류 페이지 경로가 비어 있습니다.")
+                page_paths = [self._job_file(job_dir, str(relative)).resolve() for relative in pages]
+                page_dirs = {page.parent for page in page_paths}
+                if len(page_dirs) != 1:
+                    raise ValueError("한 서류의 페이지가 여러 폴더에 나뉘어 있습니다.")
+                source_dir = next(iter(page_dirs))
+                source_dir.relative_to(docs_root)
+                if source_dir == docs_root or source_dir.is_symlink() or not source_dir.is_dir():
+                    raise ValueError("서류 폴더가 올바르지 않아 삭제할 수 없습니다.")
+                if any(not page.is_file() for page in page_paths):
+                    raise ValueError("서류 페이지 파일이 없어 삭제할 수 없습니다.")
+
+                lane = "scan" if key in self._scan_order else "queue"
+                lane_order = self._scan_order if lane == "scan" else self._queue_order
+                index = lane_order.index(key)
+                trash_root = job_dir / ".document-trash"
+                if trash_root.is_symlink():
+                    raise ValueError("서류 휴지통 경로가 바로가기로 연결되어 있어 삭제할 수 없습니다.")
+                trash_root.mkdir(parents=True, exist_ok=True)
+                trash_root.resolve().relative_to(job_dir)
+                trash_dir = trash_root / action_id / str(len(entries))
+                trash_dir.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source_dir, trash_dir)
+                moved.append((trash_dir, source_dir))
+                entries.append({
+                    "key": key,
+                    "job_rel": job_dir.relative_to(work_root).as_posix(),
+                    "source_rel": source_dir.relative_to(work_root).as_posix(),
+                    "trash_rel": trash_dir.relative_to(work_root).as_posix(),
+                    "lane": lane,
+                    "index": index,
+                    "completed": key in self._completed,
+                })
+
+            action = {"entries": entries}
+            self._document_undo_stack.append(action)
+            self._scan_order = [key for key in self._scan_order if key not in keys]
+            self._queue_order = [key for key in self._queue_order if key not in keys]
+            self._completed.difference_update(keys)
+            self._save_queue_state()
+        except (OSError, ValueError) as exc:
+            if self._document_undo_stack and self._document_undo_stack[-1].get("entries") == entries:
+                self._document_undo_stack.pop()
+            self._scan_order = previous_scan_order
+            self._queue_order = previous_queue_order
+            self._completed = previous_completed
+            for trash_dir, source_dir in reversed(moved):
+                try:
+                    source_dir.parent.mkdir(parents=True, exist_ok=True)
+                    if trash_dir.exists() and not source_dir.exists():
+                        os.replace(trash_dir, source_dir)
+                except OSError:
+                    pass
+            self._refresh_queue()
+            messagebox.showerror("서류 삭제 실패", str(exc), parent=self.root)
+            return "break"
+
+        self._refresh_queue()
+        tree.focus_set()
+        self.status.set(f"서류 {len(keys)}개 삭제 · Ctrl+Z로 되돌릴 수 있습니다")
+        return "break"
+
+    def _undo_document_delete(self, _event=None) -> str | None:
+        focus = self.root.focus_get()
+        if focus is not None and focus.winfo_class() in {"Entry", "TEntry", "Text"}:
+            return None
+        if not self._document_undo_stack:
+            return None
+        work_root = Path(self.config.get("work_path", "")).expanduser().resolve()
+        action = self._document_undo_stack[-1]
+        restored: list[tuple[Path, Path]] = []
+        try:
+            for entry in action["entries"]:
+                job_dir = (work_root / Path(*PurePosixPath(entry["job_rel"]).parts)).resolve()
+                source_dir = (work_root / Path(*PurePosixPath(entry["source_rel"]).parts)).resolve()
+                trash_dir = (work_root / Path(*PurePosixPath(entry["trash_rel"]).parts)).resolve()
+                job_dir.relative_to(work_root)
+                source_dir.relative_to(job_dir / "documents")
+                trash_dir.relative_to(job_dir / ".document-trash")
+                if source_dir.exists():
+                    raise ValueError("원래 서류 폴더가 이미 있어 복구하지 않았습니다.")
+                if not trash_dir.is_dir() or trash_dir.is_symlink():
+                    raise ValueError("휴지통의 서류 폴더를 찾을 수 없습니다.")
+                source_dir.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(trash_dir, source_dir)
+                restored.append((source_dir, trash_dir))
+        except (KeyError, OSError, ValueError) as exc:
+            for source_dir, trash_dir in reversed(restored):
+                try:
+                    trash_dir.parent.mkdir(parents=True, exist_ok=True)
+                    if source_dir.exists() and not trash_dir.exists():
+                        os.replace(source_dir, trash_dir)
+                except OSError:
+                    pass
+            messagebox.showerror("삭제 취소 실패", str(exc), parent=self.root)
+            return "break"
+
+        self._document_undo_stack.pop()
+        for entry in action["entries"]:
+            key = entry["key"]
+            lane_order = self._scan_order if entry.get("lane") == "scan" else self._queue_order
+            if key not in lane_order:
+                lane_order.insert(min(int(entry.get("index", len(lane_order))), len(lane_order)), key)
+            if entry.get("completed"):
+                self._completed.add(key)
+        try:
+            self._save_queue_state()
+        except OSError as exc:
+            for entry in action["entries"]:
+                key = entry["key"]
+                lane_order = self._scan_order if entry.get("lane") == "scan" else self._queue_order
+                if key in lane_order:
+                    lane_order.remove(key)
+                self._completed.discard(key)
+            self._document_undo_stack.append(action)
+            for source_dir, trash_dir in reversed(restored):
+                try:
+                    trash_dir.parent.mkdir(parents=True, exist_ok=True)
+                    if source_dir.exists() and not trash_dir.exists():
+                        os.replace(source_dir, trash_dir)
+                except OSError:
+                    pass
+            self._refresh_queue()
+            messagebox.showerror("삭제 취소 상태 저장 실패", str(exc), parent=self.root)
+            return "break"
+        self._refresh_queue()
+        self.status.set("마지막 서류 삭제를 되돌렸습니다")
+        return "break"
 
     def _refresh_job_selector(self) -> None:
         jobs = sorted(self._jobs.values(), key=lambda item: item["mtime"], reverse=True)
@@ -973,16 +1177,23 @@ class ReceiverApp:
                 parent=self.root,
             )
             return
-        if not self._items:
+        manifest_documents: dict[Path, list[dict]] = {}
+        for job in self._jobs.values():
+            documents = job["manifest"].get("documents", [])
+            if isinstance(documents, list):
+                manifest_documents[job["job_dir"].resolve()] = [
+                    document for document in documents if isinstance(document, dict)
+                ]
+        count = sum(len(documents) for documents in manifest_documents.values())
+        if not count:
             messagebox.showinfo("서류 목록 초기화", "초기화할 서류 폴더가 없습니다.", parent=self.root)
             return
-        count = len(self._items)
         confirmed = messagebox.askyesno(
             "서류 목록 초기화",
             f"Receiver에 있는 서류 폴더 {count}개를 초기화할까요?\n\n"
-            "이 작업은 해당 서류의 변환 JPG를 Receiver 작업 폴더에서 삭제하고 두 목록에서 제거합니다.\n"
+            "변환 JPG와 삭제 취소용 휴지통 자료를 영구 삭제하고 두 목록과 manifest에서 제거합니다.\n"
             "신분증 이미지와 OCR 결과, SK 보고서, KT DB, 가상 스캐너 폴더는 삭제하지 않습니다.\n"
-            "삭제한 서류 JPG는 복구할 수 없습니다.",
+            "이 초기화 후에는 Ctrl+Z로도 복구할 수 없습니다.",
             parent=self.root,
         )
         if not confirmed:
@@ -992,18 +1203,19 @@ class ReceiverApp:
         ids_by_job: dict[Path, set[str]] = {}
         folders_by_job: dict[Path, set[Path]] = {}
         try:
-            for item in self._items.values():
-                job_dir = item["job_dir"].resolve()
-                document = item["document"]
-                document_id = str(document.get("document_id", ""))
+            for job_dir, documents in manifest_documents.items():
                 docs_root = (job_dir / "documents").resolve()
-                for relative in document.get("pages", []):
-                    page = self._job_file(job_dir, str(relative)).resolve()
-                    if not page.is_relative_to(docs_root):
-                        raise ValueError("서류 페이지가 documents 폴더 밖을 가리킵니다.")
-                    files_by_job.setdefault(job_dir, set()).add(page)
-                    folders_by_job.setdefault(job_dir, set()).add(page.parent)
-                ids_by_job.setdefault(job_dir, set()).add(document_id)
+                for document in documents:
+                    document_id = str(document.get("document_id", ""))
+                    for relative_name in document.get("pages", []):
+                        relative = _safe_package_path(str(relative_name))
+                        page = job_dir.joinpath(*relative.parts).resolve()
+                        if not page.is_relative_to(docs_root):
+                            raise ValueError("서류 페이지가 documents 폴더 밖을 가리킵니다.")
+                        if page.is_file():
+                            files_by_job.setdefault(job_dir, set()).add(page)
+                            folders_by_job.setdefault(job_dir, set()).add(page.parent)
+                    ids_by_job.setdefault(job_dir, set()).add(document_id)
         except (OSError, TypeError, ValueError) as exc:
             messagebox.showerror("서류 목록 초기화 실패", str(exc), parent=self.root)
             return
@@ -1035,7 +1247,13 @@ class ReceiverApp:
                     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                 )
                 os.replace(temporary, manifest_path)
-        except (OSError, json.JSONDecodeError) as exc:
+            for job_dir in manifest_documents:
+                trash_root = job_dir / ".document-trash"
+                if trash_root.is_symlink():
+                    raise ValueError("서류 휴지통 경로가 바로가기로 연결되어 있어 초기화할 수 없습니다.")
+                if trash_root.exists():
+                    shutil.rmtree(trash_root)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             messagebox.showerror(
                 "서류 목록 초기화 일부 실패",
                 f"일부 서류를 삭제하지 못했습니다. 목록을 새로고침해 상태를 확인하세요.\n{exc}",
@@ -1047,6 +1265,7 @@ class ReceiverApp:
         self._scan_order.clear()
         self._queue_order.clear()
         self._completed.clear()
+        self._document_undo_stack.clear()
         self._save_queue_state()
         self._refresh_queue()
         self.status.set(f"서류 목록 초기화 완료 · JPG {count}개 폴더 삭제")
