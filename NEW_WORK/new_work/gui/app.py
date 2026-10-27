@@ -116,6 +116,7 @@ class NewWorkApp:
         self.portal_var = tk.StringVar(root, value="SK")
         self.portal_var.trace_add("write", self._portal_changed)
         self._preview_resize_job: str | None = None
+        self._v1_fit_job: str | None = None
         self._scan_animation_job: str | None = None
         self._scan_y = 0
         self._scan_direction = 1
@@ -244,9 +245,10 @@ class NewWorkApp:
     def _build_v1(self) -> None:
         """Legacy OCR-only window backed by the current OCR and save logic."""
         self._setup_style()
-        self.root.geometry("1100x900")
-        self.root.minsize(950, 700)
-        self.root.resizable(True, True)
+        # This is the original compact V1 window size. Its height is adjusted
+        # after OCR to fit the result rows and the source ID preview.
+        self.root.geometry("560x700")
+        self.root.resizable(False, False)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         shell = ttk.Frame(self.root, style="App.TFrame", padding=5)
@@ -295,6 +297,8 @@ class NewWorkApp:
         ).place(relx=0.5, rely=0.5, anchor="center")
 
         preview_area = tk.Frame(shell, background="#FFFFFF", borderwidth=0)
+        self._v1_shell = shell
+        self._v1_preview_area = preview_area
         preview_area.grid(row=3, column=0, sticky="nsew")
         preview_area.rowconfigure(0, weight=1)
         preview_area.columnconfigure(0, weight=1)
@@ -307,6 +311,28 @@ class NewWorkApp:
         self.image_label.bind("<Configure>", self._schedule_preview_resize)
         self._refresh_result_table()
         self._register_drop_targets(self.root, self._handle_id_drop)
+
+    def _fit_v1_window_to_content(self) -> None:
+        self._v1_fit_job = None
+        if (self.version != "v1" or self._source_image is None or self.draft is None
+                or not self.draft.result.lines):
+            return
+        self.root.update_idletasks()
+        target_image_width = max(1, 560 - 10 - 8)
+        target_image_height = round(
+            target_image_width * self._source_image.height / self._source_image.width
+        )
+        natural_preview_height = self._v1_preview_area.winfo_reqheight()
+        requested_height = (
+            self._v1_shell.winfo_reqheight()
+            - natural_preview_height
+            + target_image_height
+        )
+        screen_limit = max(560, self.root.winfo_screenheight() - 80)
+        height = min(max(420, requested_height), screen_limit)
+        self.root.geometry(f"560x{height}")
+        self.root.update_idletasks()
+        self._resize_source_preview()
 
     def _build_v2(self) -> None:
         self._setup_style()
@@ -639,6 +665,9 @@ class NewWorkApp:
             )
             self._entries[field] = entry
         self._register_drop_targets(self.result_table, self._handle_id_drop)
+        if (self.version == "v1" and self.draft is not None
+                and self.draft.result.lines and self._v1_fit_job is None):
+            self._v1_fit_job = self.root.after_idle(self._fit_v1_window_to_content)
 
     def _format_field_display(self, field: str) -> None:
         value = self._value_vars[field].get().strip()
@@ -689,7 +718,7 @@ class NewWorkApp:
             preview = Image.alpha_composite(
                 preview.convert("RGBA"), overlay
             ).convert("RGB")
-        if MASK_PREVIEW_ENABLED and self._mask_preview_position:
+        if self.version == "v2" and MASK_PREVIEW_ENABLED and self._mask_preview_position:
             bounds = _parse_mask_position(self._mask_preview_position)
             if bounds is not None:
                 left, top, right, bottom = bounds
