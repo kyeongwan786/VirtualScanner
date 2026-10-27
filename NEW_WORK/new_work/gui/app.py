@@ -23,7 +23,11 @@ from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import default_result_path, write_ocr_result
 from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
-from new_work.image.face_crop import id_portrait_bounds, id_portrait_size
+from new_work.image.face_crop import (
+    id_portrait_bounds,
+    id_portrait_fallback_bounds,
+    id_portrait_size,
+)
 from new_work.windows_lifecycle import (
     create_tray_icon,
     register_current_user_autostart,
@@ -111,6 +115,7 @@ class NewWorkApp:
         self._preview_base: Image.Image | None = None
         self._source_image: Image.Image | None = None
         self._id_crop_preview_bounds: tuple[int, int, int, int] | None = None
+        self._id_crop_preview_is_fallback = False
         self._id_crop_manually_adjusted = False
         self._id_crop_drag: dict[str, object] | None = None
         self._mask_preview_position: str | None = None
@@ -631,7 +636,10 @@ class NewWorkApp:
 
     def _current_values(self) -> dict[str, str]:
         values = {field: value.get() for field, value in self._value_vars.items()}
-        if self._id_crop_preview_bounds is not None:
+        if (
+            self._id_crop_preview_bounds is not None
+            and (not self._id_crop_preview_is_fallback or self._id_crop_manually_adjusted)
+        ):
             values["_idCropBounds"] = ",".join(
                 str(value) for value in self._id_crop_preview_bounds
             )
@@ -957,6 +965,7 @@ class NewWorkApp:
 
         self._document_job_id = job_id
         self._id_crop_preview_bounds = None
+        self._id_crop_preview_is_fallback = False
         self._id_crop_manually_adjusted = False
         self._id_crop_drag = None
         self.crop_reset_button.configure(state="disabled")
@@ -1516,7 +1525,9 @@ class NewWorkApp:
             detection_status = self._id_type_detection.name
         if invalid_resident_number:
             detection_status += " · 주민번호 검증 실패, 직접 확인 필요"
-        if self._id_crop_preview_bounds is not None:
+        if self._id_crop_preview_is_fallback:
+            detection_status += " · 얼굴 자동 위치 미검출, 파란 영역을 직접 옮겨 저장하세요"
+        elif self._id_crop_preview_bounds is not None:
             detection_status += " · 파란 크롭 영역을 드래그해 조정한 뒤 저장"
         elif (
             self.portal_var.get() == "KT"
@@ -1546,6 +1557,7 @@ class NewWorkApp:
             return
         if self._source_image is None or not self._id_type_detection.code:
             self._id_crop_preview_bounds = None
+            self._id_crop_preview_is_fallback = False
             if hasattr(self, "crop_reset_button"):
                 self.crop_reset_button.configure(state="disabled")
             return
@@ -1554,13 +1566,19 @@ class NewWorkApp:
             and self._id_type_detection.code not in SK_ID_CROP_CODES
         ):
             self._id_crop_preview_bounds = None
+            self._id_crop_preview_is_fallback = False
             if hasattr(self, "crop_reset_button"):
                 self.crop_reset_button.configure(state="disabled")
             return
-        self._id_crop_preview_bounds = id_portrait_bounds(
+        bounds = id_portrait_bounds(
             self._source_image,
             recog_sub_cd=self._id_type_detection.code,
             require_face=True,
+        )
+        self._id_crop_preview_is_fallback = bounds is None
+        self._id_crop_preview_bounds = bounds or id_portrait_fallback_bounds(
+            self._source_image,
+            recog_sub_cd=self._id_type_detection.code,
         )
         if hasattr(self, "crop_reset_button"):
             self.crop_reset_button.configure(
@@ -1741,6 +1759,14 @@ class NewWorkApp:
     def _save_locally(self) -> None:
         """Apply reviewed OCR directly on this PC, matching the original V1 flow."""
         assert self.draft is not None
+        if self._id_crop_preview_is_fallback and not self._id_crop_manually_adjusted:
+            messagebox.showwarning(
+                "크롭 영역 확인",
+                "얼굴 사진 위치를 자동으로 찾지 못했습니다. 파란 고정 영역을 "
+                "사진 위로 옮긴 뒤 저장하세요.",
+                parent=self.root,
+            )
+            return
         values = self._current_values()
         database_row_id: str | None = None
         try:
@@ -1937,6 +1963,7 @@ class NewWorkApp:
         self._preview_base = None
         self._preview = None
         self._id_crop_preview_bounds = None
+        self._id_crop_preview_is_fallback = False
         self._id_crop_manually_adjusted = False
         self._id_crop_drag = None
         self._mask_preview_position = None

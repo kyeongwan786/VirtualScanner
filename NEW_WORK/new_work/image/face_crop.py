@@ -97,6 +97,34 @@ def id_portrait_size(recog_sub_cd: str | None) -> tuple[int, int]:
     return spec[0], spec[1]
 
 
+def id_portrait_fallback_bounds(
+    source: Image.Image,
+    *,
+    recog_sub_cd: str | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Return a visible, fixed-size starting box when face detection misses.
+
+    This is only a UI placement hint. Callers must not silently save it as an
+    automatically detected portrait; the operator should confirm its position.
+    """
+    spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
+    crop_width, crop_height = id_portrait_size(recog_sub_cd)
+    crop_width = min(crop_width, source.width)
+    crop_height = min(crop_height, source.height)
+    if crop_width < 20 or crop_height < 20:
+        return None
+
+    expected_side = spec[4] if spec is not None else None
+    center_x_ratio = 0.75 if expected_side == "right" else (
+        0.25 if expected_side == "left" else 0.5
+    )
+    center_x = round(source.width * center_x_ratio)
+    center_y = round(source.height * 0.52)
+    left = min(max(center_x - crop_width // 2, 0), source.width - crop_width)
+    top = min(max(center_y - crop_height // 2, 0), source.height - crop_height)
+    return left, top, left + crop_width, top + crop_height
+
+
 def id_portrait_bounds(
     source: Image.Image,
     *,
