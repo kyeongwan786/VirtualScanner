@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import shutil
 import tempfile
 import time
 import stat
@@ -61,6 +62,10 @@ class DeliveryPendingError(TransferError):
     def __init__(self, job_id: str, message: str):
         super().__init__(message)
         self.job_id = job_id
+
+
+class TransferCancelledError(TransferError):
+    """Raised when the sender requests cancellation of a Relay job."""
 
 
 def _request(url: str, token: str, *, method: str = "GET",
@@ -160,12 +165,41 @@ def send_work_package(
     progress: Callable[[str], None] | None = None,
     *,
     wait_seconds: int = 300,
+    cancel_event: Event | None = None,
 ) -> str:
     """Upload the complete work ZIP in bounded encrypted chunks."""
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise TransferCancelledError("송신기에서 전송 취소를 요청했습니다.")
+
+    def cancel_remote_job(job_id: str) -> str:
+        try:
+            _request(
+                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
+                token, method="DELETE",
+            )
+            return "cancelled"
+        except TransferError as cancel_error:
+            try:
+                status = get_work_package_status(relay_config, job_id)
+            except TransferError:
+                raise TransferCancelledError(
+                    "취소 요청을 보냈지만 Relay 상태를 확인하지 못했습니다. "
+                    f"Receiver 작업을 확인하세요. 작업 ID: {job_id}"
+                ) from cancel_error
+            if status in {"delivered", "cancelled"}:
+                return status
+            raise TransferCancelledError(
+                "취소 요청 결과를 확인하지 못했습니다. "
+                f"Relay 상태: {status} · 작업 ID: {job_id}"
+            ) from cancel_error
+
+    check_cancelled()
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["central_token"]
     report = progress or (lambda _message: None)
     health_status, health = _request(f"{relay_url}/health", token)
+    check_cancelled()
     if (health_status != 200 or not isinstance(health, dict)
             or "new-work-zip-v1" not in health.get("features", [])):
         raise TransferError(
@@ -183,6 +217,7 @@ def send_work_package(
         archive_sha256 = hashlib.sha256()
         with archive_path.open("rb") as source:
             while chunk := source.read(1024 * 1024):
+                check_cancelled()
                 archive_sha256.update(chunk)
         archive_sha256_hex = archive_sha256.hexdigest()
         chunk_count = (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES
@@ -201,6 +236,7 @@ def send_work_package(
         created = False
         completion_started = False
         try:
+            check_cancelled()
             status, result = _request(
                 f"{relay_url}/v1/jobs", token, method="POST",
                 body=json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
@@ -213,6 +249,7 @@ def send_work_package(
             upload_size = 0
             with archive_path.open("rb") as source:
                 for number in range(1, chunk_count + 1):
+                    check_cancelled()
                     content = source.read(MAX_PAGE_BYTES)
                     if not content:
                         raise TransferError("작업 ZIP 읽기가 중간에 끝났습니다.")
@@ -226,9 +263,11 @@ def send_work_package(
                     if status not in (200, 201):
                         raise TransferError(f"Relay가 ZIP 조각 {number}를 받지 못했습니다: {result}")
                     report(f"Relay ZIP 전송 중 · {number}/{chunk_count}")
+                    check_cancelled()
             if upload_size != archive_size or upload_digest.hexdigest() != archive_sha256_hex:
                 raise TransferError("전송 중 작업 ZIP이 변경되었습니다. Relay 작업을 취소합니다.")
 
+            check_cancelled()
             completion_started = True
             status, result = _request(
                 f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/complete",
@@ -236,7 +275,19 @@ def send_work_package(
             )
             if status not in (200, 201):
                 raise TransferError(f"Relay가 작업 완료를 확인하지 못했습니다: {result}")
+            check_cancelled()
         except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                if created:
+                    remote_status = cancel_remote_job(job_id)
+                    if remote_status == "delivered":
+                        raise TransferCancelledError(
+                            "취소 전에 Receiver 적용이 완료됐습니다. "
+                            f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
+                        ) from exc
+                raise TransferCancelledError(
+                    f"Relay 전송을 취소했습니다. 작업 ID: {job_id}"
+                ) from exc
             if completion_started:
                 raise DeliveryPendingError(
                     job_id,
@@ -253,6 +304,16 @@ def send_work_package(
 
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                remote_status = cancel_remote_job(job_id)
+                if remote_status == "delivered":
+                    raise TransferCancelledError(
+                        "취소 전에 Receiver 적용이 완료됐습니다. "
+                        f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
+                    )
+                raise TransferCancelledError(
+                    f"Receiver 대기 중 Relay 작업을 취소했습니다. 작업 ID: {job_id}"
+                )
             try:
                 status, result = _request(
                     f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status", token,
@@ -266,7 +327,10 @@ def send_work_package(
             if result.get("status") == "delivered":
                 return job_id
             report("Receiver 적용 대기 중…")
-            time.sleep(1)
+            if cancel_event is not None:
+                cancel_event.wait(1)
+            else:
+                time.sleep(1)
     raise DeliveryPendingError(
         job_id,
         f"Relay에 전송했지만 Receiver 적용 확인을 {wait_seconds}초 안에 받지 못했습니다. "
@@ -285,6 +349,27 @@ def get_work_package_status(relay_config: dict[str, str], job_id: str) -> str:
     if status not in {"uploading", "queued", "delivered", "cancelled"}:
         raise TransferError("Relay가 알 수 없는 작업 상태를 돌려줬습니다.")
     return status
+
+
+def cancel_work_package(relay_config: dict[str, str], job_id: str) -> str:
+    """Cancel an uploading or queued Relay job and report its final state."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    try:
+        _, result = _request(
+            f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
+            relay_config["central_token"], method="DELETE",
+        )
+        status = result.get("status") if isinstance(result, dict) else None
+        if status == "cancelled":
+            return status
+    except TransferError:
+        pass
+    status = get_work_package_status(relay_config, job_id)
+    if status in {"cancelled", "delivered"}:
+        return status
+    raise TransferError(
+        f"Relay 작업을 취소하지 못했습니다. 현재 상태: {status} · 작업 ID: {job_id}"
+    )
 
 
 def _receive_work_archive(

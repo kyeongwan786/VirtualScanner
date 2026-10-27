@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from time import perf_counter
 import shutil
 import sqlite3
@@ -36,6 +36,8 @@ from new_work.gui.stores_dialog import StoreManagerDialog
 from new_work.relay_config import load_relay_config, save_relay_config
 from new_work.relay_client import (
     DeliveryPendingError,
+    TransferCancelledError,
+    cancel_work_package,
     get_work_package_status,
     send_work_package,
 )
@@ -135,6 +137,8 @@ class NewWorkApp:
         self._document_jobs: list[dict[str, object]] = []
         self._job_sent = False
         self._pending_confirmation: tuple[str, str, str, dict[str, str]] | None = None
+        self._transfer_cancel_event: Event | None = None
+        self._reset_requested = False
         try:
             self.stores = load_stores()
         except ValueError as exc:
@@ -406,6 +410,10 @@ class NewWorkApp:
                 state="disabled",
             )
             self.status_button.pack(side="left", padx=(5, 0))
+            self.reset_button = ttk.Button(
+                buttons, text="전송 취소·초기화", command=self._reset_sender_session,
+            )
+            self.reset_button.pack(side="left", padx=(5, 0))
         self.crop_reset_button = ttk.Button(
             buttons, text="자동 영역 복원", command=self._reset_crop_bounds,
             state="disabled",
@@ -1628,13 +1636,17 @@ class NewWorkApp:
         documents = list(self._document_jobs)
         relay_config = dict(self.relay_config)
         transfer_job_id = str(uuid4())
+        cancel_event = Event()
+        self._transfer_cancel_event = cancel_event
+        self._reset_requested = False
         self.save_button.configure(state="disabled", text="전송 중…")
         self._set_transfer_controls(False)
+        self.reset_button.configure(state="normal", text="전송 취소·초기화")
         self.review_status.set(f"Render Relay로 {carrier} 작업 전송 중…")
         Thread(
             target=self._send_work_package,
             args=(store, carrier, result, detection, values, documents,
-                  relay_config, transfer_job_id),
+                  relay_config, transfer_job_id, cancel_event),
             daemon=True,
         ).start()
 
@@ -1685,6 +1697,7 @@ class NewWorkApp:
         documents: list[dict[str, object]],
         relay_config: dict[str, str],
         transfer_job_id: str,
+        cancel_event: Event,
     ) -> None:
         try:
             job_root = default_job_directory() / result.job_id
@@ -1701,26 +1714,167 @@ class NewWorkApp:
                 reviewed_values=values,
                 document_jobs=documents,
             )
+            if cancel_event.is_set():
+                raise TransferCancelledError("작업 ZIP 생성 중 송신기 초기화가 요청됐습니다.")
             def progress(message: str) -> None:
-                self.root.after(0, self.review_status.set, message)
+                self.root.after(0, self._send_progress, cancel_event, message)
 
             job_id = send_work_package(
-                relay_config, store.relay_station_id, package, progress
+                relay_config, store.relay_station_id, package, progress,
+                cancel_event=cancel_event,
             )
         except DeliveryPendingError as exc:
+            if cancel_event.is_set():
+                self.root.after(
+                    0, self._work_package_cancelled,
+                    "취소 요청 후 Relay 상태 확인이 끊겼습니다. Receiver 상태도 확인해 주세요.",
+                )
+                return
             self.root.after(
                 0, self._work_package_pending, store.name, carrier,
                 exc.job_id, values, str(exc),
             )
             return
+        except TransferCancelledError as exc:
+            self.root.after(0, self._work_package_cancelled, str(exc))
+            return
         except Exception as exc:
+            if cancel_event.is_set():
+                self.root.after(
+                    0, self._work_package_cancelled,
+                    f"취소 요청은 했지만 Relay 결과를 확인하지 못했습니다: {exc}",
+                )
+                return
             self.root.after(0, self._work_package_failed, store.name, str(exc))
+            return
+        finally:
+            if cancel_event.is_set():
+                shutil.rmtree(default_job_directory() / result.job_id, ignore_errors=True)
+        if cancel_event.is_set():
+            self.root.after(
+                0, self._work_package_cancelled,
+                "취소 요청 전에 Receiver 적용이 완료됐습니다. 송신기 자료만 초기화합니다.",
+            )
             return
         self.root.after(
             0, self._work_package_sent, store.name, carrier, job_id, values
         )
 
+    def _send_progress(self, cancel_event: Event, message: str) -> None:
+        if self._transfer_cancel_event is cancel_event and not cancel_event.is_set():
+            self.review_status.set(message)
+
+    def _reset_sender_session(self) -> None:
+        if self.version != "v2":
+            return
+        prompt = (
+            "현재 송신 작업을 취소하고 화면과 임시 작업 자료를 초기화할까요?\n\n"
+            "Relay 전송 중이면 취소를 요청합니다. 이미 Receiver에서 적용된 작업은 되돌릴 수 없습니다.\n"
+            "이 앱이 만든 임시 신분증 사본·PDF 페이지·전송 ZIP만 정리하며, 원본 파일은 삭제하지 않습니다."
+        )
+        if not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
+            return
+
+        if self._transfer_cancel_event is not None:
+            self._reset_requested = True
+            self._transfer_cancel_event.set()
+            self.reset_button.configure(state="disabled", text="취소 요청 중…")
+            self.review_status.set(
+                "취소 요청 중 · 진행 중인 Relay 요청이 끝나면 작업 자료를 정리합니다."
+            )
+            return
+
+        pending = self._pending_confirmation
+        if pending is not None and self.relay_config is not None:
+            _, _, job_id, _ = pending
+            self._reset_requested = True
+            self.reset_button.configure(state="disabled", text="Relay 취소 중…")
+            self._set_transfer_controls(False)
+            self.save_button.configure(state="disabled")
+            self.review_status.set("Receiver 확인 대기 작업을 Relay에서 취소하는 중…")
+            Thread(
+                target=self._cancel_pending_for_reset,
+                args=(dict(self.relay_config), job_id),
+                daemon=True,
+            ).start()
+            return
+
+        self._clear_sender_session()
+
+    def _cancel_pending_for_reset(
+        self, relay_config: dict[str, str], job_id: str,
+    ) -> None:
+        status = "unknown"
+        error = ""
+        try:
+            status = cancel_work_package(relay_config, job_id)
+        except Exception as exc:
+            error = str(exc)
+        self.root.after(0, self._finish_pending_reset, status, error)
+
+    def _finish_pending_reset(self, status: str, error: str) -> None:
+        self._clear_sender_session()
+        if status == "delivered":
+            message = "Receiver가 이미 작업을 적용했습니다. 송신기 자료는 초기화했지만 Receiver 적용은 취소할 수 없습니다."
+            self.review_status.set(message)
+            messagebox.showwarning("초기화 완료 · Receiver 적용됨", message, parent=self.root)
+        elif error:
+            message = f"송신기 자료는 초기화했지만 Relay 취소 여부를 확인하지 못했습니다: {error}"
+            self.review_status.set(message)
+            messagebox.showwarning("Relay 취소 확인 필요", message, parent=self.root)
+        else:
+            self.review_status.set("송신 작업 취소 및 화면 초기화 완료")
+
+    def _work_package_cancelled(self, message: str) -> None:
+        self._clear_sender_session()
+        if "완료됐습니다" in message or "확인하지 못했습니다" in message or "확인해 주세요" in message:
+            self.review_status.set(f"초기화 완료 · {message}")
+            messagebox.showwarning("전송 취소 결과", message, parent=self.root)
+        else:
+            self.review_status.set("전송 취소 및 작업 초기화 완료")
+
+    def _clear_sender_session(self) -> None:
+        job_id = self._document_job_id
+        if job_id:
+            shutil.rmtree(default_job_directory() / job_id, ignore_errors=True)
+        self._transfer_cancel_event = None
+        self._reset_requested = False
+        self._pending_confirmation = None
+        self._job_sent = False
+        self._document_job_id = None
+        self._document_jobs.clear()
+        self.draft = None
+        self._source_image = None
+        self._preview_base = None
+        self._preview = None
+        self._id_crop_preview_bounds = None
+        self._id_crop_manually_adjusted = False
+        self._id_crop_drag = None
+        self._mask_preview_position = None
+        self._id_type_detection = IdTypeDetection(None, None)
+        self._stop_scan_animation(restore=False)
+        for field in REVIEW_TEXT_FIELDS:
+            self._value_vars[field].set("")
+        self._id_type_var.set("유형 선택…")
+        self.image_label.configure(
+            image="", text="신분증 JPG를 선택하거나 이 영역에 끌어다 놓으세요"
+        )
+        self.crop_reset_button.configure(state="disabled")
+        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        self.pdf_button.configure(state="normal")
+        self.status_button.configure(state="disabled", text="전송 상태 확인")
+        self.reset_button.configure(state="normal", text="전송 취소·초기화")
+        self._set_transfer_controls(True)
+        self._refresh_result_table()
+        self._refresh_document_table()
+        self.review_status.set("작업 초기화 완료")
+
     def _work_package_failed(self, store_name: str, error: str) -> None:
+        if self._reset_requested:
+            self._clear_sender_session()
+            self.review_status.set("작업 초기화 완료 · Relay 전송은 시작되지 않았습니다.")
+            return
+        self._transfer_cancel_event = None
         self._pending_confirmation = None
         self.status_button.configure(state="disabled")
         self.save_button.configure(state="normal", text="선택 PC로 저장")
@@ -1736,6 +1890,16 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str], error: str,
     ) -> None:
+        self._transfer_cancel_event = None
+        if self._reset_requested and self.relay_config is not None:
+            self._pending_confirmation = (store_name, carrier, job_id, values)
+            self.reset_button.configure(state="disabled", text="Relay 취소 중…")
+            Thread(
+                target=self._cancel_pending_for_reset,
+                args=(dict(self.relay_config), job_id),
+                daemon=True,
+            ).start()
+            return
         self._set_transfer_controls(True)
         self.save_button.configure(state="disabled", text="Receiver 확인 대기")
         self.pdf_button.configure(state="disabled")
@@ -1772,6 +1936,8 @@ class NewWorkApp:
         )
 
     def _pending_status_failed(self, error: str) -> None:
+        if self._reset_requested or self._pending_confirmation is None:
+            return
         self.status_button.configure(state="normal", text="전송 상태 확인")
         self.review_status.set(f"전송 상태 확인 실패 · {error}")
 
@@ -1779,6 +1945,8 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str], status: str,
     ) -> None:
+        if self._reset_requested or self._pending_confirmation is None:
+            return
         self.status_button.configure(state="normal", text="전송 상태 확인")
         if status == "delivered":
             self._pending_confirmation = None
@@ -1791,6 +1959,14 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str],
     ) -> None:
+        if self._reset_requested:
+            self._transfer_cancel_event = None
+            self._clear_sender_session()
+            message = "취소 요청 전에 Receiver 적용이 완료됐습니다. 송신기 자료만 초기화했습니다."
+            self.review_status.set(message)
+            messagebox.showwarning("전송 취소 결과", message, parent=self.root)
+            return
+        self._transfer_cancel_event = None
         self._pending_confirmation = None
         self.status_button.configure(state="disabled", text="전송 상태 확인")
         self._set_transfer_controls(True)
