@@ -431,7 +431,9 @@ class PaddleOcrAdapter:
                 }
                 if len(checksum_valid) == 1:
                     focused[field] = next(iter(checksum_valid))
-                    continue
+                # Repeated recognition must not reintroduce an invalid
+                # checksum when no valid candidate was found.
+                continue
             if counts:
                 value, count = counts.most_common(1)[0]
                 if count >= 2:
@@ -510,7 +512,9 @@ class PaddleOcrAdapter:
                 date_left, date_top, date_right, date_bottom = line.box
                 date_center = (date_top + date_bottom) / 2
                 date_height = max(1.0, date_bottom - date_top)
-                if abs(date_center - row_center) <= max(row_height, date_height) * 0.8:
+                # Some ID layouts put the issue date on a separate line just
+                # above the issuer. Include that adjacent row in focused OCR.
+                if abs(date_center - row_center) <= max(row_height, date_height) * 1.2:
                     related_rows.append(line)
             row_left = min(line.box[0] for line in related_rows if line.box)
             row_top = min(line.box[1] for line in related_rows if line.box)

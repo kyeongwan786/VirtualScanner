@@ -10,16 +10,18 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from uuid import uuid4
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
 from urllib.parse import unquote_plus
 
 from new_work.domain import REVIEW_TEXT_FIELDS, OcrResult, ReviewDraft
+from new_work.carrier.sk_report import SK_ID_CROP_CODES
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import write_ocr_result
+from new_work.image.face_crop import id_portrait_bounds, id_portrait_size
 from new_work.windows_lifecycle import create_tray_icon, register_current_user_autostart
 from new_work.pdf_render import default_job_directory, render_pdf_to_jpegs
 from new_work.job_package import create_work_package
@@ -96,6 +98,9 @@ class NewWorkApp:
         self._preview: ImageTk.PhotoImage | None = None
         self._preview_base: Image.Image | None = None
         self._source_image: Image.Image | None = None
+        self._id_crop_preview_bounds: tuple[int, int, int, int] | None = None
+        self._id_crop_manually_adjusted = False
+        self._id_crop_drag: dict[str, object] | None = None
         self._mask_preview_position: str | None = None
         self._entries: dict[str, ttk.Entry] = {}
         self._value_vars: dict[str, tk.StringVar] = {
@@ -103,6 +108,7 @@ class NewWorkApp:
         }
         self._id_type_var = tk.StringVar(root, value="유형 선택…")
         self.portal_var = tk.StringVar(root, value="SK")
+        self.portal_var.trace_add("write", self._portal_changed)
         self._preview_resize_job: str | None = None
         self._scan_animation_job: str | None = None
         self._scan_y = 0
@@ -285,6 +291,11 @@ class NewWorkApp:
             state="disabled",
         )
         self.status_button.pack(side="left", padx=(5, 0))
+        self.crop_reset_button = ttk.Button(
+            buttons, text="자동 영역 복원", command=self._reset_crop_bounds,
+            state="disabled",
+        )
+        self.crop_reset_button.pack(side="left", padx=(5, 0))
 
         self.result_table = ttk.Frame(ocr_panel, style="Card.TFrame", padding=(4, 3))
         self.result_table.grid(row=1, column=0, sticky="ew", pady=(0, 5))
@@ -320,12 +331,20 @@ class NewWorkApp:
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
         self.image_label.bind("<Configure>", self._schedule_preview_resize)
+        self.image_label.bind("<ButtonPress-1>", self._crop_pointer_down)
+        self.image_label.bind("<B1-Motion>", self._crop_pointer_move)
+        self.image_label.bind("<ButtonRelease-1>", self._crop_pointer_up)
         ttk.Label(
             ocr_panel, textvariable=self.ocr_status, style="Muted.TLabel"
         ).grid(row=3, column=0, sticky="w", pady=(5, 0))
         ttk.Label(
             ocr_panel, textvariable=self.review_status, style="Status.TLabel"
         ).grid(row=4, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(
+            ocr_panel,
+            text="파란 네모를 끌어 위치를 옮깁니다. 크기는 신분증 종류별 규격으로 고정됩니다.",
+            style="Muted.TLabel",
+        ).grid(row=5, column=0, sticky="w", pady=(2, 0))
 
         documents = ttk.LabelFrame(shell, text="서류 PDF", padding=7)
         documents.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
@@ -477,7 +496,12 @@ class NewWorkApp:
         return tuple(fields)
 
     def _current_values(self) -> dict[str, str]:
-        return {field: value.get() for field, value in self._value_vars.items()}
+        values = {field: value.get() for field, value in self._value_vars.items()}
+        if self._id_crop_preview_bounds is not None:
+            values["_idCropBounds"] = ",".join(
+                str(value) for value in self._id_crop_preview_bounds
+            )
+        return values
 
     def _write_selected_portal_report(self, result: OcrResult) -> Path | None:
         values = self._current_values()
@@ -552,6 +576,28 @@ class NewWorkApp:
         width = max(1, self.image_label.winfo_width() - 8)
         height = max(1, self.image_label.winfo_height() - 8)
         preview = self._source_image.copy()
+        if self._id_crop_preview_bounds is not None:
+            left, top, right, bottom = self._id_crop_preview_bounds
+            overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            outline_width = max(3, round(min(preview.size) / 220))
+            draw.rectangle(
+                (left, top, right - 1, bottom - 1),
+                outline=(0, 120, 255, 255),
+                width=outline_width,
+            )
+            label = "idCrop" if self.portal_var.get() == "SK" else "CR.jpg"
+            label_box = draw.textbbox((left, top), label)
+            label_height = label_box[3] - label_box[1]
+            label_top = max(0, top - label_height - 8)
+            draw.rectangle(
+                (left, label_top, label_box[2] + 6, top),
+                fill=(0, 90, 220, 235),
+            )
+            draw.text((left + 3, label_top + 2), label, fill=(255, 255, 255, 255))
+            preview = Image.alpha_composite(
+                preview.convert("RGBA"), overlay
+            ).convert("RGB")
         if MASK_PREVIEW_ENABLED and self._mask_preview_position:
             bounds = _parse_mask_position(self._mask_preview_position)
             if bounds is not None:
@@ -574,6 +620,95 @@ class NewWorkApp:
             self._render_scan_frame()
         else:
             self._display_preview(preview)
+
+    def _preview_point_to_source(self, event) -> tuple[int, int] | None:
+        if self._source_image is None or self._preview_base is None:
+            return None
+        preview_width, preview_height = self._preview_base.size
+        if preview_width < 1 or preview_height < 1:
+            return None
+        image_left = (self.image_label.winfo_width() - preview_width) / 2
+        image_top = (self.image_label.winfo_height() - preview_height) / 2
+        preview_x = min(max(event.x - image_left, 0), preview_width - 1)
+        preview_y = min(max(event.y - image_top, 0), preview_height - 1)
+        source_x = round(preview_x * self._source_image.width / preview_width)
+        source_y = round(preview_y * self._source_image.height / preview_height)
+        return (
+            min(source_x, self._source_image.width - 1),
+            min(source_y, self._source_image.height - 1),
+        )
+
+    def _crop_pointer_down(self, event) -> None:
+        point = self._preview_point_to_source(event)
+        if point is None or self._source_image is None:
+            return
+        x, y = point
+        bounds = self._id_crop_preview_bounds
+        if bounds is not None:
+            left, top, right, bottom = bounds
+            if left <= x < right and top <= y < bottom:
+                mode = "move"
+                original = bounds
+            else:
+                mode = "place"
+                original = bounds
+        else:
+            mode = "place"
+            crop_width, crop_height = id_portrait_size(
+                self._id_type_detection.code
+            )
+            crop_width = min(crop_width, self._source_image.width)
+            crop_height = min(crop_height, self._source_image.height)
+            original = (0, 0, crop_width, crop_height)
+        self._id_crop_drag = {
+            "mode": mode, "start": point, "original": original,
+        }
+        if mode == "place":
+            _, _, width, height = original
+            left = min(max(x - width // 2, 0), self._source_image.width - width)
+            top = min(max(y - height // 2, 0), self._source_image.height - height)
+            self._id_crop_preview_bounds = (left, top, left + width, top + height)
+            self._resize_source_preview()
+        self.image_label.configure(cursor="fleur")
+
+    def _crop_pointer_move(self, event) -> None:
+        drag = self._id_crop_drag
+        point = self._preview_point_to_source(event)
+        if drag is None or point is None or self._source_image is None:
+            return
+        x, y = point
+        mode = drag["mode"]
+        if mode == "move":
+            left, top, right, bottom = drag["original"]
+            start_x, start_y = drag["start"]
+            width, height = right - left, bottom - top
+            new_left = min(max(left + x - start_x, 0), self._source_image.width - width)
+            new_top = min(max(top + y - start_y, 0), self._source_image.height - height)
+            bounds = (new_left, new_top, new_left + width, new_top + height)
+        else:
+            _, _, right, bottom = drag["original"]
+            width, height = right, bottom
+            left = min(max(x - width // 2, 0), self._source_image.width - width)
+            top = min(max(y - height // 2, 0), self._source_image.height - height)
+            bounds = (left, top, left + width, top + height)
+        self._id_crop_preview_bounds = bounds
+        self._resize_source_preview()
+
+    def _crop_pointer_up(self, _event=None) -> None:
+        if self._id_crop_drag is None:
+            return
+        self._id_crop_drag = None
+        self._id_crop_manually_adjusted = True
+        self.image_label.configure(cursor="")
+        if self.crop_reset_button.winfo_exists():
+            self.crop_reset_button.configure(state="normal")
+        self.review_status.set("크롭 영역 직접 조정됨 · 저장 시 이 영역을 사용합니다.")
+
+    def _reset_crop_bounds(self) -> None:
+        self._id_crop_manually_adjusted = False
+        self._refresh_id_crop_preview_bounds(reset=True)
+        self.review_status.set("자동 크롭 영역으로 복원했습니다.")
+        self._resize_source_preview()
 
     def _display_preview(self, preview: Image.Image) -> None:
         self._preview = ImageTk.PhotoImage(preview, master=self.root)
@@ -665,7 +800,7 @@ class NewWorkApp:
             with Image.open(path) as image:
                 image.verify()
             with Image.open(path) as image:
-                self._source_image = image.convert("RGB")
+                self._source_image = ImageOps.exif_transpose(image).convert("RGB")
             job_id = job_id or str(uuid4())
             identity_directory = default_job_directory() / job_id / "identity"
             identity_directory.mkdir(parents=True, exist_ok=True)
@@ -679,6 +814,10 @@ class NewWorkApp:
             return False
 
         self._document_job_id = job_id
+        self._id_crop_preview_bounds = None
+        self._id_crop_manually_adjusted = False
+        self._id_crop_drag = None
+        self.crop_reset_button.configure(state="disabled")
         result = OcrResult(job_id=job_id, image_path=staged_image)
         self.draft = ReviewDraft.from_result(result)
         self._mask_preview_position = None
@@ -1053,6 +1192,11 @@ class NewWorkApp:
             needs_focused_issuer_read = (
                 not full_card_fields.get("isuePlc")
                 or not source_date_is_linked_to_issuer
+                # Driver licenses place the issue date in fine print beside
+                # the issuer at the card bottom. Re-read that row even when
+                # full-card OCR linked a date, so a consensus can correct a
+                # plausible but wrong validity date (for example 2027.01.01).
+                or detection.code in {"1101", "1102", "1201"}
             )
             focused_fields: dict[str, str] = {}
             focused_reader = getattr(self.ocr, "recognize_issuer_fields", None)
@@ -1153,6 +1297,14 @@ class NewWorkApp:
         )
         merged_values = {key: value for key, value in extracted_values.items() if value}
         merged_values.update({key: value for key, value in result.values.items() if value})
+        invalid_resident_number = False
+        if detection.code in {"1001", "1101", "1102", "1201", "1301", "1302", "1303"}:
+            from new_work.ocr.field_extractor import is_valid_resident_number
+
+            resident_number = merged_values.get("ctzCorpNum", "")
+            if resident_number and not is_valid_resident_number(resident_number):
+                merged_values["ctzCorpNum"] = ""
+                invalid_resident_number = True
         result = OcrResult(
             job_id=result.job_id,
             image_path=result.image_path,
@@ -1169,6 +1321,8 @@ class NewWorkApp:
             self._format_field_display(field)
         self._id_type_detection = detection
         self._apply_detected_id_type(self._id_type_detection)
+        self._id_crop_manually_adjusted = False
+        self._refresh_id_crop_preview_bounds(reset=True)
         if detection.code == "1401":
             mask_position = result.values.get("mskPos", "")
         else:
@@ -1194,6 +1348,8 @@ class NewWorkApp:
             detection_status = f"{self._id_type_detection.name} 종류를 표에서 선택하세요"
         else:
             detection_status = self._id_type_detection.name
+        if invalid_resident_number:
+            detection_status += " · 주민번호 검증 실패, 직접 확인 필요"
         self.review_status.set(f"OCR 완료 · {detection_status}")
         self._refresh_result_table()
 
@@ -1210,6 +1366,36 @@ class NewWorkApp:
         if detection.type_code:
             self._value_vars["idType"].set(detection.type_code)
         self._refresh_result_table()
+
+    def _refresh_id_crop_preview_bounds(self, *, reset: bool = False) -> None:
+        if self._id_crop_manually_adjusted and not reset:
+            return
+        if self._source_image is None or not self._id_type_detection.code:
+            self._id_crop_preview_bounds = None
+            if hasattr(self, "crop_reset_button"):
+                self.crop_reset_button.configure(state="disabled")
+            return
+        if (
+            self.portal_var.get() == "SK"
+            and self._id_type_detection.code not in SK_ID_CROP_CODES
+        ):
+            self._id_crop_preview_bounds = None
+            if hasattr(self, "crop_reset_button"):
+                self.crop_reset_button.configure(state="disabled")
+            return
+        self._id_crop_preview_bounds = id_portrait_bounds(
+            self._source_image,
+            recog_sub_cd=self._id_type_detection.code,
+            require_face=True,
+        )
+        if hasattr(self, "crop_reset_button"):
+            self.crop_reset_button.configure(
+                state=("normal" if self._id_crop_preview_bounds is not None else "disabled")
+            )
+
+    def _portal_changed(self, *_args) -> None:
+        self._refresh_id_crop_preview_bounds()
+        self._resize_source_preview()
 
     def _legacy_type_selected(self, _event=None) -> None:
         selection = self.id_type_choice.get()
@@ -1234,6 +1420,8 @@ class NewWorkApp:
             candidate_codes=(code,),
             matched_text=self._id_type_detection.matched_text,
         )
+        self._id_crop_manually_adjusted = False
+        self._refresh_id_crop_preview_bounds(reset=True)
         if code == "1302":
             extracted = extract_identity_fields(
                 self.draft.result.lines, id_type_code=code
@@ -1256,6 +1444,7 @@ class NewWorkApp:
         self.review_status.set(
             f"문서 종류: {data['name']} · OCR 결과 항목을 확인하세요."
         )
+        self._resize_source_preview()
 
     def mark_reviewed(self) -> None:
         if self.draft is None:

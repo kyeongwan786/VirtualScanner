@@ -136,7 +136,7 @@ def send_work_package(
             "job_id": job_id,
             "station_id": station_id,
             "page_count": len(page_paths),
-            "dpi": 175,
+            "dpi": 100,
             "source_name": source_name,
             "payload_type": "new-work-v1",
             "work_package": work_package,
@@ -202,7 +202,7 @@ def send_work_package(
             if result.get("status") == "delivered":
                 return job_id
             report("Receiver 적용 대기 중…")
-            time.sleep(2)
+            time.sleep(1)
     raise DeliveryPendingError(
         job_id,
         f"Relay에 전송했지만 Receiver 적용 확인을 {wait_seconds}초 안에 받지 못했습니다. "

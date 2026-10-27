@@ -21,6 +21,8 @@ The Render service is HTTPS. The network transport uses TCP underneath HTTPS; Re
 3. Open **접점 설정** for each workstation and enter its exact Render `station_id` in **Render Relay 자리 ID**. This value must match both Render's station list and that workstation's Receiver setting.
 4. Select a portal and workstation, load the identity JPG and PDFs, review the OCR fields, and choose **선택 PC로 저장**. The app waits for the selected Receiver to apply the work package and acknowledge it. If it times out after upload, do not resend the same intake until Receiver status is checked.
 
+In the central identity preview, drag the blue `idCrop`/`CR.jpg` box to move it. Its size is fixed for the selected identity type and cannot be resized. Drag outside the box to place the same fixed-size region at a new position. **자동 영역 복원** returns to the detected crop. The selected source-image coordinates travel with the work package: central SK generation uses them for the Base64 `idCrop`, and Receiver KT generation uses them for `CR.jpg`. The normal portal output dimensions are retained. Receiver PCs must run a build containing the crop-coordinate support for manual KT regions to take effect.
+
 ## Start and configure a workstation Receiver
 
 On the Windows intake PC, run from a Windows checkout of this repository:
@@ -45,7 +47,9 @@ The package is also available through `NEW_WORK-Receiver-Windows-Build.zip`. Run
 - This PC's local `sk_report.txt`, `myCustomer.db`, KT image folder, and virtual scanner `ready` folder.
 - A local Receiver work folder for retained jobs and backups.
 
-Receiver polls every five seconds when the GUI is open. Keep it running while the central PC sends work. The Receiver stores the complete job locally before applying data; SK replaces the configured report with a timestamped backup, and KT updates the configured local database and image folder. Only after that succeeds does it acknowledge the relay. A failed application stays queued at the relay and Receiver retries after a pause.
+Receiver polls every two seconds when the GUI is open, so a newly completed relay upload waits at most about two seconds for the next check, plus network and local apply time. The central sender checks for the Receiver's completion acknowledgement every second. Keep the Receiver running while the central PC sends work. The Receiver stores the complete job locally before applying data; SK replaces the configured report with a timestamped backup, and KT updates the configured local database and image folder. Only after that succeeds does it acknowledge the relay. A failed application stays queued at the relay and Receiver retries after a pause.
+
+**받은 자료 초기화** clears this Receiver's local received job packages, including identity JPGs, OCR values, PDF page JPGs, manifests, the saved scan/wait/completed lists, and in-memory previews. It is blocked while a package is being received/applied or while the scanner `ready` folder contains work. It does not delete already-applied SK/KT target files, their backups, scanner `ready` data, or jobs that have not yet been received from Relay. The confirmation dialog lists this scope before deletion.
 
 ## Receiver screen and local PDF scan queue
 

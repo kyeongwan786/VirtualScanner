@@ -8,7 +8,8 @@ from typing import Mapping
 from urllib.parse import quote_plus
 
 from new_work.domain import OcrResult
-from new_work.image.face_crop import crop_id_portrait_jpeg
+from new_work.carrier.sk_report import SK_ID_CROP_CODES
+from new_work.image.face_crop import crop_id_portrait_jpeg, parse_crop_bounds
 from new_work.ocr.id_types import IdTypeDetection
 
 
@@ -90,9 +91,13 @@ def write_ocr_result(
         if field == "base64DATA":
             value = base64.b64encode(result.image_path.read_bytes()).decode("ascii")
         elif field == "idCrop":
+            if selected_code not in SK_ID_CROP_CODES:
+                continue
             cropped = crop_id_portrait_jpeg(
                 result.image_path,
                 recog_sub_cd=selected_code,
+                require_face=True,
+                crop_bounds=parse_crop_bounds(provided.get("_idCropBounds")),
             )
             value = base64.b64encode(cropped).decode("ascii") if cropped else ""
         elif field == "wlfNum":

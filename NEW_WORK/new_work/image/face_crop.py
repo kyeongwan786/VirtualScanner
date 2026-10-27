@@ -9,101 +9,62 @@ import numpy as np
 from PIL import Image, ImageOps
 
 
+# (source window width/height, saved width/height, face side, face-top offset)
+# Source windows follow the printed photo panel; saved dimensions follow the
+# legacy idCrop/CR.jpg contract. Driver layouts have a small and large variant.
+_ID_CROP_SPECS: dict[str, tuple[int, int, int, int, str | None, float]] = {
+    "1001": (340, 406, 340, 406, "right", 0.45),
+    "1101": (332, 384, 320, 420, "left", 0.45),
+    "1102": (332, 384, 320, 420, "left", 0.45),
+    "1201": (332, 384, 320, 420, "left", 0.45),
+    "1301": (320, 420, 320, 420, None, 0.45),
+    "1302": (320, 420, 320, 420, "left", 0.45),
+    "1303": (320, 420, 320, 420, None, 0.45),
+    "1401": (320, 420, 320, 420, "left", 0.45),
+    "2001": (320, 420, 320, 420, None, 0.45),
+    "2002": (320, 420, 320, 420, None, 0.45),
+    "3001": (320, 420, 320, 420, None, 0.45),
+}
+
+
 def crop_id_portrait_jpeg(
     image_path: Path,
     *,
     detector: Any | None = None,
     recog_sub_cd: str | None = None,
     require_face: bool = False,
+    crop_bounds: tuple[int, int, int, int] | None = None,
 ) -> bytes | None:
-    """Crop the portrait panel around the primary face, excluding nearby fields.
+    """Crop the complete printed portrait panel around the primary face.
 
-    Code-specific KT crops are returned at the legacy dimensions. When
-    ``require_face`` is true, a failed or ambiguous detection returns None
-    instead of guessing a fixed card region.
+    The selected code determines the source photo window, saved pixel size,
+    expected face side, and layout-specific face anchor.
+    ``require_face`` is retained for caller compatibility; this function never
+    substitutes a guessed crop when face detection fails.
     """
     with Image.open(Path(image_path)) as opened:
         source = ImageOps.exif_transpose(opened).convert("RGB")
     try:
-        gray = np.asarray(source.convert("L"))
-        try:
-            face_detector = detector if detector is not None else _face_detector()
-            faces = face_detector.detectMultiScale(
-                gray,
-                scaleFactor=1.05,
-                minNeighbors=4,
-                minSize=(24, 30),
-            )
-        except (cv2.error, RuntimeError):
-            if require_face:
-                return None
-            return _fixed_card_portrait(source)
-        if faces is not None and source.width >= source.height:
-            aspect_ratio = source.width / source.height
-            if 1.35 <= aspect_ratio <= 2.0:
-                # Korean horizontal IDs place the primary portrait on the left;
-                # the right-side micro portrait/printed faces can trigger larger
-                # Haar boxes than the actual portrait. Prefer detections in the
-                # known portrait panel before comparing face-box areas.
-                portrait_faces = [
-                    face for face in faces
-                    if int(face[0]) + int(face[2]) / 2 <= source.width * 0.48
-                ]
-                faces = portrait_faces
-        if faces is None or len(faces) == 0:
-            if require_face:
-                return None
-            return _fixed_card_portrait(source)
-        ordered = sorted(faces, key=lambda face: int(face[2]) * int(face[3]), reverse=True)
-        if len(ordered) > 1:
-            largest_area = int(ordered[0][2]) * int(ordered[0][3])
-            second_area = int(ordered[1][2]) * int(ordered[1][3])
-            if second_area >= largest_area * 0.75:
-                if require_face:
-                    return None
-                return _fixed_card_portrait(source)
-
-        x, y, width, height = (int(value) for value in ordered[0])
-        target_size = _target_crop_size(recog_sub_cd)
-        if target_size:
-            aspect_ratio = target_size[0] / target_size[1]
-            # Include the printed portrait panel around the detected face,
-            # while excluding the adjacent ID number and bottom card fields.
-            crop_height = height * 1.63
-            top = round(y - height * 0.20)
-            bottom = round(top + crop_height)
-            crop_width = crop_height * aspect_ratio
-            center_x = x + width / 2
-            left = round(center_x - crop_width / 2)
-            right = round(center_x + crop_width / 2)
-        else:
-            # Keep the legacy SK crop when no document code was provided.
-            center_x = x + width / 2
-            left = round(center_x - width * 1.05)
-            right = round(center_x + width * 1.05)
-            top = round(y - height * 0.22)
-            bottom = round(y + height * 2.0)
-        # Clamp while preserving the selected face inside the crop.
-        if left < 0:
-            right = min(source.width, right - left)
-            left = 0
-        if right > source.width:
-            left = max(0, left - (right - source.width))
-            right = source.width
-        if top < 0:
-            bottom = min(source.height, bottom - top)
-            top = 0
-        if bottom > source.height:
-            top = max(0, top - (bottom - source.height))
-            bottom = source.height
-        if right - left < 24 or bottom - top < 30:
-            if require_face:
-                return None
-            return _fixed_card_portrait(source)
-
+        bounds = crop_bounds or id_portrait_bounds(
+            source,
+            detector=detector,
+            recog_sub_cd=recog_sub_cd,
+            require_face=require_face,
+        )
+        if bounds is None:
+            return None
+        left, top, right, bottom = (int(value) for value in bounds)
+        if (
+            left < 0 or top < 0 or right > source.width or bottom > source.height
+            or right - left < 20 or bottom - top < 20
+        ):
+            raise ValueError("직접 지정한 크롭 영역이 원본 이미지 범위를 벗어났습니다.")
         portrait = source.crop((left, top, right, bottom))
-        if target_size:
-            portrait = portrait.resize(target_size, Image.Resampling.LANCZOS)
+        output_size = _ID_CROP_SPECS.get(
+            recog_sub_cd or "", (320, 420, 320, 420, None, 0.45)
+        )[2:4]
+        if portrait.size != output_size:
+            portrait = portrait.resize(output_size, Image.Resampling.LANCZOS)
         output = BytesIO()
         portrait.save(output, format="JPEG", quality=95)
         portrait.close()
@@ -112,30 +73,116 @@ def crop_id_portrait_jpeg(
         source.close()
 
 
-def _fixed_card_portrait(source: Image.Image) -> bytes | None:
-    """Fallback for standardized horizontal Korean ID scans with tiny portraits.
-
-    Haar detection often misses the small printed headshot on a card. These
-    scans share nearly the same card layout, so take the portrait panel from
-    normalized card coordinates when the image has a card-like aspect ratio.
-    """
-    if source.width < source.height or not 1.35 <= source.width / source.height <= 2.0:
+def parse_crop_bounds(value: object) -> tuple[int, int, int, int] | None:
+    """Parse the private crop-coordinate field carried in a work package."""
+    if not value:
         return None
-    left = round(source.width * 0.045)
-    top = round(source.height * 0.14)
-    right = round(source.width * 0.35)
-    bottom = round(source.height * 0.86)
-    if right <= left or bottom <= top:
-        return None
-    output = BytesIO()
-    source.crop((left, top, right, bottom)).save(output, format="JPEG", quality=95)
-    return output.getvalue()
+    try:
+        bounds = tuple(int(part.strip()) for part in str(value).split(","))
+    except (TypeError, ValueError):
+        raise ValueError("크롭 영역 좌표 형식이 올바르지 않습니다.") from None
+    if len(bounds) != 4:
+        raise ValueError("크롭 영역 좌표는 왼쪽, 위, 오른쪽, 아래 순서여야 합니다.")
+    left, top, right, bottom = bounds
+    if left < 0 or top < 0 or right <= left or bottom <= top:
+        raise ValueError("크롭 영역 좌표의 크기가 올바르지 않습니다.")
+    return left, top, right, bottom
 
 
-def _target_crop_size(recog_sub_cd: str | None) -> tuple[int, int] | None:
-    if not recog_sub_cd:
+def id_portrait_size(recog_sub_cd: str | None) -> tuple[int, int]:
+    """Return the fixed source-window size used for this identity type."""
+    spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
+    if spec is None:
+        return 320, 420
+    return spec[0], spec[1]
+
+
+def id_portrait_bounds(
+    source: Image.Image,
+    *,
+    detector: Any | None = None,
+    recog_sub_cd: str | None = None,
+    require_face: bool = False,
+) -> tuple[int, int, int, int] | None:
+    """Return the exact source-image rectangle used for the idCrop portrait."""
+    try:
+        gray = np.asarray(source.convert("L"))
+        face_detector = detector if detector is not None else _face_detector()
+        faces = face_detector.detectMultiScale(
+            gray,
+            scaleFactor=1.05,
+            minNeighbors=4,
+            minSize=(24, 30),
+        )
+    except (cv2.error, RuntimeError):
         return None
-    return (340, 406) if recog_sub_cd == "1001" else (320, 420)
+    if faces is None or len(faces) == 0:
+        return None
+    spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
+    if spec is None:
+        # Preserve the pre-type-selection helper behavior for callers that do
+        # not provide a document code. The application always supplies one.
+        if recog_sub_cd:
+            spec = (320, 420, 320, 420, None, 0.45)
+        else:
+            x, y, width, height = map(int, max(faces, key=lambda face: int(face[2]) * int(face[3])))
+            center_x = x + width / 2
+            left = round(center_x - width * 1.05)
+            right = round(center_x + width * 1.05)
+            top = round(y - height * 0.22)
+            bottom = round(y + height * 2.0)
+            left = max(0, left)
+            top = max(0, top)
+            right = min(source.width, right)
+            bottom = min(source.height, bottom)
+            return (left, top, right, bottom) if right > left and bottom > top else None
+    expected_side = spec[4]
+    if expected_side:
+        if expected_side == "right":
+            side_faces = [face for face in faces if int(face[0]) + int(face[2]) / 2 >= source.width * 0.52]
+        else:
+            # Driver cards have a large portrait panel on the far left and a
+            # small security portrait on the far right. A 48% cutoff admitted
+            # false detections in overprinted text near the card center.
+            left_limit = 0.42 if recog_sub_cd in {"1101", "1102", "1201"} else 0.48
+            side_faces = [
+                face for face in faces
+                if int(face[0]) + int(face[2]) / 2 <= source.width * left_limit
+            ]
+        if side_faces:
+            faces = side_faces
+        else:
+            return None
+    ordered = sorted(faces, key=lambda face: int(face[2]) * int(face[3]), reverse=True)
+    if len(ordered) > 1:
+        largest_area = int(ordered[0][2]) * int(ordered[0][3])
+        second_area = int(ordered[1][2]) * int(ordered[1][3])
+        if second_area >= largest_area * 0.75:
+            return None
+
+    x, y, width, height = (int(value) for value in ordered[0])
+    crop_width, crop_height = spec[:2]
+    face_top_offset = spec[5]
+    # On the newer driver-license layouts, Haar's face box starts well below
+    # the top of the printed portrait panel. Anchor the panel higher than the
+    # face; using the face box's shoulders as the panel reference pushed the
+    # crop into the card's bottom edge on samples such as 8.jpg.
+    if recog_sub_cd in {"1101", "1102", "1201"} and height / source.height >= 0.35:
+        crop_width, crop_height = 338, 412
+        face_top_offset = 0.41
+    if source.width < crop_width or source.height < crop_height:
+        return None
+
+    # The detector positions a fixed source window around the printed portrait.
+    # crop_id_portrait_jpeg then converts that window to the legacy output size.
+    face_center_x = x + width / 2
+    left = round(face_center_x - crop_width / 2)
+    top = round(y - height * face_top_offset)
+    left = min(max(0, left), source.width - crop_width)
+    top = min(max(0, top), source.height - crop_height)
+    right = left + crop_width
+    bottom = top + crop_height
+    return left, top, right, bottom
 
 
 def _face_detector():

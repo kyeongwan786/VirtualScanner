@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 
-DEFAULT_DPI = 175
+DEFAULT_DPI = 100
 JPEG_QUALITY = 85
 MAX_PDF_PAGES = 100
 

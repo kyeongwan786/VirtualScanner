@@ -19,6 +19,7 @@ SK_REPORT_TEXT_KEYS = (
     "mskPos",
 )
 SK_REPORT_KEYS = (*SK_REPORT_TEXT_KEYS, "base64DATA", "idCrop")
+SK_ID_CROP_CODES = frozenset({"1001", "1101", "1102"})
 SK_VETERAN_REPORT_KEYS = (
     *SK_REPORT_TEXT_KEYS[:3],
     "wlfNum",
@@ -74,7 +75,7 @@ def render_sk_report(
     lines = [f"{key}={quote_plus(values[key])}" for key in text_keys]
     # Source includes idCrop only for resident/driver report codes, and only
     # when the crop file exists and can be encoded.
-    if fields["kaitIdType"] in {"1001", "1101", "1102"} and id_crop_jpeg:
+    if fields["kaitIdType"] in SK_ID_CROP_CODES and id_crop_jpeg:
         lines.append(f"base64DATA={quote_plus(values['base64DATA'])}")
         lines.append(f"idCrop={quote_plus(base64.b64encode(id_crop_jpeg).decode('ascii'))}")
     else:

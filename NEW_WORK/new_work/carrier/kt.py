@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
-from new_work.image.face_crop import crop_id_portrait_jpeg
+from new_work.image.face_crop import crop_id_portrait_jpeg, parse_crop_bounds
 from new_work.database.reader import KT_PAPER_FIELDS, fetch_latest_kt_data
 from new_work.domain import OcrResult
 from new_work.image.legacy_crop import reencode_jpeg
@@ -129,6 +129,8 @@ def create_kt_images(
     source_image: Path,
     output_directory: Path,
     _recog_sub_cd: str,
+    *,
+    crop_bounds: tuple[int, int, int, int] | None = None,
 ) -> tuple[Path, Path]:
     """Overwrite ORG.jpg and CR.jpg with the source card and its portrait crop."""
     source = Path(source_image).expanduser().resolve(strict=True)
@@ -141,6 +143,7 @@ def create_kt_images(
         source,
         recog_sub_cd=_recog_sub_cd,
         require_face=True,
+        crop_bounds=crop_bounds,
     )
     if crop_bytes is None:
         raise ValueError("얼굴 사진 영역을 찾지 못해 KT 저장을 중단했습니다.")
@@ -369,6 +372,7 @@ def save_kt_submission(
             result.image_path,
             image_directory if image_directory is not None else default_kt_image_directory(),
             id_code,
+            crop_bounds=parse_crop_bounds(provided.get("_idCropBounds")),
         )
         new_element_id = _new_element_id(connection, send_org_id)
 

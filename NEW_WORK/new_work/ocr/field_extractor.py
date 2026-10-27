@@ -590,9 +590,25 @@ def _extract_labeled_address(lines: tuple[OcrLine, ...]) -> str:
 def _dates_in_text(text: str) -> set[str]:
     values: set[str] = set()
     text = text.translate(str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"}))
+    # OCR can drop the dot after a one-digit month: "2020. 1. 23." becomes
+    # "2020.123". The normal parser reads that as December 3. Restore the
+    # one-digit-month/two-digit-day split when the compact day is 10..31.
+    compact_month_day = list(re.finditer(
+        r"(?<!\d)(20\d{2})\s*[./]\s*([1-9])(1\d|2\d|3[01])(?!\d)",
+        text,
+    ))
     matches = list(_DATE.finditer(text))
     matches.extend(re.finditer(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", text))
     for match in matches:
+        if any(match.start() < compact.end() and match.end() > compact.start()
+               for compact in compact_month_day):
+            continue
+        year, month, day = map(int, match.groups())
+        try:
+            values.add(date(year, month, day).strftime("%Y%m%d"))
+        except ValueError:
+            pass
+    for match in compact_month_day:
         year, month, day = map(int, match.groups())
         try:
             values.add(date(year, month, day).strftime("%Y%m%d"))

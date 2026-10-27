@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -93,7 +94,7 @@ class DocumentPreviewDialog:
 
         toolbar = ttk.Frame(self.window, padding=10)
         toolbar.grid(row=0, column=0, sticky="ew")
-        ttk.Button(toolbar, text="← 목록으로", command=self.window.destroy).pack(side="left")
+        ttk.Button(toolbar, text="← 목록으로", command=self._close).pack(side="left")
         self.title_var = tk.StringVar(value="")
         ttk.Label(toolbar, textvariable=self.title_var, style="Title.TLabel").pack(side="left", padx=16)
         ttk.Button(toolbar, text="이전 페이지", command=lambda: self._show(-1)).pack(side="right")
@@ -105,7 +106,17 @@ class DocumentPreviewDialog:
         )
         self.image_label.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.image_label.bind("<Configure>", self._resize_current)
+        self.window.protocol("WM_DELETE_WINDOW", self._close)
+        app._preview_dialogs.add(self)
         self._show(0)
+
+    def _close(self) -> None:
+        self.pages.clear()
+        self.photo = None
+        self.item = {}
+        self.image_label.configure(image="", text="")
+        self.app._preview_dialogs.discard(self)
+        self.window.destroy()
 
     def _show(self, offset: int) -> None:
         if not self.pages:
@@ -163,6 +174,8 @@ class ReceiverApp:
         self._completed: set[str] = set()
         self._active: dict | None = None
         self._drag_start: tuple[ttk.Treeview, str] | None = None
+        self._preview_dialogs: set[DocumentPreviewDialog] = set()
+        self._clearing_received = False
         self._build()
         self._load_queue_state()
         if not all(self.config.get(key) for key in ("station_id", "relay_url", "token")):
@@ -194,6 +207,9 @@ class ReceiverApp:
         ttk.Button(toolbar, text="Receiver 설정", command=self._edit_config).pack(side="left")
         ttk.Button(toolbar, text="새로고침", command=self._refresh_queue).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Relay 다시 확인", command=self._retry_failed).pack(side="left")
+        ttk.Button(toolbar, text="받은 자료 초기화", command=self._reset_received_data).pack(
+            side="left", padx=(6, 0)
+        )
         self.status = tk.StringVar(value="수신 대기 중")
         ttk.Label(toolbar, textvariable=self.status).pack(side="left", padx=14)
 
@@ -427,10 +443,11 @@ class ReceiverApp:
     def _poll_inbox(self) -> None:
         self._sync_active_scan()
         configured = all(self.config.get(key) for key in ("relay_url", "station_id", "token"))
-        if configured and not self._processing and monotonic() >= self._retry_after:
+        if (configured and not self._processing and not self._clearing_received
+                and monotonic() >= self._retry_after):
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
-        self.root.after(5000, self._poll_inbox)
+        self.root.after(2000, self._poll_inbox)
 
     def _receive_relay_work(self) -> None:
         try:
@@ -573,6 +590,107 @@ class ReceiverApp:
                 and all(self.config.get(key) for key in ("relay_url", "station_id", "token"))):
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
+
+    def _reset_received_data(self) -> None:
+        if self._processing or self._clearing_received:
+            messagebox.showinfo(
+                "Receiver 작업 중",
+                "Relay 작업을 받거나 적용하는 중에는 초기화할 수 없습니다. 작업이 끝난 뒤 다시 눌러 주세요.",
+                parent=self.root,
+            )
+            return
+
+        self._sync_active_scan()
+        ready = Path(self.config.get("scanner_ready_path", "")).expanduser()
+        if self._active or (ready.is_dir() and any(ready.iterdir())):
+            messagebox.showinfo(
+                "스캔 작업 진행 중",
+                "가상 스캐너 ready 폴더에 작업이 남아 있어 초기화하지 않았습니다.\n"
+                "스캔이 끝나고 ready 폴더가 비었을 때 다시 초기화하세요.",
+                parent=self.root,
+            )
+            return
+
+        configured_work_path = self.config.get("work_path", "").strip()
+        if not configured_work_path:
+            messagebox.showerror("Receiver 작업 폴더 오류", "Receiver 작업 폴더를 설정하세요.", parent=self.root)
+            return
+        work_root = Path(configured_work_path).expanduser().resolve()
+        if work_root == Path(work_root.anchor):
+            messagebox.showerror(
+                "Receiver 작업 폴더 오류",
+                "작업 폴더가 드라이브 또는 시스템 루트로 지정되어 초기화할 수 없습니다.",
+                parent=self.root,
+            )
+            return
+        jobs_root = work_root / "jobs"
+        state_path = work_root / "receiver-state.json"
+        if jobs_root.is_symlink() or state_path.is_symlink():
+            messagebox.showerror(
+                "Receiver 작업 폴더 오류",
+                "jobs 폴더 또는 Receiver 상태 파일이 바로가기로 연결되어 있어 안전하게 초기화할 수 없습니다.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            job_count = sum(1 for item in jobs_root.iterdir() if item.is_dir()) if jobs_root.exists() else 0
+            file_count = sum(1 for item in jobs_root.rglob("*") if item.is_file()) if jobs_root.exists() else 0
+        except OSError as exc:
+            messagebox.showerror("Receiver 작업 폴더 확인 실패", str(exc), parent=self.root)
+            return
+
+        confirmed = messagebox.askyesno(
+            "받은 자료 전체 초기화",
+            f"이 Receiver에 저장된 수신 작업 {job_count}건, 파일 {file_count}개를 삭제할까요?\n\n"
+            "신분증 원본, OCR 결과, 수신 서류 JPG, 작업 manifest와 로컬 작업 목록을 삭제합니다.\n"
+            "화면의 신분증 미리보기와 OCR 표시값, 서류 미리보기 메모리도 비웁니다.\n\n"
+            "이 Receiver의 로컬 작업 폴더만 삭제합니다. 이미 적용된 SK 파일, KT DB·이미지, 백업, 스캐너 ready, "
+            "아직 받지 않은 Relay 작업은 삭제하지 않습니다. 삭제한 수신 작업은 복구할 수 없습니다.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self._clearing_received = True
+        try:
+            for dialog in tuple(self._preview_dialogs):
+                try:
+                    dialog._close()
+                except tk.TclError:
+                    self._preview_dialogs.discard(dialog)
+            if jobs_root.exists():
+                shutil.rmtree(jobs_root)
+
+            self._items.clear()
+            self._jobs.clear()
+            self._job_labels.clear()
+            self._scan_order.clear()
+            self._queue_order.clear()
+            self._completed.clear()
+            self._active = None
+            self._drag_start = None
+            self._selected_job_id = ""
+            self._photo = None
+            self.preview.configure(image="", text="접수 작업을 선택하면 신분증이 크게 표시됩니다")
+            self.job_box.configure(values=())
+            self.job_box.set("")
+            for variable in self.identity_vars.values():
+                variable.set("")
+            self.identity_hint.set("초기화할 수신 작업이 없습니다.")
+            self._save_queue_state()
+            gc.collect()
+            self._refresh_queue()
+            self.status.set(f"받은 자료 초기화 완료 · 작업 {job_count}건, 파일 {file_count}개 삭제")
+        except (OSError, tk.TclError) as exc:
+            self._refresh_queue()
+            messagebox.showerror(
+                "받은 자료 초기화 실패",
+                f"일부 자료를 삭제하지 못했습니다. 파일 권한과 Receiver 작업 폴더를 확인하세요.\n{exc}",
+                parent=self.root,
+            )
+        finally:
+            self._clearing_received = False
 
     def _refresh_queue(self) -> None:
         self._sync_active_scan()
@@ -990,7 +1108,7 @@ class ReceiverApp:
                 "job_id": scanner_job_id,
                 "station_id": self.config["station_id"],
                 "source_name": " + ".join(source_names)[:255],
-                "dpi": 175,
+                "dpi": 100,
                 "page_count": len(page_manifest),
                 "pages": page_manifest,
             }
