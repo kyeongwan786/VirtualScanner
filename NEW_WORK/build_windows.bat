@@ -19,7 +19,11 @@ python package_windows.py
 if errorlevel 1 goto :build_failed
 
 echo.
-echo Build complete: dist\new_work\new_work.exe
+if /I "%NEW_WORK_BUILD_VERSION%"=="v1" (
+  echo Build complete: dist\new_work_v1\new_work_v1.exe
+) else (
+  echo Build complete: dist\new_work\new_work.exe
+)
 pause
 exit /b 0
 

@@ -8,7 +8,7 @@ _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_VALUE_NAME = "NewWorkIdReview"
 
 
-def register_current_user_autostart() -> None:
+def register_current_user_autostart(value_name: str = _RUN_VALUE_NAME) -> None:
     """Start this app when the Windows user who first launches it signs in."""
     if sys.platform != "win32":
         return
@@ -23,7 +23,7 @@ def register_current_user_autostart() -> None:
     with winreg.CreateKeyEx(
         winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE
     ) as key:
-        winreg.SetValueEx(key, _RUN_VALUE_NAME, 0, winreg.REG_SZ, command)
+        winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, command)
 
 
 def create_tray_icon(on_open, on_exit):

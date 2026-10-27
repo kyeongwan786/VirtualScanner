@@ -10,6 +10,11 @@ import paddlex
 
 def main() -> int:
     debug_console = os.environ.get("NEW_WORK_DEBUG", "").strip() == "1"
+    version = os.environ.get("NEW_WORK_BUILD_VERSION", "v2").strip().lower()
+    if version not in {"v1", "v2"}:
+        raise ValueError("NEW_WORK_BUILD_VERSION must be v1 or v2")
+    app_name = "new_work_v1" if version == "v1" else "new_work"
+    entry_point = "run_v1.py" if version == "v1" else "run.py"
     # PaddleX checks OCR optional dependencies with importlib.metadata at
     # runtime. A frozen PyInstaller build must carry metadata for the OCR
     # extra as well as PaddleX's base dependencies, or pipeline creation fails
@@ -54,7 +59,7 @@ def main() -> int:
         "--onedir",
         "--console" if debug_console else "--windowed",
         "--name",
-        "new_work",
+        app_name,
         "--collect-all",
         "paddleocr",
         "--collect-all",
@@ -88,7 +93,7 @@ def main() -> int:
         command.extend(("--add-data", f"{model_dir};ocr_models/{model_name}"))
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
-    command.append("run.py")
+    command.append(entry_point)
 
     print("Including PaddleX dependency metadata:", ", ".join(metadata_to_copy))
     print("Building console diagnostic package." if debug_console else

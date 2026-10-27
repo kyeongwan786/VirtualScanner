@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Thread
 from time import perf_counter
 import shutil
+import sqlite3
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -20,7 +21,8 @@ from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapt
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
 from new_work.ocr.field_extractor import extract_identity_fields
 from new_work.ocr.mask_position import detect_mask_position
-from new_work.ocr.result_writer import write_ocr_result
+from new_work.ocr.result_writer import default_result_path, write_ocr_result
+from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
 from new_work.image.face_crop import id_portrait_bounds, id_portrait_size
 from new_work.windows_lifecycle import create_tray_icon, register_current_user_autostart
 from new_work.pdf_render import default_job_directory, render_pdf_to_jpegs
@@ -91,8 +93,12 @@ def _parse_mask_position(value: str) -> tuple[int, int, int, int] | None:
 
 
 class NewWorkApp:
-    def __init__(self, root: tk.Tk, ocr: OcrAdapter | None = None) -> None:
+    def __init__(self, root: tk.Tk, ocr: OcrAdapter | None = None,
+                 version: str = "v2") -> None:
+        if version not in {"v1", "v2"}:
+            raise ValueError("version must be 'v1' or 'v2'")
         self.root = root
+        self.version = version
         self.ocr = ocr or PaddleOcrAdapter()
         self.draft: ReviewDraft | None = None
         self._preview: ImageTk.PhotoImage | None = None
@@ -137,7 +143,8 @@ class NewWorkApp:
         except ValueError as exc:
             self.relay_config = None
             self._relay_config_error = str(exc)
-        root.title("신분증 확인")
+        root.title("신분증 확인 V1 · 이 PC에 저장" if version == "v1"
+                   else "신분증 확인 V2 · 선택 PC 전송")
         self._build()
         root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
         if isinstance(self.ocr, PaddleOcrAdapter):
@@ -237,8 +244,8 @@ class NewWorkApp:
         self.root.resizable(True, True)
         shell = ttk.Frame(self.root, style="App.TFrame", padding=8)
         shell.grid(row=0, column=0, sticky="nsew")
-        shell.columnconfigure(0, weight=3, uniform="work_panels")
-        shell.columnconfigure(1, weight=2, uniform="work_panels")
+        shell.columnconfigure(0, weight=3 if self.version == "v2" else 1, uniform="work_panels")
+        shell.columnconfigure(1, weight=2 if self.version == "v2" else 0, uniform="work_panels")
         shell.rowconfigure(1, weight=1)
 
         settings = ttk.Frame(shell, style="App.TFrame")
@@ -259,20 +266,22 @@ class NewWorkApp:
             )
             button.pack(side="left", padx=(0, 8))
             self.portal_buttons.append(button)
-        ttk.Label(settings, text="접수 PC", style="FieldName.TLabel").grid(
-            row=0, column=2, sticky="w", padx=(14, 5)
-        )
-        self.store_box = ttk.Combobox(settings, state="readonly", width=24)
-        self.store_box.grid(row=0, column=3, sticky="e")
-        ttk.Button(settings, text="접점 설정", command=self._open_store_manager).grid(
-            row=0, column=4, sticky="e", padx=(6, 0)
-        )
-        ttk.Button(settings, text="Relay 서버", command=self._open_relay_settings).grid(
-            row=0, column=5, sticky="e", padx=(6, 0)
-        )
+        if self.version == "v2":
+            ttk.Label(settings, text="접수 PC", style="FieldName.TLabel").grid(
+                row=0, column=2, sticky="w", padx=(14, 5)
+            )
+            self.store_box = ttk.Combobox(settings, state="readonly", width=24)
+            self.store_box.grid(row=0, column=3, sticky="e")
+            ttk.Button(settings, text="접점 설정", command=self._open_store_manager).grid(
+                row=0, column=4, sticky="e", padx=(6, 0)
+            )
+            ttk.Button(settings, text="Relay 서버", command=self._open_relay_settings).grid(
+                row=0, column=5, sticky="e", padx=(6, 0)
+            )
 
         ocr_panel = ttk.LabelFrame(shell, text="신분증 OCR", padding=7)
-        ocr_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        ocr_panel.grid(row=1, column=0, columnspan=2 if self.version == "v1" else 1,
+                       sticky="nsew", padx=(0, 5))
         ocr_panel.columnconfigure(0, weight=1)
         ocr_panel.rowconfigure(2, weight=1)
 
@@ -283,14 +292,17 @@ class NewWorkApp:
         )
         self.ocr_button.pack(side="left", padx=(0, 5))
         self.save_button = ttk.Button(
-            buttons, text="선택 PC로 저장", command=self.mark_reviewed
+            buttons,
+            text="선택 PC로 저장" if self.version == "v2" else "저장하기",
+            command=self.mark_reviewed,
         )
         self.save_button.pack(side="left")
-        self.status_button = ttk.Button(
-            buttons, text="전송 상태 확인", command=self._check_pending_status,
-            state="disabled",
-        )
-        self.status_button.pack(side="left", padx=(5, 0))
+        if self.version == "v2":
+            self.status_button = ttk.Button(
+                buttons, text="전송 상태 확인", command=self._check_pending_status,
+                state="disabled",
+            )
+            self.status_button.pack(side="left", padx=(5, 0))
         self.crop_reset_button = ttk.Button(
             buttons, text="자동 영역 복원", command=self._reset_crop_bounds,
             state="disabled",
@@ -347,7 +359,8 @@ class NewWorkApp:
         ).grid(row=5, column=0, sticky="w", pady=(2, 0))
 
         documents = ttk.LabelFrame(shell, text="서류 PDF", padding=7)
-        documents.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
+        if self.version == "v2":
+            documents.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
         documents.columnconfigure(0, weight=1)
         documents.rowconfigure(2, weight=1)
         ttk.Label(
@@ -359,7 +372,8 @@ class NewWorkApp:
         self.pdf_button = ttk.Button(
             documents, text="서류 PDF 추가", command=self.add_pdf_documents
         )
-        self.pdf_button.grid(row=1, column=0, sticky="w", pady=(0, 5))
+        if self.version == "v2":
+            self.pdf_button.grid(row=1, column=0, sticky="w", pady=(0, 5))
         self.document_table = ttk.Treeview(
             documents, columns=("status", "pages"), show="headings", height=10
         )
@@ -367,16 +381,20 @@ class NewWorkApp:
         self.document_table.heading("pages", text="페이지 / 저장 위치")
         self.document_table.column("status", width=190, anchor="w", stretch=False)
         self.document_table.column("pages", width=420, anchor="w", stretch=False)
-        self.document_table.grid(row=2, column=0, sticky="nsew")
+        if self.version == "v2":
+            self.document_table.grid(row=2, column=0, sticky="nsew")
         document_scroll = ttk.Scrollbar(
             documents, orient="horizontal", command=self.document_table.xview
         )
-        document_scroll.grid(row=3, column=0, sticky="ew")
-        self.document_table.configure(xscrollcommand=document_scroll.set)
+        if self.version == "v2":
+            document_scroll.grid(row=3, column=0, sticky="ew")
+            self.document_table.configure(xscrollcommand=document_scroll.set)
         self._refresh_result_table()
-        self._refresh_stores()
+        if self.version == "v2":
+            self._refresh_stores()
         self._register_drop_targets(ocr_panel, self._handle_id_drop)
-        self._register_drop_targets(documents, self._handle_pdf_drop)
+        if self.version == "v2":
+            self._register_drop_targets(documents, self._handle_pdf_drop)
 
     def _register_drop_targets(self, widget: tk.Misc, handler) -> None:
         if not getattr(widget, "_new_work_drop_target", False):
@@ -888,7 +906,9 @@ class NewWorkApp:
         self._pending_confirmation = None
         if hasattr(self, "status_button"):
             self.status_button.configure(state="disabled", text="전송 상태 확인")
-        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        self.save_button.configure(
+            state="normal", text="선택 PC로 저장" if self.version == "v2" else "저장하기"
+        )
         self.pdf_button.configure(state="normal")
         if not reuse_job:
             self._document_jobs.clear()
@@ -1453,6 +1473,9 @@ class NewWorkApp:
         if not self.draft.result.lines:
             messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
             return
+        if self.version == "v1":
+            self._save_locally()
+            return
         store = self._selected_store()
         if store is None:
             messagebox.showinfo("접수 PC 선택", "먼저 접점 설정에서 대상 PC를 등록하세요.")
@@ -1507,6 +1530,43 @@ class NewWorkApp:
                   relay_config, transfer_job_id),
             daemon=True,
         ).start()
+
+    def _save_locally(self) -> None:
+        """Apply reviewed OCR directly on this PC, matching the original V1 flow."""
+        assert self.draft is not None
+        values = self._current_values()
+        database_row_id: str | None = None
+        try:
+            if self.portal_var.get() == "KT":
+                result_path, database_row_id = save_kt_submission(
+                    self.draft.result, self._id_type_detection, values
+                )
+            else:
+                result_path = write_ocr_result(
+                    self.draft.result,
+                    self._id_type_detection,
+                    values=values,
+                    path=default_result_path(),
+                )
+            self.draft.mark_reviewed(values)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            messagebox.showwarning(
+                "저장 실패",
+                f"현재 PC에 결과를 저장하지 못했습니다: {exc}",
+                parent=self.root,
+            )
+            self.review_status.set("저장 실패")
+            return
+        self.review_status.set("현재 PC 저장 완료")
+        saved_message = f"현재 PC에 OCR 결과를 저장했습니다.\n{result_path}"
+        if database_row_id is not None:
+            image_directory = default_kt_image_directory()
+            saved_message += (
+                f"\nT_SCAN_PAPER 문서 ID: {database_row_id}"
+                f"\n원본 이미지: {image_directory / 'ORG.jpg'}"
+                f"\n얼굴 이미지: {image_directory / 'CR.jpg'}"
+            )
+        messagebox.showinfo("저장하기", saved_message, parent=self.root)
 
     def _send_work_package(
         self,
@@ -1639,13 +1699,14 @@ class NewWorkApp:
             parent=self.root,
         )
 
-def main() -> None:
+def main(version: str = "v2") -> None:
     root = TkinterDnD.Tk()
     # Keep the source run and the Windows EXE on the same pipeline.
-    NewWorkApp(root, ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"))
+    NewWorkApp(root, ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"),
+               version=version)
     if sys.platform == "win32":
         try:
-            register_current_user_autostart()
+            register_current_user_autostart(f"NewWorkIdReview{version.upper()}")
         except OSError as exc:
             root.after(
                 1000,

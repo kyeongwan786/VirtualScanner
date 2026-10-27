@@ -1,4 +1,7 @@
-# NEW_WORK Receiver
+# NEW_WORK Receiver V2
+
+이 Receiver는 중앙 OCR V2의 선택 PC 전송을 받는다. 중앙 OCR V1은 실행 PC에 직접
+SK/KT 결과를 적용하므로 Receiver가 필요하지 않다.
 
 NEW_WORK central and Receiver use the existing `KyeongwanReceiver` HTTPS relay. The central PC uploads its already prepared ZIP as one archive (split into 40 MiB chunks only when needed), with reviewed portal metadata. Receiver downloads and verifies that ZIP, extracts the JPGs locally, applies SK or KT data, and acknowledges only after local application succeeds. This replaces one relay upload and download request per image. It does not require an SMB share or an inbound port on the intake PC.
 

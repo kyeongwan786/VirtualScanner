@@ -32,3 +32,10 @@
 - 제공된 원본 PyInstaller GUI는 Python 3.13이다. 메인 함수는 정적 역어셈블했지만 바이너리 실행 비교는 Windows에서 해야 한다.
 - 실제 PaddleOCR 모델 캐시를 단일 EXE에 포함할지, 첫 실행 다운로드를 허용할지 배포 조건을 결정하고 검증해야 한다.
 - LG는 현재 요청에서 제외되었으므로 추가 자료 요청 항목에 포함하지 않는다.
+# 중앙 OCR V1/V2 분리
+
+- V1은 예전 로컬 저장 흐름이다. 실행한 접수 PC에서 SK 보고서를 직접 갱신하거나 KT DB 및 ORG/CR 이미지를 갱신한다. 대상 PC 선택과 PDF Relay 전송 UI는 없다.
+- V2는 중앙 PC에서 선택한 접수 PC의 V2 Receiver로 OCR 작업과 PDF를 Relay 전송한다.
+- V1은 OCR 전용이며 별도 Receiver가 필요 없다. V2 중앙 앱에는 선택 PC 전송용 V2 Receiver가 필요하다.
+- 소스 빌드 ZIP은 `NEW_WORK-V1-Windows-Build.zip`, `NEW_WORK-V2-Windows-Build.zip`, `NEW_WORK-Receiver-V2-Windows-Build.zip`으로 제공한다.
+- Windows EXE 빌드와 실제 대상 PC의 파일/DB 반영은 아직 검증되지 않았다.
