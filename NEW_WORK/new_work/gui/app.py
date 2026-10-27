@@ -19,7 +19,10 @@ from new_work.domain import REVIEW_TEXT_FIELDS, OcrResult, ReviewDraft
 from new_work.carrier.sk_report import SK_ID_CROP_CODES
 from new_work.ocr.adapter import OcrAdapter, OcrUnavailableError, PaddleOcrAdapter
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection, detect_id_type
-from new_work.ocr.field_extractor import extract_identity_fields
+from new_work.ocr.field_extractor import (
+    extract_identity_fields,
+    is_valid_resident_number,
+)
 from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import default_result_path, write_ocr_result
 from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
@@ -649,6 +652,16 @@ class NewWorkApp:
         values = self._current_values()
         if self.portal_var.get() == "KT":
             return None
+        if self._id_type_detection.code in {
+            "1001", "1101", "1102", "1201", "1301", "1302", "1303",
+        }:
+            resident_number = "".join(
+                char for char in values.get("ctzCorpNum", "") if char.isdecimal()
+            )
+            if resident_number and not is_valid_resident_number(resident_number):
+                # Keep an unverified OCR candidate visible in the UI, but do
+                # not publish it to the legacy SK report before correction.
+                values["ctzCorpNum"] = ""
         report_path = default_job_directory() / result.job_id / "sk_report.txt"
         return write_ocr_result(
             result, self._id_type_detection, values=values, path=report_path
@@ -1474,11 +1487,10 @@ class NewWorkApp:
         merged_values.update({key: value for key, value in result.values.items() if value})
         invalid_resident_number = False
         if detection.code in {"1001", "1101", "1102", "1201", "1301", "1302", "1303"}:
-            from new_work.ocr.field_extractor import is_valid_resident_number
-
             resident_number = merged_values.get("ctzCorpNum", "")
             if resident_number and not is_valid_resident_number(resident_number):
-                merged_values["ctzCorpNum"] = ""
+                # Preserve the OCR candidate for human correction. The save
+                # action rejects it until the operator fixes the number.
                 invalid_resident_number = True
         result = OcrResult(
             job_id=result.job_id,
@@ -1643,6 +1655,22 @@ class NewWorkApp:
         if self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
+        if self._id_type_detection.code in {
+            "1001", "1101", "1102", "1201", "1301", "1302", "1303",
+        }:
+            resident_number = "".join(
+                char for char in self._value_vars["ctzCorpNum"].get()
+                if char.isdecimal()
+            )
+            if resident_number and not is_valid_resident_number(resident_number):
+                messagebox.showwarning(
+                    "주민번호 확인",
+                    "OCR에서 읽은 주민번호가 검증되지 않았습니다. 화면에 남긴 후보를 "
+                    "신분증과 대조해 수정한 뒤 다시 저장하거나 전송하세요.",
+                    parent=self.root,
+                )
+                self._entries["ctzCorpNum"].focus_set()
+                return
         if self.version == "v1":
             if not self.draft.result.lines:
                 messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
