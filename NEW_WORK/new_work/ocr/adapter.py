@@ -422,6 +422,46 @@ class PaddleOcrAdapter:
                                     variant_candidates.add(digits)
                     recognized[field].extend(variant_candidates)
 
+                if field == "ctzCorpNum" and not any(
+                    is_valid_resident_number(value)
+                    for value in recognized[field]
+                ):
+                    # The Korean recognizer can confuse embossed/security
+                    # print with digits on resident-number rows. If it did not
+                    # produce a checksum-valid number, retry this numeric crop
+                    # with the English recognizer and require both variants to
+                    # agree before accepting a result.
+                    english_engine = self._get_english_engine()
+                    english_variant_candidates: list[set[str]] = []
+                    for variant_index, variant in enumerate(
+                        (color_variant, contrast_variant)
+                    ):
+                        variant_candidates: set[str] = set()
+                        crop_path = Path(temp_dir) / (
+                            f"{job_index}_english_{variant_index}.png"
+                        )
+                        if variant.ndim == 3:
+                            variant = cv2.cvtColor(variant, cv2.COLOR_RGB2BGR)
+                        if not cv2.imwrite(str(crop_path), variant):
+                            continue
+                        outputs = english_engine.predict(input=str(crop_path))
+                        for recognized_line in self._read_lines(outputs):
+                            normalized = recognized_line.text.translate(
+                                _NUMERIC_OCR_TRANSLATION
+                            )
+                            match = _RRN.search(normalized)
+                            if match:
+                                variant_candidates.add("".join(match.groups()))
+                            variant_candidates.update(
+                                _structured_rrn_candidates(normalized)
+                            )
+                        english_variant_candidates.append(variant_candidates)
+                    if len(english_variant_candidates) == 2:
+                        recognized[field].extend(
+                            english_variant_candidates[0]
+                            & english_variant_candidates[1]
+                        )
+
         focused: dict[str, str] = {}
         for field, candidates in recognized.items():
             counts = Counter(candidates)
