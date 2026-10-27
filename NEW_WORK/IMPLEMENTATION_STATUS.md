@@ -38,5 +38,5 @@
 - V2는 중앙 PC에서 선택한 접수 PC의 V2 Receiver로 OCR 작업과 PDF를 Relay 전송한다.
 - V1은 OCR 전용이며 별도 Receiver가 필요 없다. V2 중앙 앱에는 선택 PC 전송용 V2 Receiver가 필요하다.
 - 소스 빌드 ZIP은 `NEW_WORK-V1-Windows-Build.zip`, `NEW_WORK-V2-Windows-Build.zip`, `NEW_WORK-Receiver-V2-Windows-Build.zip`으로 제공한다.
-- V2 작업 ZIP을 만들 때 신분증 JPG의 JPEG 종료 표시 뒤에 있는 0 패딩만 제거한다. 인코딩된 이미지와 화질은 다시 만들지 않으며, Receiver의 JPG 끝 검사와 호환되게 한다.
+- V2 중앙 앱은 새 작업 ZIP에서 JPEG 종료 표시 뒤의 0 패딩만 제거한다. Receiver도 기존 대기 ZIP을 적용하기 전에 같은 패딩을 제거한다. 인코딩된 이미지와 화질은 다시 만들지 않는다.
 - Windows EXE 빌드와 실제 대상 PC의 파일/DB 반영은 아직 검증되지 않았다.

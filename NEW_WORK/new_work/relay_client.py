@@ -23,6 +23,40 @@ MAX_PAGES = 100
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 
 
+def _trim_jpeg_zero_padding(path: Path) -> None:
+    """Drop zero fill after JPEG EOI while preserving the encoded image bytes."""
+    with Path(path).open("r+b") as image:
+        image.seek(0, os.SEEK_END)
+        size = image.tell()
+        if size < 4:
+            raise TransferError("Relay ZIP 이미지가 올바른 JPG가 아닙니다.")
+        image.seek(0)
+        if image.read(3) != b"\xff\xd8\xff":
+            raise TransferError("Relay ZIP 이미지가 올바른 JPG가 아닙니다.")
+
+        position = size
+        last_nonzero = -1
+        while position:
+            start = max(0, position - 65536)
+            image.seek(start)
+            chunk = image.read(position - start)
+            index = len(chunk) - 1
+            while index >= 0 and chunk[index] == 0:
+                index -= 1
+            if index >= 0:
+                last_nonzero = start + index
+                break
+            position = start
+
+        if last_nonzero < 3:
+            raise TransferError("Relay ZIP 이미지가 올바른 JPG가 아닙니다.")
+        image.seek(last_nonzero - 1)
+        if image.read(2) != b"\xff\xd9":
+            raise TransferError("Relay ZIP 이미지가 올바른 JPG가 아닙니다.")
+        if last_nonzero + 1 < size:
+            image.truncate(last_nonzero + 1)
+
+
 class DeliveryPendingError(TransferError):
     def __init__(self, job_id: str, message: str):
         super().__init__(message)
@@ -638,9 +672,8 @@ def _extract_work_archive(
 
         for relative in expected_images:
             image_path = staging.joinpath(*PurePosixPath(relative).parts)
+            _trim_jpeg_zero_padding(image_path)
             with image_path.open("rb") as image:
-                if image.read(3) != b"\xff\xd8\xff":
-                    raise TransferError(f"Relay ZIP 이미지가 올바른 JPG가 아닙니다: {relative}")
                 image.seek(-2, os.SEEK_END)
                 if image.read(2) != b"\xff\xd9":
                     raise TransferError(f"Relay ZIP 이미지가 올바른 JPG가 아닙니다: {relative}")
