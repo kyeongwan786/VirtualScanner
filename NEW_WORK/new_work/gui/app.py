@@ -244,6 +244,9 @@ class NewWorkApp:
     def _build_v1(self) -> None:
         """Legacy OCR-only window backed by the current OCR and save logic."""
         self._setup_style()
+        self.root.geometry("1100x900")
+        self.root.minsize(950, 700)
+        self.root.resizable(True, True)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         shell = ttk.Frame(self.root, style="App.TFrame", padding=5)
