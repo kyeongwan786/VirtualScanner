@@ -26,6 +26,25 @@ def register_current_user_autostart(value_name: str = _RUN_VALUE_NAME) -> None:
         winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, command)
 
 
+def unregister_current_user_autostart(value_name: str = _RUN_VALUE_NAME) -> None:
+    """Remove one startup entry owned by this app for the current user."""
+    if sys.platform != "win32":
+        return
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            try:
+                winreg.DeleteValue(key, value_name)
+            except FileNotFoundError:
+                pass
+    except FileNotFoundError:
+        pass
+
+
 def create_tray_icon(on_open, on_exit):
     """Create the small Windows notification-area icon for a hidden window."""
     import pystray

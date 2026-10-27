@@ -5,7 +5,15 @@ import os
 import subprocess
 import sys
 
-import paddlex
+try:
+    import paddlex
+except ModuleNotFoundError as exc:
+    if exc.name != "paddlex":
+        raise
+    raise SystemExit(
+        "PaddleX is missing from this Python environment: "
+        f"{sys.executable}. Run build_windows.bat to build with .venv-build."
+    ) from exc
 
 
 def main() -> int:

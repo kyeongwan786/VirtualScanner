@@ -24,7 +24,11 @@ from new_work.ocr.mask_position import detect_mask_position
 from new_work.ocr.result_writer import default_result_path, write_ocr_result
 from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
 from new_work.image.face_crop import id_portrait_bounds, id_portrait_size
-from new_work.windows_lifecycle import create_tray_icon, register_current_user_autostart
+from new_work.windows_lifecycle import (
+    create_tray_icon,
+    register_current_user_autostart,
+    unregister_current_user_autostart,
+)
 from new_work.pdf_render import default_job_directory, render_pdf_to_jpegs
 from new_work.job_package import create_work_package
 from new_work.stores import Store, load_stores
@@ -1808,15 +1812,28 @@ def main(version: str = "v2") -> None:
     NewWorkApp(root, ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"),
                version=version)
     if sys.platform == "win32":
-        try:
-            register_current_user_autostart(f"NewWorkIdReview{version.upper()}")
-        except OSError as exc:
-            root.after(
-                1000,
-                lambda error=exc: messagebox.showwarning(
-                    "자동 실행 설정 실패",
-                    f"Windows 로그인 시 자동 실행을 등록하지 못했습니다.\n{error}",
-                    parent=root,
-                ),
-            )
+        if version == "v1":
+            try:
+                unregister_current_user_autostart("NewWorkIdReviewV1")
+            except OSError as exc:
+                root.after(
+                    1000,
+                    lambda error=exc: messagebox.showwarning(
+                        "자동 실행 해제 실패",
+                        f"V1의 Windows 로그인 자동 실행을 해제하지 못했습니다.\n{error}",
+                        parent=root,
+                    ),
+                )
+        else:
+            try:
+                register_current_user_autostart("NewWorkIdReviewV2")
+            except OSError as exc:
+                root.after(
+                    1000,
+                    lambda error=exc: messagebox.showwarning(
+                        "자동 실행 설정 실패",
+                        f"Windows 로그인 시 자동 실행을 등록하지 못했습니다.\n{error}",
+                        parent=root,
+                    ),
+                )
     root.mainloop()
