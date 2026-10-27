@@ -4,6 +4,10 @@ NEW_WORK V2 Windows 빌드 안내
 V2 중앙 앱은 중앙 PC에서 OCR 결과와 PDF 작업을 검토한 뒤 선택한 접수 PC의
 V2 Receiver로 Relay 전송합니다.
 
+중앙 미리보기의 idCrop/CR.jpg 선택 박스는 기존 코드 크기 규격을 따릅니다:
+유형 1001은 340×406, 그 외 유형은 320×420입니다. 선택한 원본 영역을 해당 크기로
+저장하며 SK idCrop은 지원 유형에만 기록합니다.
+
 빌드
 ----
 Windows x64에서 Python 3.12 x64를 설치하고 build_windows.bat을 실행하세요.

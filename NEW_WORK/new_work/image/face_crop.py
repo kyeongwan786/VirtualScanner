@@ -9,14 +9,14 @@ import numpy as np
 from PIL import Image, ImageOps
 
 
-# (source window width/height, saved width/height, face side, face-top offset)
-# Source windows follow the printed photo panel; saved dimensions follow the
-# legacy idCrop/CR.jpg contract. Driver layouts have a small and large variant.
+# (crop width/height, saved width/height, face side, face-top offset)
+# Keep the visible selection and the legacy output dimensions identical. The
+# legacy crop contract uses 340x406 for 1001 and 320x420 for other ID codes.
 _ID_CROP_SPECS: dict[str, tuple[int, int, int, int, str | None, float]] = {
     "1001": (340, 406, 340, 406, "right", 0.45),
-    "1101": (332, 384, 320, 420, "left", 0.45),
-    "1102": (332, 384, 320, 420, "left", 0.45),
-    "1201": (332, 384, 320, 420, "left", 0.45),
+    "1101": (320, 420, 320, 420, "left", 0.45),
+    "1102": (320, 420, 320, 420, "left", 0.45),
+    "1201": (320, 420, 320, 420, "left", 0.45),
     "1301": (320, 420, 320, 420, None, 0.45),
     "1302": (320, 420, 320, 420, "left", 0.45),
     "1303": (320, 420, 320, 420, None, 0.45),
