@@ -191,13 +191,6 @@ def id_portrait_bounds(
     x, y, width, height = (int(value) for value in ordered[0])
     crop_width, crop_height = spec[:2]
     face_top_offset = spec[5]
-    # On the newer driver-license layouts, Haar's face box starts well below
-    # the top of the printed portrait panel. Anchor the panel higher than the
-    # face; using the face box's shoulders as the panel reference pushed the
-    # crop into the card's bottom edge on samples such as 8.jpg.
-    if recog_sub_cd in {"1101", "1102", "1201"} and height / source.height >= 0.35:
-        crop_width, crop_height = 338, 412
-        face_top_offset = 0.41
     if source.width < crop_width or source.height < crop_height:
         return None
 
