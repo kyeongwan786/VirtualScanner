@@ -1,8 +1,8 @@
 NEW_WORK V1 Windows 빌드 안내
 ============================
 
-V1은 OCR 창에서 저장할 때 현재 실행 중인 PC에 직접 결과를 적용합니다.
-접수 PC 선택과 Relay 전송 UI가 없으며, V1은 사용할 접수 PC에서 실행하세요.
+V1은 예전 OCR 창에 현재 OCR 알고리즘을 적용한 OCR 전용 버전입니다. PDF 추가,
+접수 PC 선택, Relay 전송 기능이 없으며, 사용할 접수 PC에서 실행하세요.
 
 저장 동작
 ---------
@@ -11,7 +11,8 @@ V1은 OCR 창에서 저장할 때 현재 실행 중인 PC에 직접 결과를 �
 
 빌드
 ----
-Windows x64에서 Python 3.12 x64를 설치하고 build_windows_v1.bat을 실행하세요.
+이 V1 전용 ZIP을 풀고 Windows x64에서 Python 3.12 x64를 설치한 뒤
+build_windows.bat을 실행하세요.
 성공하면 dist\new_work_v1\new_work_v1.exe가 생성됩니다.
 이 ZIP은 빌드 소스이며 완성된 Windows EXE를 포함하지 않습니다.
 

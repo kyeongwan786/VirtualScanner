@@ -143,7 +143,7 @@ class NewWorkApp:
         except ValueError as exc:
             self.relay_config = None
             self._relay_config_error = str(exc)
-        root.title("신분증 확인 V1 · 이 PC에 저장" if version == "v1"
+        root.title("신분증 확인" if version == "v1"
                    else "신분증 확인 V2 · 선택 PC 전송")
         self._build()
         root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
@@ -236,6 +236,76 @@ class NewWorkApp:
         self._pending_ocr_path = None
 
     def _build(self) -> None:
+        if self.version == "v1":
+            self._build_v1()
+        else:
+            self._build_v2()
+
+    def _build_v1(self) -> None:
+        """Legacy OCR-only window backed by the current OCR and save logic."""
+        self._setup_style()
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        shell = ttk.Frame(self.root, style="App.TFrame", padding=5)
+        shell.grid(row=0, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(3, weight=1)
+
+        settings = ttk.Frame(shell, style="App.TFrame")
+        settings.grid(row=0, column=0, sticky="ew", pady=(0, 3))
+        settings.columnconfigure(1, weight=1)
+        ttk.Label(settings, text="포탈", style="FieldName.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(2, 5)
+        )
+        portal_choices = ttk.Frame(settings, style="App.TFrame")
+        portal_choices.grid(row=0, column=1, sticky="e")
+        for portal in ("SK", "KT"):
+            ttk.Radiobutton(
+                portal_choices, text=portal,
+                variable=self.portal_var, value=portal,
+            ).pack(side="left", padx=(0, 8))
+
+        self.result_table = ttk.Frame(shell, style="Card.TFrame", padding=(2, 1))
+        self.result_table.grid(row=1, column=0, sticky="ew", pady=(0, 3))
+        self.result_table.columnconfigure(1, weight=1)
+
+        buttons = ttk.Frame(shell, style="App.TFrame")
+        buttons.grid(row=2, column=0, pady=(1, 4))
+        self.ocr_button = ttk.Button(buttons, text="가져오기", command=self.import_and_ocr)
+        self.ocr_button.pack(side="left", padx=3)
+        self.save_button = ttk.Button(buttons, text="저장하기", command=self.mark_reviewed)
+        self.save_button.pack(side="left", padx=3)
+        # Preserve current crop calculations without adding a crop control to
+        # the legacy OCR window.
+        self.crop_reset_button = ttk.Button(
+            buttons, text="자동 영역 복원", command=self._reset_crop_bounds,
+            state="disabled",
+        )
+
+        self.review_status = tk.StringVar(value="")
+        self.ocr_status = tk.StringVar(value=f"OCR 준비됨 · {self.ocr.status}")
+        self._loading_overlay = tk.Frame(self.root, background="#E9EDF3")
+        tk.Label(
+            self._loading_overlay, text="ㄱㄷ", background="#E9EDF3",
+            foreground="#1D2939", font=("궁서", 72), borderwidth=0,
+            highlightthickness=0,
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        preview_area = tk.Frame(shell, background="#FFFFFF", borderwidth=0)
+        preview_area.grid(row=3, column=0, sticky="nsew")
+        preview_area.rowconfigure(0, weight=1)
+        preview_area.columnconfigure(0, weight=1)
+        self.image_label = tk.Label(
+            preview_area, text="", anchor="center", justify="center",
+            background="#FFFFFF", foreground="#667085", font=("Segoe UI", 9),
+            borderwidth=0, highlightthickness=0,
+        )
+        self.image_label.grid(row=0, column=0, sticky="nsew")
+        self.image_label.bind("<Configure>", self._schedule_preview_resize)
+        self._refresh_result_table()
+        self._register_drop_targets(self.root, self._handle_id_drop)
+
+    def _build_v2(self) -> None:
         self._setup_style()
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -594,7 +664,7 @@ class NewWorkApp:
         width = max(1, self.image_label.winfo_width() - 8)
         height = max(1, self.image_label.winfo_height() - 8)
         preview = self._source_image.copy()
-        if self._id_crop_preview_bounds is not None:
+        if self.version == "v2" and self._id_crop_preview_bounds is not None:
             left, top, right, bottom = self._id_crop_preview_bounds
             overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
@@ -909,7 +979,8 @@ class NewWorkApp:
         self.save_button.configure(
             state="normal", text="선택 PC로 저장" if self.version == "v2" else "저장하기"
         )
-        self.pdf_button.configure(state="normal")
+        if hasattr(self, "pdf_button"):
+            self.pdf_button.configure(state="normal")
         if not reuse_job:
             self._document_jobs.clear()
             self._refresh_document_table()
