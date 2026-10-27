@@ -15,6 +15,17 @@ MAX_PACKAGE_FILES = 1000
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 
 
+def _jpeg_payload(path: Path) -> bytes:
+    """Return a JPEG without harmless zero padding after its EOI marker."""
+    content = Path(path).read_bytes()
+    if len(content) < 4 or not content.startswith(b"\xff\xd8\xff"):
+        raise ValueError(f"신분증 이미지가 올바른 JPG가 아닙니다: {path}")
+    end_marker = content.rfind(b"\xff\xd9")
+    if end_marker < 2 or any(content[end_marker + 2:]):
+        raise ValueError(f"신분증 이미지가 올바른 JPG가 아닙니다: {path}")
+    return content[:end_marker + 2]
+
+
 def create_work_package(
     output_path: Path,
     *,
@@ -43,7 +54,7 @@ def create_work_package(
     identity_name = result.image_path.suffix.lower()
     identity_path = package_root / "identity" / f"identity{identity_name}"
     identity_path.parent.mkdir(parents=True, exist_ok=True)
-    identity_path.write_bytes(result.image_path.read_bytes())
+    identity_path.write_bytes(_jpeg_payload(result.image_path))
 
     document_entries: list[dict[str, object]] = []
     for index, item in enumerate(document_jobs, start=1):
@@ -89,7 +100,8 @@ def create_work_package(
     if carrier == "SK":
         report_path = package_root / "sk_report.txt"
         write_ocr_result(
-            result, detection, values=reviewed_values, path=report_path
+            OcrResult(job_id=result.job_id, image_path=identity_path),
+            detection, values=reviewed_values, path=report_path
         )
         manifest["sk_report"] = "sk_report.txt"
     (package_root / "manifest.json").write_text(
