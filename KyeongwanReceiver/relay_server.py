@@ -358,7 +358,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self._reply(403, {"error": "source IP is not allowed"})
                 return
             self._reply(200, {"status": "ready", "features": [
-                "scanner-pages-v1", "new-work-v1", "job-status-v1"
+                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1"
             ]})
             return
         match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,64})/status", path)
@@ -381,7 +381,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not self._authorize_station(station_id):
                 return
             requested_types = parse_qs(urlsplit(self.path).query).get("payload_type", [])
-            if requested_types and requested_types[0] not in {"scanner-pages-v1", "new-work-v1"}:
+            if requested_types and requested_types[0] not in {
+                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1"
+            }:
                 self._reply(400, {"error": "unsupported payload_type filter"})
                 return
             # Legacy clients that do not send a filter continue to receive
@@ -406,9 +408,12 @@ class RelayHandler(BaseHTTPRequestHandler):
                         details = {}
                         source_name = "relay-job"
                     response = {key: metadata[key] for key in ("job_id", "page_count", "dpi", "created_at")}
+                    if metadata.get("payload_type") == "new-work-zip-v1":
+                        response["archive_size"] = metadata["archive_size"]
+                        response["archive_sha256"] = details.get("archive_sha256")
                     response.update({"source_name": source_name,
                                      "payload_type": metadata.get("payload_type", "scanner-pages-v1")})
-                    if metadata.get("payload_type") == "new-work-v1":
+                    if metadata.get("payload_type") in {"new-work-v1", "new-work-zip-v1"}:
                         response["work_package"] = details.get("work_package")
                     self._reply(200, response)
                     return
@@ -432,7 +437,12 @@ class RelayHandler(BaseHTTPRequestHandler):
                 except (OSError, InvalidToken):
                     self._reply(500, {"error": "stored page is unavailable"})
                     return
-            self._reply(200, content, "image/jpeg")
+            content_type = (
+                "application/octet-stream"
+                if metadata.get("payload_type") == "new-work-zip-v1"
+                else "image/jpeg"
+            )
+            self._reply(200, content, content_type)
             return
         self._reply(404, {"error": "not found"})
 
@@ -458,6 +468,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             source_name = request.get("source_name", "")
             payload_type = request.get("payload_type", "scanner-pages-v1")
             work_package = request.get("work_package")
+            archive_size = request.get("archive_size")
+            archive_sha256 = request.get("archive_sha256")
             if (not isinstance(job_id, str) or not JOB_RE.fullmatch(job_id)
                     or not isinstance(station_id, str)
                     or station_id not in self.server.config["stations"]):
@@ -472,15 +484,29 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not isinstance(source_name, str) or len(source_name) > 255 or any(ord(c) < 32 for c in source_name):
                 self._reply(400, {"error": "invalid source_name"})
                 return
-            if not isinstance(payload_type, str) or payload_type not in {"scanner-pages-v1", "new-work-v1"}:
+            if not isinstance(payload_type, str) or payload_type not in {
+                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1"
+            }:
                 self._reply(400, {"error": "unsupported payload_type"})
                 return
-            if payload_type == "new-work-v1" and not isinstance(work_package, dict):
+            if payload_type in {"new-work-v1", "new-work-zip-v1"} and not isinstance(work_package, dict):
                 self._reply(400, {"error": "new-work payload requires work_package metadata"})
                 return
+            if payload_type == "new-work-zip-v1":
+                if (not isinstance(archive_size, int) or isinstance(archive_size, bool)
+                        or not 1 <= archive_size <= MAX_JOB_BYTES
+                        or not isinstance(archive_sha256, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", archive_sha256)):
+                    self._reply(400, {"error": "invalid ZIP size or SHA-256"})
+                    return
             metadata = {"job_id": job_id, "station_id": station_id, "page_count": page_count, "dpi": dpi,
                         "total_bytes": 0, "status": "uploading", "payload_type": payload_type,
                         "created_at": datetime.now(timezone.utc).isoformat()}
+            if payload_type == "new-work-zip-v1":
+                if page_count != (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES:
+                    self._reply(400, {"error": "ZIP chunk count does not match archive size"})
+                    return
+                metadata.update({"archive_size": archive_size})
             with self.server.lock:
                 job = self._job_dir(job_id)
                 try:
@@ -490,8 +516,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 _atomic_write(job / "metadata.json", _json_bytes(metadata))
                 details = {"source_name": source_name.replace("/", "_").replace("\\", "_")}
-                if payload_type == "new-work-v1":
+                if payload_type in {"new-work-v1", "new-work-zip-v1"}:
                     details["work_package"] = work_package
+                if payload_type == "new-work-zip-v1":
+                    details["archive_sha256"] = archive_sha256
                 _atomic_write(job / "details.fernet", self.server.cipher.encrypt(_json_bytes(details)))
             self._reply(201, {"status": "created", "job_id": job_id})
             return
@@ -512,6 +540,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                 expected = [job / f"{number:03d}.fernet" for number in range(1, metadata["page_count"] + 1)]
                 if any(not page.is_file() for page in expected):
                     self._reply(409, {"error": "job is missing pages"})
+                    return
+                if (metadata.get("payload_type") == "new-work-zip-v1"
+                        and metadata.get("total_bytes") != metadata.get("archive_size")):
+                    self._reply(409, {"error": "ZIP archive is incomplete"})
                     return
                 metadata["status"] = "queued"
                 _atomic_write(job / "metadata.json", _json_bytes(metadata))
@@ -537,7 +569,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     metadata["status"] = "delivered"
                     metadata["delivered_at"] = datetime.now(timezone.utc).isoformat()
                     _atomic_write(job / "metadata.json", _json_bytes(metadata))
-                if metadata.get("payload_type") == "new-work-v1":
+                if metadata.get("payload_type") in {"new-work-v1", "new-work-zip-v1"}:
                     # Purge the personal payload but retain a status-only
                     # record so the central UI can confirm local application.
                     for child in job.iterdir():
@@ -568,20 +600,32 @@ class RelayHandler(BaseHTTPRequestHandler):
         job_id, page_text = match.groups()
         number = int(page_text)
         content_type = self.headers.get_content_type()
-        if content_type != "image/jpeg":
-            self._reply(415, {"error": "content type must be image/jpeg"})
+        if content_type not in {"image/jpeg", "application/octet-stream"}:
+            self._reply(415, {"error": "content type must be image/jpeg or application/octet-stream"})
             return
         body = self._body(MAX_PAGE_BYTES)
         if body is None:
             return
-        if number > MAX_PAGES or not body.startswith(b"\xff\xd8\xff") or not body.endswith(b"\xff\xd9"):
-            self._reply(400, {"error": "invalid JPEG page"})
+        if number > MAX_PAGES or not body:
+            self._reply(400, {"error": "invalid page or chunk"})
             return
         with self.server.lock:
             job = self._job_dir(job_id)
             metadata = self._metadata(job)
             if not metadata or metadata.get("status") != "uploading" or number > metadata.get("page_count", 0):
                 self._reply(409, {"error": "job does not accept this page"})
+                return
+            if metadata.get("payload_type") == "new-work-zip-v1":
+                expected_length = min(
+                    MAX_PAGE_BYTES,
+                    metadata["archive_size"] - (number - 1) * MAX_PAGE_BYTES,
+                )
+                if content_type != "application/octet-stream" or len(body) != expected_length:
+                    self._reply(400, {"error": "invalid ZIP chunk"})
+                    return
+            elif (content_type != "image/jpeg" or not body.startswith(b"\xff\xd8\xff")
+                    or not body.endswith(b"\xff\xd9")):
+                self._reply(400, {"error": "invalid JPEG page"})
                 return
             target = job / f"{number:03d}.fernet"
             digest = hashlib.sha256(body).hexdigest()

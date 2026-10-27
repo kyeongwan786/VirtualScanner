@@ -137,11 +137,12 @@ PDF는 MuPDF로 페이지별 JPEG를 메모리에서 렌더링한다. 페이지�
 보안 릴레이 API:
 
 - `POST /v1/jobs`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/jobs/{jobId}/complete`, `DELETE /v1/jobs/{jobId}/cancel` — 중앙 토큰과 중앙 출구 IP로 제한
+- `new-work-zip-v1`은 같은 `PUT /pages/{chunkNumber}` 경로에 최대 40 MiB `application/octet-stream` ZIP 조각을 올리고, Receiver는 같은 페이지 경로에서 조각을 받아 SHA-256 확인 후 압축을 푼다. Relay의 `/health`에는 이 기능이 `new-work-zip-v1`로 표시된다.
 - `GET /v1/jobs/{jobId}/status` — 중앙 토큰으로 작업 상태(`uploading`, `queued`, `delivered`, `cancelled`) 확인
 - `GET /v1/stations/{stationId}/jobs/next`, `GET /v1/stations/{stationId}/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/stations/{stationId}/jobs/{jobId}/ack` — 해당 자리 전용 토큰과 그 자리 출구 IP로 제한
 - `GET /health` — 비민감 준비 상태만 제공
 
-Relay는 페이지를 암호화해 `relay-data/jobs`에 저장한다. 페이지당 최대 40 MiB, 작업당 최대 512 MiB, 작업당 최대 100페이지다. 기존 스캐너 페이지 작업은 Receiver가 모든 페이지를 로컬 `ready`에 원자적으로 공개한 뒤 ack하면 작업 디렉터리를 삭제한다. NEW_WORK 작업(`payload_type: new-work-v1`)은 자리별 OCR/문서 정보를 암호화된 메타데이터로 전달한다. NEW_WORK Receiver가 SK/KT 로컬 적용 후 ack하면 이미지와 메타데이터를 삭제하되, 중앙 UI의 적용 확인을 위해 개인정보가 없는 상태 레코드만 남긴다. Render에서는 Receiver가 내려받기 전에 서비스가 재시작되면 대기 작업이 유실될 수 있다.
+Relay는 기존 스캐너 페이지와 NEW_WORK ZIP 조각을 Fernet으로 암호화해 `relay-data/jobs`에 저장한다. 전송 단위는 최대 40 MiB, 작업당 최대 512 MiB이며 ZIP은 필요한 경우에만 40 MiB 단위로 나뉜다. 기존 스캐너 페이지 작업은 Receiver가 모든 페이지를 로컬 `ready`에 원자적으로 공개한 뒤 ack하면 작업 디렉터리를 삭제한다. NEW_WORK는 `payload_type: new-work-zip-v1`로 중앙에서 만든 ZIP과 자리별 OCR/문서 메타데이터를 전달한다. Receiver가 ZIP 크기와 SHA-256을 확인하고 안전하게 압축을 푼 뒤 SK/KT 로컬 적용을 마치고 ack하면 Relay가 ZIP과 메타데이터를 삭제하되, 중앙 UI의 적용 확인을 위해 개인정보가 없는 상태 레코드만 남긴다. 이전 `new-work-v1` 페이지별 작업도 호환을 위해 수신할 수 있다. 새 흐름을 쓰려면 `/health`에 `new-work-zip-v1`이 표시되도록 Relay를 배포하고, 중앙 및 Receiver도 ZIP을 지원하는 새 빌드로 업데이트해야 한다. 이전 Receiver 빌드는 ZIP 작업을 찾지 못한다. Render에서는 Receiver가 내려받기 전에 서비스가 재시작되면 대기 작업이 유실될 수 있다.
 
 - 구형 직접 Receiver API (개발 호환 전용): `GET /health`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /complete`, `DELETE /cancel`
 - `PUT /v1/jobs/{jobId}/pages/{pageNumber}` — 인증 헤더 `X-Receiver-Token`과 JPG 본문으로 페이지 업로드

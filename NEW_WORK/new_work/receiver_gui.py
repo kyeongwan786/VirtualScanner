@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import tkinter as tk
 import unicodedata
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -176,6 +176,8 @@ class ReceiverApp:
         self._drag_start: tuple[ttk.Treeview, str] | None = None
         self._preview_dialogs: set[DocumentPreviewDialog] = set()
         self._clearing_received = False
+        self._cancel_receive = Event()
+        self._pending_received_reset: tuple[Path, Path | None, int, int, int] | None = None
         self._build()
         self._load_queue_state()
         if not all(self.config.get(key) for key in ("station_id", "relay_url", "token")):
@@ -454,12 +456,15 @@ class ReceiverApp:
             job_dir, manifest = receive_work_package(
                 {"relay_url": self.config["relay_url"], "token": self.config["token"]},
                 self.config["station_id"], Path(self.config["work_path"]),
+                cancel_event=self._cancel_receive,
             ) or (None, None)
             if job_dir is None:
                 self.root.after(0, self._receive_finished, None)
                 return
             applied_marker = job_dir / "applied.json"
             if not applied_marker.exists():
+                if self._cancel_receive.is_set():
+                    raise RuntimeError("받은 자료 초기화 요청으로 Relay 적용을 취소했습니다.")
                 if manifest.get("carrier") == "SK":
                     identity = self._job_file(job_dir, str(manifest.get("identity_image", "")))
                     detection_data = manifest.get("id_type_detection", {})
@@ -579,6 +584,9 @@ class ReceiverApp:
 
     def _receive_finished(self, outcome: str | None) -> None:
         self._processing = False
+        if self._pending_received_reset is not None:
+            self._finish_received_reset()
+            return
         if outcome:
             self.status.set(outcome)
             self._refresh_queue()
@@ -592,25 +600,11 @@ class ReceiverApp:
             Thread(target=self._receive_relay_work, daemon=True).start()
 
     def _reset_received_data(self) -> None:
-        if self._processing or self._clearing_received:
-            messagebox.showinfo(
-                "Receiver 작업 중",
-                "Relay 작업을 받거나 적용하는 중에는 초기화할 수 없습니다. 작업이 끝난 뒤 다시 눌러 주세요.",
-                parent=self.root,
-            )
+        if self._clearing_received:
             return
 
-        self._sync_active_scan()
-        ready = Path(self.config.get("scanner_ready_path", "")).expanduser()
-        if self._active or (ready.is_dir() and any(ready.iterdir())):
-            messagebox.showinfo(
-                "스캔 작업 진행 중",
-                "가상 스캐너 ready 폴더에 작업이 남아 있어 초기화하지 않았습니다.\n"
-                "스캔이 끝나고 ready 폴더가 비었을 때 다시 초기화하세요.",
-                parent=self.root,
-            )
-            return
-
+        ready_value = self.config.get("scanner_ready_path", "").strip()
+        ready = Path(ready_value).expanduser() if ready_value else None
         configured_work_path = self.config.get("work_path", "").strip()
         if not configured_work_path:
             messagebox.showerror("Receiver 작업 폴더 오류", "Receiver 작업 폴더를 설정하세요.", parent=self.root)
@@ -625,10 +619,20 @@ class ReceiverApp:
             return
         jobs_root = work_root / "jobs"
         state_path = work_root / "receiver-state.json"
-        if jobs_root.is_symlink() or state_path.is_symlink():
+        if ready is not None and (
+            ready.resolve() == Path(ready.anchor) or ready.name.casefold() != "ready"
+        ):
             messagebox.showerror(
                 "Receiver 작업 폴더 오류",
-                "jobs 폴더 또는 Receiver 상태 파일이 바로가기로 연결되어 있어 안전하게 초기화할 수 없습니다.",
+                "가상 스캐너 폴더는 드라이브 루트가 아닌 이름이 ready인 전용 폴더여야 합니다.",
+                parent=self.root,
+            )
+            return
+        if (jobs_root.is_symlink() or state_path.is_symlink()
+                or (ready is not None and ready.is_symlink())):
+            messagebox.showerror(
+                "Receiver 작업 폴더 오류",
+                "jobs 폴더, ready 폴더 또는 Receiver 상태 파일이 바로가기로 연결되어 있어 초기화할 수 없습니다.",
                 parent=self.root,
             )
             return
@@ -636,23 +640,44 @@ class ReceiverApp:
         try:
             job_count = sum(1 for item in jobs_root.iterdir() if item.is_dir()) if jobs_root.exists() else 0
             file_count = sum(1 for item in jobs_root.rglob("*") if item.is_file()) if jobs_root.exists() else 0
+            ready_file_count = (
+                sum(1 for item in ready.rglob("*") if item.is_file())
+                if ready is not None and ready.is_dir() else 0
+            )
         except OSError as exc:
             messagebox.showerror("Receiver 작업 폴더 확인 실패", str(exc), parent=self.root)
             return
 
         confirmed = messagebox.askyesno(
             "받은 자료 전체 초기화",
-            f"이 Receiver에 저장된 수신 작업 {job_count}건, 파일 {file_count}개를 삭제할까요?\n\n"
+            f"이 Receiver의 수신 작업 {job_count}건, 파일 {file_count}개와\n"
+            f"가상 스캐너 ready 파일 {ready_file_count}개를 삭제할까요?\n"
+            f"ready 폴더: {ready if ready is not None else '(설정 안 됨)'}\n\n"
             "신분증 원본, OCR 결과, 수신 서류 JPG, 작업 manifest와 로컬 작업 목록을 삭제합니다.\n"
             "화면의 신분증 미리보기와 OCR 표시값, 서류 미리보기 메모리도 비웁니다.\n\n"
-            "이 Receiver의 로컬 작업 폴더만 삭제합니다. 이미 적용된 SK 파일, KT DB·이미지, 백업, 스캐너 ready, "
-            "아직 받지 않은 Relay 작업은 삭제하지 않습니다. 삭제한 수신 작업은 복구할 수 없습니다.",
+            "스캔 또는 Relay 수신/적용 중에도 강제로 초기화합니다. 진행 중인 스캔은 실패할 수 있습니다.\n"
+            "이미 적용된 SK 파일, KT DB·이미지와 백업, Relay에 남은 미수신 작업은 삭제하지 않습니다.\n"
+            "삭제한 수신 자료와 ready 작업은 복구할 수 없습니다.",
             parent=self.root,
         )
         if not confirmed:
             return
 
         self._clearing_received = True
+        self._pending_received_reset = (
+            jobs_root, ready, job_count, file_count, ready_file_count
+        )
+        if self._processing:
+            self._cancel_receive.set()
+            self.status.set("강제 초기화 중 · 진행 중인 Relay 요청을 마치는 중")
+            return
+        self._finish_received_reset()
+
+    def _finish_received_reset(self) -> None:
+        plan = self._pending_received_reset
+        if plan is None:
+            return
+        jobs_root, ready_root, job_count, file_count, ready_file_count = plan
         try:
             for dialog in tuple(self._preview_dialogs):
                 try:
@@ -661,6 +686,12 @@ class ReceiverApp:
                     self._preview_dialogs.discard(dialog)
             if jobs_root.exists():
                 shutil.rmtree(jobs_root)
+            if ready_root is not None and ready_root.is_dir():
+                for item in ready_root.iterdir():
+                    if item.is_symlink() or not item.is_dir():
+                        item.unlink()
+                    else:
+                        shutil.rmtree(item)
 
             self._items.clear()
             self._jobs.clear()
@@ -681,7 +712,10 @@ class ReceiverApp:
             self._save_queue_state()
             gc.collect()
             self._refresh_queue()
-            self.status.set(f"받은 자료 초기화 완료 · 작업 {job_count}건, 파일 {file_count}개 삭제")
+            self.status.set(
+                f"받은 자료 초기화 완료 · 작업 {job_count}건, 파일 {file_count}개, "
+                f"ready 파일 {ready_file_count}개 삭제"
+            )
         except (OSError, tk.TclError) as exc:
             self._refresh_queue()
             messagebox.showerror(
@@ -690,6 +724,8 @@ class ReceiverApp:
                 parent=self.root,
             )
         finally:
+            self._pending_received_reset = None
+            self._cancel_receive = Event()
             self._clearing_received = False
 
     def _refresh_queue(self) -> None:

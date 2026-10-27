@@ -40,11 +40,11 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 ### `NEW_WORK` 중앙 준비 앱과 Receiver
 
-`NEW_WORK`에는 신분증 JPG OCR과 서류 PDF 페이지 변환을 함께 준비하는 GUI가 있다. 중앙 사용자가 접수 PC와 SK/KT 포탈을 선택해 저장하면 이미지 페이지와 OCR 검토값을 기존 `KyeongwanReceiver/relay_server.py` HTTPS 릴레이로 전송한다. 접수 PC의 `receiver_run.py` UI는 Render에서 자기 자리 작업을 폴링해 로컬에 저장하고, SK `sk_report.txt`를 교체하거나 해당 PC의 KT `myCustomer.db`를 갱신한 뒤에만 릴레이에 완료 응답을 보낸다. PDF는 Receiver의 자리별 대기열에서 순서를 정하고, 맨 위의 연속 문서만 가상 스캐너의 `ready` 폴더에 올린다.
+`NEW_WORK`에는 신분증 JPG OCR과 서류 PDF 페이지 변환을 함께 준비하는 GUI가 있다. 중앙 사용자가 접수 PC와 SK/KT 포탈을 선택해 저장하면 이미 생성된 ZIP 전체와 OCR 검토값을 `KyeongwanReceiver/relay_server.py` HTTPS 릴레이에 전송한다. ZIP이 40 MiB보다 크면 최대 40 MiB 조각으로 보내며, Relay의 `new-work-zip-v1` 지원 배포가 필요하다. 접수 PC의 `receiver_run.py` UI는 Render에서 자기 자리 작업을 폴링해 ZIP을 검증·압축 해제하고, SK `sk_report.txt`를 교체하거나 해당 PC의 KT `myCustomer.db`를 갱신한 뒤에만 릴레이에 완료 응답을 보낸다. PDF는 Receiver의 자리별 대기열에서 순서를 정하고, 맨 위의 연속 문서만 가상 스캐너의 `ready` 폴더에 올린다.
 
 중앙 OCR 미리보기의 `idCrop`/`CR.jpg` 영역은 종류별 고정 크기로 표시하고 드래그해 위치만 조정할 수 있다. 선택 좌표는 작업 패키지의 `reviewed_values._idCropBounds`로 전달되며 SK Base64 크롭과 Receiver KT `CR.jpg` 생성에 사용된다. KT 쪽 수동 영역은 이 좌표 필드를 지원하는 Receiver 빌드가 필요하다.
 
-Receiver의 **받은 자료 초기화**는 로컬 수신 작업 패키지와 신분증/OCR/서류 메모리 참조, 스캔 목록 상태를 삭제한다. 수신/적용 중이거나 `ready` 폴더에 스캔 작업이 있으면 중단한다. 이미 적용된 SK/KT 대상 파일과 백업, 미수신 Relay 작업은 유지한다.
+Receiver의 **받은 자료 초기화**는 로컬 수신 작업 패키지와 신분증/OCR/서류 메모리 참조, 스캔 목록 상태, 설정된 스캐너 `ready` 폴더 안의 작업을 강제 삭제한다. 진행 중인 페이지 요청이 끝난 뒤 정리하며, 적용이 시작된 작업은 적용과 Relay 응답을 마친 뒤 정리한다. 진행 중 스캔은 실패할 수 있다. 이미 적용된 SK/KT 대상 파일과 백업, Relay에 남은 미수신 작업은 유지한다.
 
 Render 연결의 레포지토리 설정(`render.yaml`, 실행 코드, API)은 준비돼 있다. Receiver는 GUI가 열린 동안 2초 간격으로 새 작업을 확인하고, 중앙 PC는 1초 간격으로 적용 완료 응답을 확인한다. 이 간격 조정은 다음 폴링까지의 대기를 줄이며, 이미지 전송·Receiver 로컬 적용 시간은 별도로 든다. 다만 `KyeongwanReceiver/README.md`의 마지막 기록은 실제 Render 배포와 공개 URL이 없는 상태다. 사용자 Render 대시보드의 현재 상태는 이 저장소만으로 확인할 수 없다. 연결 전에는 배포 주소와 토큰을 확인해야 한다. Render 쪽은 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. 릴레이와 Receiver, 중앙 PC 모두 실제 NEW_WORK 작업으로 아직 종단간 검증되지 않았다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
 
