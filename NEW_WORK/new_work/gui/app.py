@@ -137,6 +137,7 @@ class NewWorkApp:
         self._document_jobs: list[dict[str, object]] = []
         self._job_sent = False
         self._pending_confirmation: tuple[str, str, str, dict[str, str]] | None = None
+        self._pending_auto_send: tuple[Store, str] | None = None
         self._transfer_cancel_event: Event | None = None
         self._reset_requested = False
         try:
@@ -243,6 +244,8 @@ class NewWorkApp:
         self.ocr_button.configure(state="normal")
         self.ocr_status.set(f"OCR 모델 준비 실패 · 다시 실행하면 재시도합니다: {error}")
         self._pending_ocr_path = None
+        if self._pending_auto_send is not None:
+            self._cancel_pending_auto_send("OCR 모델 준비에 실패해 자동 전송 예약을 취소했습니다.")
 
     def _build(self) -> None:
         if self.version == "v1":
@@ -288,12 +291,11 @@ class NewWorkApp:
         self.ocr_button.pack(side="left", padx=3)
         self.save_button = ttk.Button(buttons, text="저장하기", command=self.mark_reviewed)
         self.save_button.pack(side="left", padx=3)
-        # Preserve current crop calculations without adding a crop control to
-        # the legacy OCR window.
         self.crop_reset_button = ttk.Button(
             buttons, text="자동 영역 복원", command=self._reset_crop_bounds,
             state="disabled",
         )
+        self.crop_reset_button.pack(side="left", padx=3)
 
         self.review_status = tk.StringVar(value="")
         self.ocr_status = tk.StringVar(value=f"OCR 준비됨 · {self.ocr.status}")
@@ -317,6 +319,9 @@ class NewWorkApp:
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
         self.image_label.bind("<Configure>", self._schedule_preview_resize)
+        self.image_label.bind("<ButtonPress-1>", self._crop_pointer_down)
+        self.image_label.bind("<B1-Motion>", self._crop_pointer_move)
+        self.image_label.bind("<ButtonRelease-1>", self._crop_pointer_up)
         self._refresh_result_table()
         self._register_drop_targets(self.root, self._handle_id_drop)
 
@@ -708,7 +713,7 @@ class NewWorkApp:
         width = max(1, self.image_label.winfo_width() - 8)
         height = max(1, self.image_label.winfo_height() - 8)
         preview = self._source_image.copy()
-        if self.version == "v2" and self._id_crop_preview_bounds is not None:
+        if self._id_crop_preview_bounds is not None:
             left, top, right, bottom = self._id_crop_preview_bounds
             overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
@@ -771,6 +776,11 @@ class NewWorkApp:
         )
 
     def _crop_pointer_down(self, event) -> None:
+        code = self._id_type_detection.code
+        if code is None or (
+            self.portal_var.get() == "SK" and code not in SK_ID_CROP_CODES
+        ):
+            return
         point = self._preview_point_to_source(event)
         if point is None or self._source_image is None:
             return
@@ -1011,6 +1021,13 @@ class NewWorkApp:
             self._queue_pdf_paths([Path(item) for item in selected])
 
     def _load_new_identity(self, path: Path) -> None:
+        if self._pending_auto_send is not None:
+            messagebox.showinfo(
+                "자동 전송 예약 중",
+                "예약된 OCR/PDF 준비와 자동 전송이 끝난 뒤 새 신분증을 불러오세요.",
+                parent=self.root,
+            )
+            return
         # If PDFs were added first, attach the ID image to that same job.
         reuse_job = self.draft is None and self._document_job_id is not None
         job_id = self._document_job_id if reuse_job else str(uuid4())
@@ -1032,6 +1049,13 @@ class NewWorkApp:
         self.run_ocr()
 
     def _queue_pdf_paths(self, paths: list[Path]) -> None:
+        if self._pending_auto_send is not None:
+            messagebox.showinfo(
+                "자동 전송 예약 중",
+                "전송 예약 이후에는 PDF를 추가할 수 없습니다. 기존 예약을 완료하거나 초기화하세요.",
+                parent=self.root,
+            )
+            return
         if self._job_sent:
             messagebox.showinfo(
                 "새 작업 필요", "전송을 마친 작업에는 PDF를 추가할 수 없습니다. 새 신분증 작업을 시작하세요.",
@@ -1087,6 +1111,7 @@ class NewWorkApp:
         item["status"] = "변환 완료"
         item["pages"] = f"{len(pages)}페이지 · {item['output']}"
         self._refresh_document_table()
+        self._try_start_pending_auto_send()
 
     def _pdf_conversion_failed(self, key: str, error: str) -> None:
         item = next((row for row in self._document_jobs if row["key"] == key), None)
@@ -1095,6 +1120,8 @@ class NewWorkApp:
         item["status"] = "변환 실패"
         item["pages"] = error
         self._refresh_document_table()
+        if self._pending_auto_send is not None:
+            self._cancel_pending_auto_send(f"PDF 변환 실패 · {item['source'].name}: {error}")
 
     def _refresh_document_table(self) -> None:
         if not hasattr(self, "document_table"):
@@ -1416,10 +1443,14 @@ class NewWorkApp:
         if isinstance(error, OcrUnavailableError):
             self.ocr_status.set(f"OCR 상태: 오류 — {error}")
             messagebox.showerror("PaddleOCR 실행 실패", str(error))
+            if self._pending_auto_send is not None:
+                self._cancel_pending_auto_send("OCR에 실패해 자동 전송 예약을 취소했습니다.")
             return
         self.ocr_status.set(f"OCR 상태: 오류 — {error}")
         messagebox.showerror("PaddleOCR 실행 실패", str(error))
         self.review_status.set("OCR 실행에 실패했습니다.")
+        if self._pending_auto_send is not None:
+            self._cancel_pending_auto_send("OCR에 실패해 자동 전송 예약을 취소했습니다.")
 
     def _ocr_succeeded(self, image_path: Path, result: OcrResult) -> None:
         self._stop_scan_animation(image_path)
@@ -1485,8 +1516,16 @@ class NewWorkApp:
             detection_status = self._id_type_detection.name
         if invalid_resident_number:
             detection_status += " · 주민번호 검증 실패, 직접 확인 필요"
+        if self._id_crop_preview_bounds is not None:
+            detection_status += " · 파란 크롭 영역을 드래그해 조정한 뒤 저장"
+        elif (
+            self.portal_var.get() == "KT"
+            or self._id_type_detection.code in SK_ID_CROP_CODES
+        ) and self._id_type_detection.code:
+            detection_status += " · 사진에서 클릭해 고정 크롭 영역 지정 가능"
         self.review_status.set(f"OCR 완료 · {detection_status}")
         self._refresh_result_table()
+        self._try_start_pending_auto_send()
 
     def _apply_detected_id_type(self, detection: IdTypeDetection) -> None:
         if detection.code:
@@ -1529,7 +1568,8 @@ class NewWorkApp:
             )
 
     def _portal_changed(self, *_args) -> None:
-        self._refresh_id_crop_preview_bounds()
+        self._id_crop_manually_adjusted = False
+        self._refresh_id_crop_preview_bounds(reset=True)
         self._resize_source_preview()
 
     def _legacy_type_selected(self, _event=None) -> None:
@@ -1585,10 +1625,10 @@ class NewWorkApp:
         if self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
-        if not self.draft.result.lines:
-            messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
-            return
         if self.version == "v1":
+            if not self.draft.result.lines:
+                messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
+                return
             self._save_locally()
             return
         store = self._selected_store()
@@ -1609,6 +1649,55 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
+        failed = [item for item in self._document_jobs if item["status"] == "변환 실패"]
+        if failed:
+            messagebox.showwarning(
+                "PDF 변환 실패",
+                "변환에 실패한 PDF가 있어 전송할 수 없습니다:\n"
+                + "\n".join(str(item["source"].name) for item in failed),
+                parent=self.root,
+            )
+            return
+        if (not self.draft.result.lines
+                or any(item["status"] != "변환 완료" for item in self._document_jobs)):
+            self._pending_auto_send = (store, self.portal_var.get())
+            self.save_button.configure(state="disabled", text="준비되면 자동 전송")
+            self._set_transfer_controls(False)
+            self.review_status.set("OCR 및 PDF 변환 완료 후 자동으로 선택 PC에 전송합니다…")
+            self._try_start_pending_auto_send()
+            return
+        self._start_v2_transfer(store, self.portal_var.get())
+
+    def _try_start_pending_auto_send(self) -> None:
+        pending = self._pending_auto_send
+        if pending is None or self.draft is None:
+            return
+        if not self.draft.result.lines:
+            return
+        failed = [item for item in self._document_jobs if item["status"] == "변환 실패"]
+        if failed:
+            names = ", ".join(str(item["source"].name) for item in failed)
+            self._cancel_pending_auto_send(f"PDF 변환 실패 · 자동 전송 취소 · {names}")
+            return
+        if any(item["status"] != "변환 완료" for item in self._document_jobs):
+            return
+        self._pending_auto_send = None
+        self._set_transfer_controls(True)
+        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        store, carrier = pending
+        self.review_status.set("OCR/PDF 준비 완료 · 자동 전송 시작")
+        self._start_v2_transfer(store, carrier)
+
+    def _cancel_pending_auto_send(self, message: str) -> None:
+        self._pending_auto_send = None
+        self._set_transfer_controls(True)
+        self.save_button.configure(state="normal", text="선택 PC로 저장")
+        self.review_status.set(message)
+
+    def _start_v2_transfer(self, store: Store, carrier: str) -> None:
+        if self.draft is None or not self.draft.result.lines:
+            messagebox.showinfo("OCR 결과 확인", "OCR 결과가 없어 전송하지 않았습니다.", parent=self.root)
+            return
         incomplete = [
             str(item["source"].name)
             for item in self._document_jobs
@@ -1623,7 +1712,6 @@ class NewWorkApp:
             )
             return
         values = self._current_values()
-        carrier = self.portal_var.get()
         if values.get("kaitIdType", "").strip() not in ID_TYPES:
             messagebox.showinfo(
                 "신분증 종류 확인",
@@ -1839,6 +1927,7 @@ class NewWorkApp:
             shutil.rmtree(default_job_directory() / job_id, ignore_errors=True)
         self._transfer_cancel_event = None
         self._reset_requested = False
+        self._pending_auto_send = None
         self._pending_confirmation = None
         self._job_sent = False
         self._document_job_id = None
@@ -1875,6 +1964,7 @@ class NewWorkApp:
             self.review_status.set("작업 초기화 완료 · Relay 전송은 시작되지 않았습니다.")
             return
         self._transfer_cancel_event = None
+        self._pending_auto_send = None
         self._pending_confirmation = None
         self.status_button.configure(state="disabled")
         self.save_button.configure(state="normal", text="선택 PC로 저장")
@@ -1967,6 +2057,7 @@ class NewWorkApp:
             messagebox.showwarning("전송 취소 결과", message, parent=self.root)
             return
         self._transfer_cancel_event = None
+        self._pending_auto_send = None
         self._pending_confirmation = None
         self.status_button.configure(state="disabled", text="전송 상태 확인")
         self._set_transfer_controls(True)

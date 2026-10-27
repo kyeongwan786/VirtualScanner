@@ -249,8 +249,9 @@ def save_kt_submission(
     *,
     database_path: Path | None = None,
     image_directory: Path | None = None,
+    target_element_id: str | None = None,
 ) -> tuple[Path, str]:
-    """Update the latest existing U.Scan paper row with reviewed OCR values."""
+    """Update a selected existing U.Scan row, or the latest row for a new intake."""
     target = Path(database_path) if database_path is not None else default_kt_database_path()
     target = target.expanduser().resolve(strict=True)
     provided = dict(result.values)
@@ -294,17 +295,27 @@ def save_kt_submission(
                 *KT_OCR_METADATA_FIELDS,
             )
         )
-        existing = connection.execute(
-            f"SELECT {fields} FROM T_SCAN_PAPER "
-            "ORDER BY SCAN_DT DESC LIMIT 1"
-        ).fetchone()
+        if target_element_id:
+            existing = connection.execute(
+                f"SELECT {fields} FROM T_SCAN_PAPER WHERE TMP_ELEMENT_ID = ?",
+                (target_element_id,),
+            ).fetchone()
+        else:
+            existing = connection.execute(
+                f"SELECT {fields} FROM T_SCAN_PAPER "
+                "ORDER BY SCAN_DT DESC LIMIT 1"
+            ).fetchone()
         if existing is None:
+            if target_element_id:
+                raise ValueError(
+                    "수정 대상 KT 접수 행을 찾지 못했습니다. 다른 접수 건은 변경하지 않았습니다."
+                )
             raise ValueError("업데이트할 기존 T_SCAN_PAPER 문서가 없습니다.")
 
         old_element_id = clean(existing[0])
         send_org_id = clean(existing[1])
         if not old_element_id:
-            raise ValueError("최신 T_SCAN_PAPER 행의 TMP_ELEMENT_ID가 비어 있습니다.")
+            raise ValueError("T_SCAN_PAPER 행의 TMP_ELEMENT_ID가 비어 있습니다.")
         reviewed = dict(
             zip(
                 (*KT_PAPER_FIELDS, *KT_REVIEW_ORIGIN_FIELDS, *KT_OCR_METADATA_FIELDS),
@@ -336,6 +347,9 @@ def save_kt_submission(
             veteran_number = digits(provided.get("veteranNum", ""))
             reviewed["WLF_NUM"] = veteran_number
             reviewed["WLF_NUM_ORIGIN"] = veteran_number
+        elif target_element_id:
+            reviewed["WLF_NUM"] = ""
+            reviewed["WLF_NUM_ORIGIN"] = ""
 
         if "ctzCorpNum" in provided:
             number = clean(provided["ctzCorpNum"])
@@ -358,9 +372,8 @@ def save_kt_submission(
             reviewed["MSK_POS"] = clean(provided["mskPos"])
         reviewed["NATION_CL_CD"] = "F" if id_code == "1401" else "I"
 
-        # TMP_ELEMENT_ID is the primary key of both PAPER and RESOURCES. Move
-        # both sides together so the existing image remains attached to the
-        # same document after assigning its new legacy key.
+        # TMP_ELEMENT_ID links PAPER and RESOURCES. Confirm the link before
+        # writing images or changing the selected intake row.
         resource = connection.execute(
             "SELECT 1 FROM T_SCAN_RESOURCES WHERE TMP_ELEMENT_ID = ?",
             (old_element_id,),
@@ -374,14 +387,17 @@ def save_kt_submission(
             id_code,
             crop_bounds=parse_crop_bounds(provided.get("_idCropBounds")),
         )
-        new_element_id = _new_element_id(connection, send_org_id)
-
-        resource_cursor = connection.execute(
-            "UPDATE T_SCAN_RESOURCES SET TMP_ELEMENT_ID = ? WHERE TMP_ELEMENT_ID = ?",
-            (new_element_id, old_element_id),
-        )
-        if resource_cursor.rowcount != 1:
-            raise ValueError("기존 T_SCAN_RESOURCES의 TMP_ELEMENT_ID 갱신에 실패했습니다.")
+        if target_element_id:
+            # A Receiver correction must keep targeting the same intake row.
+            new_element_id = old_element_id
+        else:
+            new_element_id = _new_element_id(connection, send_org_id)
+            resource_cursor = connection.execute(
+                "UPDATE T_SCAN_RESOURCES SET TMP_ELEMENT_ID = ? WHERE TMP_ELEMENT_ID = ?",
+                (new_element_id, old_element_id),
+            )
+            if resource_cursor.rowcount != 1:
+                raise ValueError("기존 T_SCAN_RESOURCES의 TMP_ELEMENT_ID 갱신에 실패했습니다.")
 
         update_fields = (
             *KT_PAPER_FIELDS,

@@ -11,7 +11,7 @@ import sys
 import tkinter as tk
 import unicodedata
 from threading import Event, Thread
-from time import monotonic
+from time import monotonic, time_ns
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, ttk
@@ -164,6 +164,7 @@ class ReceiverApp:
             except (OSError, json.JSONDecodeError) as exc:
                 messagebox.showerror("Receiver 설정 오류", str(exc), parent=root)
         self._processing = False
+        self._receive_progress_started = 0.0
         self._retry_after = 0.0
         self._photo: ImageTk.PhotoImage | None = None
         self._items: dict[str, dict] = {}
@@ -173,7 +174,13 @@ class ReceiverApp:
         self._scan_order: list[str] = []
         self._completed: set[str] = set()
         self._document_undo_stack: list[dict] = []
-        self._active: dict | None = None
+        self._ready_jobs: list[dict[str, object]] = []
+        self._identity_entries: dict[str, ttk.Entry] = {}
+        self._identity_type_label_to_code = {
+            f"{metadata['name']} ({code})": code for code, metadata in ID_TYPES.items()
+        }
+        self._identity_editing = False
+        self._correction_busy = False
         self._drag_start: tuple[ttk.Treeview, str] | None = None
         self._preview_dialogs: set[DocumentPreviewDialog] = set()
         self._clearing_received = False
@@ -204,7 +211,7 @@ class ReceiverApp:
         shell = ttk.Frame(self.root, padding=12)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(1, weight=1)
+        shell.rowconfigure(2, weight=1)
         toolbar = ttk.Frame(shell)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ttk.Label(toolbar, text="NEW_WORK Receiver", style="Title.TLabel").pack(side="left", padx=(0, 18))
@@ -217,8 +224,25 @@ class ReceiverApp:
         self.status = tk.StringVar(value="수신 대기 중")
         ttk.Label(toolbar, textvariable=self.status).pack(side="left", padx=14)
 
+        self.receive_progress_frame = ttk.Frame(shell)
+        self.receive_progress_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self.receive_progress_frame.columnconfigure(1, weight=1)
+        self.receive_progress_label = tk.StringVar(value="")
+        ttk.Label(self.receive_progress_frame, textvariable=self.receive_progress_label).grid(
+            row=0, column=0, sticky="w", padx=(0, 10)
+        )
+        style.configure(
+            "Receiver.Horizontal.TProgressbar", troughcolor="#E4E7EC", background="#2E90FA",
+        )
+        self.receive_progress_bar = ttk.Progressbar(
+            self.receive_progress_frame, mode="determinate", maximum=100,
+            style="Receiver.Horizontal.TProgressbar",
+        )
+        self.receive_progress_bar.grid(row=0, column=1, sticky="ew")
+        self.receive_progress_frame.grid_remove()
+
         self.notebook = ttk.Notebook(shell)
-        self.notebook.grid(row=1, column=0, sticky="nsew")
+        self.notebook.grid(row=2, column=0, sticky="nsew")
         self._build_identity_tab()
         self._build_documents_tab()
 
@@ -253,21 +277,44 @@ class ReceiverApp:
         fields.columnconfigure(1, weight=1)
         self.identity_vars: dict[str, tk.StringVar] = {}
         field_specs = (
-            ("id_type", "신분증 종류"), ("custNm", "이름"),
+            ("custNm", "이름"),
             ("ctzCorpNum", "주민등록번호 / 등록번호"), ("addr", "주소"),
             ("isueDt", "발급일자"), ("drvLicenIsueNum", "운전면허번호"),
             ("isuePlc", "발급기관"), ("veteranNum", "보훈번호"),
+            ("mskPos", "마스킹 위치"),
         )
-        for row, (key, label) in enumerate(field_specs):
+        ttk.Label(fields, text="신분증 종류").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.identity_vars["id_type"] = tk.StringVar(value="")
+        self.identity_type_box = ttk.Combobox(
+            fields, textvariable=self.identity_vars["id_type"], state="readonly",
+            values=tuple(self._identity_type_label_to_code),
+        )
+        self.identity_type_box.grid(row=0, column=1, sticky="ew", pady=6, ipady=2)
+        for row, (key, label) in enumerate(field_specs, start=1):
             ttk.Label(fields, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
             variable = tk.StringVar(value="")
             self.identity_vars[key] = variable
             entry = ttk.Entry(fields, textvariable=variable, state="readonly")
             entry.grid(row=row, column=1, sticky="ew", pady=6, ipady=4)
+            self._identity_entries[key] = entry
         self.identity_hint = tk.StringVar(value="중앙 PC에서 검토한 OCR 값을 표시합니다.")
         ttk.Label(result_frame, textvariable=self.identity_hint, wraplength=430).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(14, 0)
         )
+        correction_controls = ttk.Frame(result_frame)
+        correction_controls.grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        self.edit_identity_button = ttk.Button(
+            correction_controls, text="값 수정", command=self._begin_identity_edit, state="disabled",
+        )
+        self.edit_identity_button.pack(side="left", padx=(0, 6))
+        self.cancel_identity_edit_button = ttk.Button(
+            correction_controls, text="취소", command=self._cancel_identity_edit, state="disabled",
+        )
+        self.cancel_identity_edit_button.pack(side="left", padx=(0, 6))
+        self.save_identity_edit_button = ttk.Button(
+            correction_controls, text="수정 적용", command=self._save_identity_edit, state="disabled",
+        )
+        self.save_identity_edit_button.pack(side="left")
 
     def _build_documents_tab(self) -> None:
         tab = ttk.Frame(self.notebook, padding=10)
@@ -279,7 +326,7 @@ class ReceiverApp:
         header.columnconfigure(0, weight=1)
         ttk.Label(
             header,
-            text="PDF 하나가 서류 폴더 하나입니다. 더블클릭해 미리 보고, 드래그하거나 버튼으로 두 목록 사이에 옮기세요.",
+            text="PDF별 폴더 · 스캔 목록으로 옮기면 ready 등록 · 새 자료 수신 시 이전 신분증/PDF/ready 자동 삭제",
         ).grid(row=0, column=0, sticky="w")
         ttk.Button(header, text="서류 목록 초기화", command=self._reset_document_lists).grid(
             row=0, column=1, sticky="e", padx=(8, 0)
@@ -312,13 +359,12 @@ class ReceiverApp:
         ttk.Button(scan_controls, text="아래로", command=lambda: self._move_selected(self.scan_tree, self._scan_order, 1)).pack(side="left", padx=5)
         ttk.Button(scan_controls, text="대기열로 내리기", command=self._demote_selected).pack(side="left", padx=5)
         ttk.Button(scan_controls, text="선택 서류 삭제", command=lambda: self._delete_selected_documents(self.scan_tree)).pack(side="left", padx=5)
-        ttk.Button(scan_controls, text="선택 서류 스캔에 올리기", command=self._activate_selected).pack(side="right")
         wait_controls = ttk.Frame(self.wait_frame)
         wait_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(wait_controls, text="위로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, -1)).pack(side="left")
         ttk.Button(wait_controls, text="아래로", command=lambda: self._move_selected(self.wait_tree, self._queue_order, 1)).pack(side="left", padx=5)
         ttk.Button(wait_controls, text="선택 서류 삭제", command=lambda: self._delete_selected_documents(self.wait_tree)).pack(side="left", padx=5)
-        ttk.Button(wait_controls, text="스캔할 서류로 올리기 →", command=self._promote_selected).pack(side="right")
+        ttk.Button(wait_controls, text="스캔할 서류로 이동 → (ready 등록)", command=self._promote_selected).pack(side="right")
         self.completed_count = tk.StringVar(value="완료된 서류 0개")
         ttk.Label(tab, textvariable=self.completed_count).grid(row=2, column=0, sticky="e", pady=(8, 0))
 
@@ -436,13 +482,38 @@ class ReceiverApp:
                 item for item in undo_stack
                 if isinstance(item, dict) and isinstance(item.get("entries"), list)
             ]
-        active = state.get("active")
-        if isinstance(active, dict):
-            self._active = active
-            active_keys = self._active.get("keys") or [self._active.get("key", "")]
-            active_keys = [key for key in active_keys if isinstance(key, str)]
-            self._queue_order = [key for key in self._queue_order if key not in active_keys]
-            self._scan_order = list(dict.fromkeys([*active_keys, *self._scan_order]))
+        ready_jobs = state.get("ready_jobs")
+        if isinstance(ready_jobs, list):
+            self._ready_jobs = [
+                {"scanner_job_id": item["scanner_job_id"], "keys": item["keys"]}
+                for item in ready_jobs
+                if isinstance(item, dict)
+                and isinstance(item.get("scanner_job_id"), str)
+                and isinstance(item.get("keys"), list)
+                and all(isinstance(key, str) for key in item["keys"])
+            ]
+        else:
+            # Migrate the previous single-ready-job state format.
+            active = state.get("active")
+            if isinstance(active, dict):
+                scanner_job_id = active.get("scanner_job_id")
+                keys = active.get("keys") or [active.get("key", "")]
+                if isinstance(scanner_job_id, str) and isinstance(keys, list):
+                    self._ready_jobs = [{
+                        "scanner_job_id": scanner_job_id,
+                        "keys": [key for key in keys if isinstance(key, str)],
+                    }]
+        ready_keys = self._ready_document_keys()
+        self._queue_order = [item for item in self._queue_order if item not in ready_keys]
+        self._scan_order = list(dict.fromkeys([*ready_keys, *self._scan_order]))
+
+    def _ready_document_keys(self) -> set[str]:
+        return {
+            key
+            for job in self._ready_jobs
+            for key in job.get("keys", [])
+            if isinstance(key, str)
+        }
 
     def _save_queue_state(self) -> None:
         path = self._state_path()
@@ -452,7 +523,8 @@ class ReceiverApp:
                 "scan_order": self._scan_order,
                 "queue_order": self._queue_order,
                 "order": self._scan_order + self._queue_order,
-                "active": self._active,
+                "ready_jobs": self._ready_jobs,
+                "active": self._ready_jobs[0] if len(self._ready_jobs) == 1 else None,
                 "completed": sorted(self._completed),
                 "document_undo_stack": self._document_undo_stack,
             }, ensure_ascii=False, indent=2) + "\n",
@@ -463,21 +535,29 @@ class ReceiverApp:
         self._sync_active_scan()
         configured = all(self.config.get(key) for key in ("relay_url", "station_id", "token"))
         if (configured and not self._processing and not self._clearing_received
+                and not self._correction_busy
                 and monotonic() >= self._retry_after):
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
         self.root.after(2000, self._poll_inbox)
 
     def _receive_relay_work(self) -> None:
+        new_job_id: str | None = None
+        cleanup_notice = ""
         try:
+            def progress(done: int, total: int, unit: str) -> None:
+                self.root.after(0, self._update_receive_progress, done, total, unit)
+
             job_dir, manifest = receive_work_package(
                 {"relay_url": self.config["relay_url"], "token": self.config["token"]},
                 self.config["station_id"], Path(self.config["work_path"]),
                 cancel_event=self._cancel_receive,
+                progress=progress,
             ) or (None, None)
             if job_dir is None:
                 self.root.after(0, self._receive_finished, None)
                 return
+            self.root.after(0, self._set_receive_progress_stage, "전송 완료 · 검증/압축 해제/저장 중")
             applied_marker = job_dir / "applied.json"
             if not applied_marker.exists():
                 if self._cancel_receive.is_set():
@@ -502,13 +582,17 @@ class ReceiverApp:
                         values=manifest.get("reviewed_values", {}), path=report_path,
                     )
                     self._apply_sk_report(report_path)
+                    applied_details = {}
                 elif manifest.get("carrier") == "KT":
-                    self._apply_kt_result(job_dir, manifest)
+                    applied_details = {
+                        "kt_element_id": self._apply_kt_result(job_dir, manifest),
+                    }
                 else:
                     raise ValueError("지원하지 않는 포탈 작업입니다.")
                 applied_marker.write_text(
                     json.dumps({"carrier": manifest["carrier"],
-                                "applied_at": datetime.now().isoformat(timespec="seconds")},
+                                "applied_at": datetime.now().isoformat(timespec="seconds"),
+                                **applied_details},
                                ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
@@ -516,33 +600,118 @@ class ReceiverApp:
                 {"relay_url": self.config["relay_url"], "token": self.config["token"]},
                 self.config["station_id"], str(manifest["job_id"]),
             )
+            new_job_id = str(manifest["job_id"])
+            try:
+                self._delete_previous_received_data(job_dir)
+            except (OSError, RuntimeError, ValueError) as exc:
+                cleanup_notice = f"이전 받은 자료 자동 정리 일부 실패 · {exc}"
             outcome = f"{manifest['carrier']} 저장 완료 · {manifest['job_id']}"
             self._retry_after = 0.0
         except Exception as exc:
             outcome = f"Relay 수신/적용 실패 · {exc}"
             self._retry_after = monotonic() + 30
-        self.root.after(0, self._receive_finished, outcome)
+        self.root.after(0, self._receive_finished, outcome, new_job_id, cleanup_notice)
+
+    def _update_receive_progress(self, done: int, total: int, unit: str) -> None:
+        if total <= 0:
+            return
+        if not self.receive_progress_frame.winfo_ismapped():
+            self._receive_progress_started = monotonic()
+            self.receive_progress_frame.grid()
+        done = max(0, min(done, total))
+        percent = done * 100.0 / total
+        self.receive_progress_bar.configure(value=percent)
+        if done >= total:
+            self.receive_progress_label.set("전송 완료 · 검증/압축 해제/저장 중")
+            return
+        elapsed = max(0.001, monotonic() - self._receive_progress_started)
+        rate = done / elapsed
+        remaining = (total - done) / rate if rate > 0 else None
+        if unit == "bytes":
+            amount = f"{done / (1024 * 1024):.1f}/{total / (1024 * 1024):.1f} MiB"
+            speed = f"{rate / (1024 * 1024):.1f} MiB/s"
+        else:
+            amount = f"{done}/{total}페이지"
+            speed = f"{rate:.1f}페이지/s"
+        eta = self._format_receive_eta(remaining)
+        self.receive_progress_label.set(
+            f"Relay 수신 {percent:.0f}% · {amount} · {speed} · 약 {eta} 남음"
+        )
+
+    @staticmethod
+    def _format_receive_eta(seconds: float | None) -> str:
+        if seconds is None:
+            return "계산 중"
+        seconds = max(0, int(seconds + 0.5))
+        if seconds < 60:
+            return f"{seconds}초"
+        minutes, remainder = divmod(seconds, 60)
+        return f"{minutes}분 {remainder}초"
+
+    def _set_receive_progress_stage(self, message: str) -> None:
+        self.receive_progress_frame.grid()
+        self.receive_progress_label.set(message)
+        self.receive_progress_bar.configure(value=100)
+
+    def _delete_previous_received_data(self, current_job: Path) -> None:
+        """Remove older local packages and staged scans after a new job is applied."""
+        work_root = Path(self.config["work_path"]).expanduser().resolve()
+        jobs_root = work_root / "jobs"
+        current_job = current_job.resolve()
+        if jobs_root.is_symlink():
+            raise ValueError("Receiver jobs 폴더가 바로가기로 연결되어 있어 이전 자료를 정리하지 않았습니다.")
+        if jobs_root.exists():
+            for old_job in jobs_root.iterdir():
+                if old_job.resolve() == current_job:
+                    continue
+                if old_job.is_symlink():
+                    old_job.unlink()
+                elif old_job.is_dir():
+                    shutil.rmtree(old_job)
+                else:
+                    old_job.unlink()
+
+        ready_value = self.config.get("scanner_ready_path", "").strip()
+        if not ready_value:
+            return
+        ready = Path(ready_value).expanduser()
+        if ready.is_symlink() or ready.name.casefold() != "ready" or ready.resolve() == Path(ready.anchor):
+            raise ValueError("가상 스캐너 ready 경로가 안전한 폴더가 아니어서 기존 스캔 자료를 정리하지 않았습니다.")
+        if ready.is_dir():
+            for item in ready.iterdir():
+                if item.is_symlink() or not item.is_dir():
+                    item.unlink()
+                else:
+                    shutil.rmtree(item)
 
     def _sync_active_scan(self) -> None:
-        if not self._active:
+        if not self._ready_jobs:
             return
         ready = Path(self.config.get("scanner_ready_path", ""))
         if not ready.is_dir():
             return
-        if (ready / self._active.get("scanner_job_id", "")).exists():
+        remaining: list[dict[str, object]] = []
+        finished_keys: list[str] = []
+        for job in self._ready_jobs:
+            scanner_job_id = str(job.get("scanner_job_id", ""))
+            if scanner_job_id and (ready / scanner_job_id).exists():
+                remaining.append(job)
+            else:
+                finished_keys.extend(
+                    key for key in job.get("keys", []) if isinstance(key, str)
+                )
+        if not finished_keys:
             return
-        keys = self._active.get("keys") or [self._active.get("key", "")]
-        for key in keys:
-            if key:
-                self._completed.add(str(key))
-        self._active = None
+        for key in finished_keys:
+            self._completed.add(key)
+        self._ready_jobs = remaining
         self._save_queue_state()
-        for key in keys:
+        for key in finished_keys:
             if self.scan_tree.exists(str(key)):
                 self.scan_tree.delete(str(key))
             if self.wait_tree.exists(str(key)):
                 self.wait_tree.delete(str(key))
-        self.status.set("가상 스캐너가 작업 완료를 확인했습니다")
+        self.status.set(f"가상 스캐너 작업 완료 확인 · 서류 {len(finished_keys)}개")
 
     def _apply_sk_report(self, source: Path) -> None:
         target = Path(self.config["sk_report_path"]).expanduser()
@@ -560,7 +729,9 @@ class ReceiverApp:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _apply_kt_result(self, job_dir: Path, manifest: dict) -> None:
+    def _apply_kt_result(
+        self, job_dir: Path, manifest: dict, *, target_element_id: str | None = None,
+    ) -> str:
         image_path = self._job_file(job_dir, str(manifest.get("identity_image", "")))
         values = manifest.get("reviewed_values")
         code = manifest.get("id_type_code")
@@ -585,11 +756,13 @@ class ReceiverApp:
         backup.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(database, timeout=5.0) as source, sqlite3.connect(backup) as target:
             source.backup(target)
-        save_kt_submission(
+        _, new_element_id = save_kt_submission(
             result, detection, values,
             database_path=database,
             image_directory=images,
+            target_element_id=target_element_id,
         )
+        return new_element_id
 
     @staticmethod
     def _job_file(job_dir: Path, relative_name: str) -> Path:
@@ -599,13 +772,31 @@ class ReceiverApp:
             raise ValueError(f"작업 패키지 파일을 찾지 못했습니다: {relative_name}")
         return target
 
-    def _receive_finished(self, outcome: str | None) -> None:
+    def _receive_finished(
+        self,
+        outcome: str | None,
+        new_job_id: str | None = None,
+        cleanup_notice: str = "",
+    ) -> None:
         self._processing = False
+        self.receive_progress_frame.grid_remove()
+        self.receive_progress_bar.configure(value=0)
         if self._pending_received_reset is not None:
             self._finish_received_reset()
             return
+        if new_job_id:
+            self._scan_order.clear()
+            self._queue_order.clear()
+            self._completed.clear()
+            self._document_undo_stack.clear()
+            self._ready_jobs.clear()
+            self._selected_job_id = new_job_id
+            self._save_queue_state()
         if outcome:
-            self.status.set(outcome)
+            self.status.set(cleanup_notice or (
+                f"{outcome} · 이전 신분증/PDF/ready 자료 자동 삭제"
+                if new_job_id else outcome
+            ))
             self._refresh_queue()
 
     def _retry_failed(self) -> None:
@@ -618,6 +809,13 @@ class ReceiverApp:
 
     def _reset_received_data(self) -> None:
         if self._clearing_received:
+            return
+        if self._correction_busy:
+            messagebox.showinfo(
+                "수정 적용 중",
+                "수신기 수정 저장이 끝난 뒤 초기화할 수 있습니다.",
+                parent=self.root,
+            )
             return
 
         ready_value = self.config.get("scanner_ready_path", "").strip()
@@ -717,7 +915,7 @@ class ReceiverApp:
             self._queue_order.clear()
             self._completed.clear()
             self._document_undo_stack.clear()
-            self._active = None
+            self._ready_jobs.clear()
             self._drag_start = None
             self._selected_job_id = ""
             self._photo = None
@@ -815,9 +1013,7 @@ class ReceiverApp:
         ]
         known = set(self._scan_order) | set(self._queue_order) | self._completed
         self._queue_order.extend(key for key in self._items if key not in known)
-        active_keys = set()
-        if self._active:
-            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        active_keys = self._ready_document_keys()
         for key, item in self._items.items():
             if key in active_keys:
                 item["state"] = "스캔 중"
@@ -839,7 +1035,7 @@ class ReceiverApp:
                 "", "end", iid=key,
                 text=_display_text(document.get("source_name") or document.get("label", "서류")),
                 values=(document.get("page_count", 0), item["carrier"],
-                        "스캔 중" if key in active_keys else idle_state),
+                        "ready 대기" if key in active_keys else idle_state),
             )
 
     def _is_document_deleted(self, key: str) -> bool:
@@ -858,9 +1054,7 @@ class ReceiverApp:
         if not keys:
             return "break"
 
-        active_keys = set()
-        if self._active:
-            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        active_keys = self._ready_document_keys()
         if active_keys.intersection(keys):
             messagebox.showinfo(
                 "스캔 진행 중", "현재 스캔 중인 서류는 삭제할 수 없습니다.", parent=self.root,
@@ -1053,6 +1247,8 @@ class ReceiverApp:
         self._show_job(self._job_labels.get(self.job_box.get(), ""))
 
     def _show_job(self, job_id: str) -> None:
+        if not self._correction_busy:
+            self._set_identity_editing(False)
         self._selected_job_id = job_id
         job = self._jobs.get(job_id)
         if job is None:
@@ -1061,6 +1257,7 @@ class ReceiverApp:
             for variable in self.identity_vars.values():
                 variable.set("")
             self.identity_hint.set("아직 표시할 접수 결과가 없습니다.")
+            self._set_identity_editing(False)
             return
         manifest = job["manifest"]
         image_name = manifest.get("identity_image", "")
@@ -1077,14 +1274,259 @@ class ReceiverApp:
         detection = manifest.get("id_type_detection", {})
         if not isinstance(detection, dict):
             detection = {}
-        code = str(manifest.get("id_type_code", ""))
-        id_type = detection.get("name") or ID_TYPES.get(code, {}).get("name") or values.get("idType", "")
-        self.identity_vars["id_type"].set(_display_text(id_type))
-        for key in ("custNm", "ctzCorpNum", "addr", "isueDt", "drvLicenIsueNum", "isuePlc", "veteranNum"):
+        code = str(values.get("kaitIdType") or manifest.get("id_type_code", ""))
+        id_type = ID_TYPES.get(code, {}).get("name") or detection.get("name") or values.get("idType", "")
+        type_label = next(
+            (label for label, item_code in self._identity_type_label_to_code.items()
+             if item_code == code),
+            "",
+        )
+        self.identity_vars["id_type"].set(type_label or _display_text(id_type))
+        for key in (
+            "custNm", "ctzCorpNum", "addr", "isueDt", "drvLicenIsueNum",
+            "isuePlc", "veteranNum", "mskPos",
+        ):
             self.identity_vars[key].set(_display_text(values.get(key, "")))
         document_count = len(manifest.get("documents", [])) if isinstance(manifest.get("documents"), list) else 0
+        correction_hint = (
+            "수신 PC에서 수정 가능"
+            if self._job_can_correct(job)
+            else "구버전 KT 작업 · 최초 적용 행 ID가 없어 수정은 새 전송부터 가능"
+        )
         self.identity_hint.set(
-            f"{manifest.get('carrier', '')} 접수 · 서류 폴더 {document_count}개 · 작업 {job_id[:8]}"
+            f"{manifest.get('carrier', '')} 접수 · 서류 폴더 {document_count}개 · 작업 {job_id[:8]} · {correction_hint}"
+        )
+        self._set_identity_editing(False)
+
+    @staticmethod
+    def _job_can_correct(job: dict) -> bool:
+        manifest = job.get("manifest", {})
+        carrier = job.get("carrier") or (
+            manifest.get("carrier") if isinstance(manifest, dict) else None
+        )
+        if carrier == "SK":
+            return True
+        if carrier != "KT":
+            return False
+        try:
+            marker = json.loads((job["job_dir"] / "applied.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return False
+        return (
+            isinstance(marker, dict)
+            and isinstance(marker.get("kt_element_id"), str)
+            and bool(marker["kt_element_id"])
+        )
+
+    def _set_identity_editing(self, editing: bool) -> None:
+        self._identity_editing = editing
+        busy = self._correction_busy
+        job = self._jobs.get(getattr(self, "_selected_job_id", ""))
+        selected = job is not None and self._job_can_correct(job)
+        for entry in self._identity_entries.values():
+            entry.configure(state="normal" if editing and not busy else "readonly")
+        self.identity_type_box.configure(
+            state="readonly" if editing and not busy else "disabled"
+        )
+        self.job_box.configure(state="disabled" if editing or busy else "readonly")
+        self.edit_identity_button.configure(
+            state="normal" if selected and not editing and not busy else "disabled"
+        )
+        self.cancel_identity_edit_button.configure(
+            state="normal" if editing and not busy else "disabled"
+        )
+        self.save_identity_edit_button.configure(
+            state="normal" if editing and not busy else "disabled"
+        )
+
+    def _begin_identity_edit(self) -> None:
+        if self._selected_job_id not in self._jobs or self._correction_busy:
+            return
+        self._set_identity_editing(True)
+        self.identity_hint.set(
+            "값을 수정한 뒤 ‘수정 적용’을 누르면 이 접수 건의 SK 보고서 또는 KT DB/JPG에 반영됩니다."
+        )
+
+    def _cancel_identity_edit(self) -> None:
+        if self._correction_busy:
+            return
+        self._show_job(self._selected_job_id)
+
+    def _save_identity_edit(self) -> None:
+        job = self._jobs.get(self._selected_job_id)
+        if job is None or not self._identity_editing or self._correction_busy:
+            return
+        code = self._identity_type_label_to_code.get(self.identity_vars["id_type"].get())
+        if code not in ID_TYPES:
+            messagebox.showwarning("신분증 종류 확인", "신분증 종류를 선택하세요.", parent=self.root)
+            return
+        manifest = dict(job["manifest"])
+        original_values = manifest.get("reviewed_values", {})
+        values = dict(original_values) if isinstance(original_values, dict) else {}
+        values.update({
+            key: self.identity_vars[key].get()
+            for key in (
+                "custNm", "ctzCorpNum", "addr", "isueDt", "drvLicenIsueNum",
+                "isuePlc", "veteranNum", "mskPos",
+            )
+        })
+        values["kaitIdType"] = code
+        values["recogSubCd"] = code
+        values["idType"] = ID_TYPES[code]["type"]
+        values["nationClCd"] = "F" if code == "1401" else "I"
+        carrier = str(manifest.get("carrier", ""))
+        explanation = (
+            "SK sk_report.txt를 수정하고 기존 파일은 백업합니다."
+            if carrier == "SK"
+            else "최초 적용한 같은 KT DB 행과 ORG.jpg/CR.jpg를 수정하고 변경 전 파일은 백업합니다."
+        )
+        if not messagebox.askyesno(
+            "수정 내용 적용",
+            f"작업 {self._selected_job_id[:8]}의 수정값을 적용할까요?\n\n{explanation}\n"
+            "이 수정은 중앙 PC로 되돌아가지 않습니다.",
+            parent=self.root,
+        ):
+            return
+        self._correction_busy = True
+        self._set_identity_editing(False)
+        self.status.set("수신 PC 수정값 저장 중…")
+        Thread(
+            target=self._apply_identity_correction,
+            args=(self._selected_job_id, job["job_dir"], manifest, values, code),
+            daemon=True,
+        ).start()
+
+    def _apply_identity_correction(
+        self,
+        job_id: str,
+        job_dir: Path,
+        manifest: dict,
+        values: dict[str, str],
+        code: str,
+    ) -> None:
+        try:
+            carrier = str(manifest.get("carrier", ""))
+            image_path = self._job_file(job_dir, str(manifest.get("identity_image", "")))
+            result = OcrResult(job_id=job_id, image_path=image_path)
+            detection = IdTypeDetection(
+                name=ID_TYPES[code]["name"],
+                type_code=ID_TYPES[code]["type"],
+                candidate_codes=(code,),
+                preferred_code=code,
+            )
+            updated_manifest = dict(manifest)
+            updated_manifest["id_type_code"] = code
+            updated_manifest["id_type_detection"] = {
+                "name": detection.name,
+                "type_code": detection.type_code,
+                "candidate_codes": [code],
+                "preferred_code": code,
+            }
+            updated_manifest["reviewed_values"] = values
+
+            marker_path = job_dir / "applied.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker.get("carrier") != carrier:
+                raise ValueError("적용 완료 정보의 포탈이 작업 manifest와 다릅니다.")
+            history_path = (
+                Path(self.config["work_path"]).expanduser()
+                / "backups" / "receiver-corrections.json"
+            )
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                history = json.loads(history_path.read_text(encoding="utf-8"))
+                if not isinstance(history, list):
+                    raise ValueError("수정 이력 파일 형식이 올바르지 않습니다.")
+            except FileNotFoundError:
+                history = []
+            if carrier == "SK":
+                staged_report = job_dir / f".sk-correction-{uuid4().hex}.txt"
+                try:
+                    write_ocr_result(result, detection, values=values, path=staged_report)
+                    self._apply_sk_report(staged_report)
+                finally:
+                    staged_report.unlink(missing_ok=True)
+            elif carrier == "KT":
+                target_element_id = marker.get("kt_element_id")
+                if not isinstance(target_element_id, str) or not target_element_id:
+                    raise ValueError(
+                        "이 KT 작업은 최초 적용 행 ID가 기록되지 않은 구버전입니다. "
+                        "다른 접수 건을 잘못 수정하지 않도록 수정 적용을 중단했습니다."
+                    )
+                image_dir = Path(self.config["kt_image_directory"]).expanduser()
+                backup_dir = (
+                    Path(self.config["work_path"]).expanduser() / "backups"
+                    / f"kt_images_{job_id}_{datetime.now():%Y%m%d_%H%M%S_%f}"
+                )
+                image_backups: dict[str, Path] = {}
+                missing_images: set[str] = set()
+                for name in ("ORG.jpg", "CR.jpg"):
+                    source = image_dir / name
+                    if source.is_file():
+                        backup_dir.mkdir(parents=True, exist_ok=True)
+                        backup_path = backup_dir / name
+                        shutil.copy2(source, backup_path)
+                        image_backups[name] = backup_path
+                    else:
+                        missing_images.add(name)
+                try:
+                    self._apply_kt_result(
+                        job_dir, updated_manifest, target_element_id=target_element_id,
+                    )
+                except Exception:
+                    for name in missing_images:
+                        (image_dir / name).unlink(missing_ok=True)
+                    for name, backup_path in image_backups.items():
+                        shutil.copy2(backup_path, image_dir / name)
+                    raise
+                marker["corrected_at"] = datetime.now().isoformat(timespec="seconds")
+            else:
+                raise ValueError("지원하지 않는 포탈 작업입니다.")
+
+            corrected_at = datetime.now().isoformat(timespec="seconds")
+            history.append({
+                "job_id": job_id,
+                "corrected_at": corrected_at,
+                "carrier": carrier,
+                "before": manifest.get("reviewed_values", {}),
+                "after": values,
+            })
+            self._write_json_atomic(history_path, history)
+            self._write_json_atomic(job_dir / "manifest.json", updated_manifest)
+            self._write_json_atomic(marker_path, marker)
+            self.root.after(0, self._identity_correction_finished, job_id, "")
+        except Exception as exc:
+            self.root.after(0, self._identity_correction_finished, job_id, str(exc))
+
+    @staticmethod
+    def _write_json_atomic(path: Path, value: object) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+            )
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _identity_correction_finished(self, job_id: str, error: str) -> None:
+        self._correction_busy = False
+        self._set_identity_editing(False)
+        if error:
+            self.status.set("수신 PC 수정 적용 실패")
+            self._show_job(job_id)
+            messagebox.showerror(
+                "수정 적용 실패",
+                f"수정값을 적용하지 못했습니다. 백업과 업무 데이터 상태를 확인하세요.\n{error}",
+                parent=self.root,
+            )
+            return
+        self._refresh_queue()
+        self.status.set("수신 PC 수정값 적용 완료 · 중앙 PC에는 반영되지 않음")
+        messagebox.showinfo(
+            "수정 적용 완료",
+            "수정값을 이 접수 건에 적용했습니다. 변경 전 값은 로컬 수정 이력과 백업에 보관했습니다.",
+            parent=self.root,
         )
 
     def _render_identity_image(self, image: Image.Image) -> None:
@@ -1148,28 +1590,141 @@ class ReceiverApp:
         keys = [key for key in keys if key in source_order and key in self._items]
         if not keys:
             return
-        active_keys = set()
-        if self._active:
-            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
+        active_keys = self._ready_document_keys()
         if source_tree is self.scan_tree and active_keys.intersection(keys):
-            messagebox.showinfo("스캔 진행 중", "현재 스캔 중인 서류는 대기열로 옮길 수 없습니다.", parent=self.root)
+            messagebox.showinfo(
+                "ready 등록된 서류",
+                "ready에 등록된 서류는 스캔을 마친 뒤 대기열로 옮길 수 있습니다.",
+                parent=self.root,
+            )
             return
-        selected = set(keys)
-        source_order[:] = [key for key in source_order if key not in selected]
-        target_order.extend(key for key in keys if key not in target_order)
-        self._save_queue_state()
+
+        is_promoting = source_tree is self.wait_tree and target_tree is self.scan_tree
+        published: list[dict[str, object]] = []
+        previous_source = list(source_order)
+        previous_target = list(target_order)
+        previous_ready_jobs = list(self._ready_jobs)
+        try:
+            if is_promoting:
+                self._validate_ready_directory()
+                for key in keys:
+                    published.append(self._publish_ready_document(key))
+
+            selected = set(keys)
+            source_order[:] = [key for key in source_order if key not in selected]
+            target_order.extend(key for key in keys if key not in target_order)
+            if is_promoting:
+                self._ready_jobs.extend(published)
+                self._apply_ready_job_order()
+            self._save_queue_state()
+        except (OSError, ValueError, RuntimeError) as exc:
+            source_order[:] = previous_source
+            target_order[:] = previous_target
+            self._ready_jobs = previous_ready_jobs
+            for job in published:
+                shutil.rmtree(
+                    Path(self.config.get("scanner_ready_path", ""))
+                    / str(job.get("scanner_job_id", "")),
+                    ignore_errors=True,
+                )
+            self._refresh_queue()
+            messagebox.showerror("ready 등록 실패", str(exc), parent=self.root)
+            return
+
         self._refresh_queue()
         for key in keys:
             target_tree.selection_add(key)
-        self.status.set(
-            f"{len(keys)}개 서류 폴더를 "
-            f"{'스캔할 서류' if target_tree is self.scan_tree else '스캔 서류 대기열'}로 옮겼습니다"
+        if is_promoting:
+            self.status.set(f"서류 {len(keys)}개를 스캔 목록으로 옮기고 ready에 등록했습니다")
+        else:
+            self.status.set(f"서류 {len(keys)}개를 스캔 서류 대기열로 옮겼습니다")
+
+    def _validate_ready_directory(self) -> Path:
+        ready_value = self.config.get("scanner_ready_path", "").strip()
+        if not ready_value:
+            raise ValueError("Receiver 설정에서 가상 스캐너 ready 폴더를 지정하세요.")
+        ready = Path(ready_value).expanduser()
+        ready.mkdir(parents=True, exist_ok=True)
+        known_ids = {
+            str(job.get("scanner_job_id", "")) for job in self._ready_jobs
+        }
+        unexpected = [
+            item.name for item in ready.iterdir()
+            if item.is_dir() and item.name not in known_ids
+        ]
+        if unexpected:
+            raise RuntimeError(
+                "ready 폴더에 Receiver가 관리하지 않는 작업이 있습니다. "
+                "기존 작업을 확인한 뒤 다시 옮기세요: " + ", ".join(unexpected[:5])
+            )
+        return ready
+
+    def _publish_ready_document(self, key: str) -> dict[str, object]:
+        ready = Path(self.config["scanner_ready_path"]).expanduser()
+        item = self._items[key]
+        document = item["document"]
+        pages = document.get("pages", [])
+        if not isinstance(pages, list) or not pages:
+            raise ValueError(f"{document.get('label', '서류')}에 JPG 페이지가 없습니다.")
+        if len(pages) > 100:
+            raise ValueError("가상 스캐너 작업은 한 번에 최대 100페이지까지 올릴 수 있습니다.")
+
+        scanner_job_id = uuid4().hex
+        staging = ready / f".{scanner_job_id}.incoming"
+        destination = ready / scanner_job_id
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+            page_manifest = []
+            for number, relative in enumerate(pages, start=1):
+                source = self._job_file(item["job_dir"], str(relative))
+                target = staging / f"{number:03d}.jpg"
+                shutil.copy2(source, target)
+                page_manifest.append({
+                    "number": number,
+                    "file": target.name,
+                    "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                })
+            manifest = {
+                "job_id": scanner_job_id,
+                "station_id": self.config["station_id"],
+                "source_name": _display_text(
+                    document.get("source_name", document.get("label", "documents"))
+                )[:255],
+                "document_keys": [key],
+                "dpi": 100,
+                "page_count": len(page_manifest),
+                "pages": page_manifest,
+            }
+            (staging / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(staging, destination)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return {"scanner_job_id": scanner_job_id, "keys": [key]}
+
+    def _apply_ready_job_order(self) -> None:
+        positions = {key: index for index, key in enumerate(self._scan_order)}
+        self._ready_jobs.sort(
+            key=lambda job: min(
+                (positions.get(key, len(positions)) for key in job.get("keys", [])),
+                default=len(positions),
+            )
         )
+        ready = Path(self.config["scanner_ready_path"]).expanduser()
+        base_ns = time_ns() - len(self._ready_jobs) * 1_000_000_000
+        for index, job in enumerate(self._ready_jobs):
+            directory = ready / str(job["scanner_job_id"])
+            if directory.is_dir():
+                stamp = base_ns + index * 1_000_000_000
+                os.utime(directory, ns=(stamp, stamp))
 
     def _reset_document_lists(self) -> None:
         self._sync_active_scan()
         ready = Path(self.config.get("scanner_ready_path", ""))
-        if self._active or (ready.is_dir() and any(ready.iterdir())):
+        if self._ready_jobs or (ready.is_dir() and any(ready.iterdir())):
             messagebox.showinfo(
                 "스캔 작업 진행 중",
                 "가상 스캐너 ready 폴더에 작업이 남아 있어 초기화하지 않았습니다.\n"
@@ -1275,17 +1830,13 @@ class ReceiverApp:
         key = selected[0] if selected else None
         if key is None or key not in order:
             return
-        active_keys = set()
-        if self._active:
-            active_keys = set(self._active.get("keys") or [self._active.get("key", "")])
-        if key in active_keys:
-            self.status.set("스캔 중인 서류는 순서를 바꿀 수 없습니다")
-            return
         index = order.index(key)
         new_index = index + offset
         if not 0 <= new_index < len(order):
             return
         order[index], order[new_index] = order[new_index], order[index]
+        if tree is self.scan_tree:
+            self._apply_ready_job_order()
         self._save_queue_state()
         self._refresh_queue()
         tree.selection_set(key)
@@ -1306,81 +1857,6 @@ class ReceiverApp:
         self._transfer_documents(
             self.scan_tree, self.wait_tree, self._scan_order, self._queue_order, keys,
         )
-
-    def _activate_selected(self) -> None:
-        self._sync_active_scan()
-        selected_keys = self._selected_keys(self.scan_tree, self._scan_order)
-        selected_keys = [key for key in selected_keys if key not in self._completed]
-        if not selected_keys or any(key not in self._items for key in selected_keys):
-            messagebox.showinfo("서류 선택", "‘스캔할 서류’ 칸에서 한 개 이상의 폴더를 선택하세요.", parent=self.root)
-            return
-        ready = Path(self.config.get("scanner_ready_path", ""))
-        if self._active and (ready / self._active.get("scanner_job_id", "")).exists():
-            messagebox.showinfo(
-                "기존 스캔 작업 대기",
-                "현재 스캔에 올린 서류의 전송이 끝난 뒤 다음 서류를 올릴 수 있습니다.",
-                parent=self.root,
-            )
-            return
-        if ready.is_dir():
-            occupied = [path for path in ready.iterdir() if path.is_dir()]
-            if occupied:
-                messagebox.showinfo(
-                    "스캐너 대기열 사용 중",
-                    "ready 폴더에 기존 작업이 있어 새 서류를 올리지 않았습니다. "
-                    "기존 작업을 먼저 완료하거나 Receiver 상태를 확인하세요.",
-                    parent=self.root,
-                )
-                return
-        selected_in_order = selected_keys
-        selected_items = [self._items[item_key] for item_key in selected_in_order]
-        scanner_job_id = uuid4().hex
-        staging = ready / f".{scanner_job_id}.incoming"
-        try:
-            ready.mkdir(parents=True, exist_ok=True)
-            destination = ready / scanner_job_id
-            staging.mkdir(parents=True, exist_ok=False)
-            page_manifest = []
-            source_names: list[str] = []
-            for item in selected_items:
-                document = item["document"]
-                pages = document.get("pages", [])
-                if not isinstance(pages, list) or not pages:
-                    raise ValueError(f"{document.get('label', '서류')}에 JPG 페이지가 없습니다.")
-                source_names.append(_display_text(document.get("source_name", document.get("label", "documents"))))
-                for relative in pages:
-                    source = self._job_file(item["job_dir"], str(relative))
-                    number = len(page_manifest) + 1
-                    name = f"{number:03d}.jpg"
-                    target = staging / name
-                    shutil.copy2(source, target)
-                    page_manifest.append({
-                        "number": number,
-                        "file": name,
-                        "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-                    })
-            manifest = {
-                "job_id": scanner_job_id,
-                "station_id": self.config["station_id"],
-                "source_name": " + ".join(source_names)[:255],
-                "dpi": 100,
-                "page_count": len(page_manifest),
-                "pages": page_manifest,
-            }
-            (staging / "manifest.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            os.replace(staging, destination)
-        except Exception as exc:
-            shutil.rmtree(staging, ignore_errors=True)
-            messagebox.showerror("스캐너 대기열 오류", str(exc), parent=self.root)
-            return
-        self._active = {"keys": selected_in_order, "scanner_job_id": scanner_job_id}
-        self._save_queue_state()
-        labels = [str(item["document"].get("label", "서류")) for item in selected_items]
-        self.status.set(f"스캔 대기 중 · {' + '.join(labels)}")
-        self._refresh_queue()
-
 
 def main() -> None:
     root = tk.Tk()

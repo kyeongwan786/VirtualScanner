@@ -70,16 +70,29 @@ class TransferCancelledError(TransferError):
 
 def _request(url: str, token: str, *, method: str = "GET",
              body: bytes | None = None, content_type: str | None = None,
-             response_limit: int = 64 * 1024) -> tuple[int, dict | bytes]:
+             response_limit: int = 64 * 1024,
+             on_download_chunk: Callable[[int], None] | None = None) -> tuple[int, dict | bytes]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if content_type:
         headers["Content-Type"] = content_type
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read(response_limit + 1)
-            if len(data) > response_limit:
-                raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+            if on_download_chunk is None:
+                data = response.read(response_limit + 1)
+                if len(data) > response_limit:
+                    raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+            else:
+                received = bytearray()
+                while True:
+                    block = response.read(min(256 * 1024, response_limit + 1 - len(received)))
+                    if not block:
+                        break
+                    received.extend(block)
+                    on_download_chunk(len(block))
+                    if len(received) > response_limit:
+                        raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+                data = bytes(received)
             if response.headers.get_content_type() == "application/json":
                 return response.status, json.loads(data.decode("utf-8")) if data else {}
             return response.status, data
@@ -383,6 +396,7 @@ def _receive_work_archive(
     archive_sha256: str,
     work_package: dict,
     cancel_event: Event | None,
+    progress: Callable[[int, int, str], None] | None,
 ) -> tuple[Path, dict]:
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["token"]
@@ -403,13 +417,33 @@ def _receive_work_archive(
 
     digest = hashlib.sha256()
     downloaded = 0
+    last_reported = 0
+    last_report_time = time.monotonic()
+    if progress:
+        progress(0, archive_size, "bytes")
     try:
         with os.fdopen(fd, "wb") as output:
             for number in range(1, chunk_count + 1):
                 check_cancelled()
                 url = (f"{relay_url}/v1/stations/{station}/jobs/"
                        f"{quote(job_id, safe='')}/pages/{number}")
-                status, content = _request(url, token, response_limit=MAX_PAGE_BYTES)
+                def on_download_chunk(size: int) -> None:
+                    nonlocal last_reported, last_report_time
+                    now = time.monotonic()
+                    current = downloaded + size_in_chunk[0] + size
+                    size_in_chunk[0] += size
+                    if (progress and (current == archive_size
+                                      or current - last_reported >= 256 * 1024
+                                      and now - last_report_time >= 0.2)):
+                        progress(current, archive_size, "bytes")
+                        last_reported = current
+                        last_report_time = now
+
+                size_in_chunk = [0]
+                status, content = _request(
+                    url, token, response_limit=MAX_PAGE_BYTES,
+                    on_download_chunk=on_download_chunk,
+                )
                 check_cancelled()
                 expected_length = min(MAX_PAGE_BYTES, archive_size - downloaded)
                 if (status != 200 or not isinstance(content, bytes)
@@ -418,6 +452,9 @@ def _receive_work_archive(
                 output.write(content)
                 digest.update(content)
                 downloaded += len(content)
+                if progress and downloaded > last_reported:
+                    progress(downloaded, archive_size, "bytes")
+                    last_reported = downloaded
             output.flush()
             os.fsync(output.fileno())
         if downloaded != archive_size or digest.hexdigest() != archive_sha256:
@@ -454,7 +491,9 @@ def _receive_work_archive(
 
 def receive_work_package(relay_config: dict[str, str], station_id: str,
                          work_path: Path,
-                         cancel_event: Event | None = None) -> tuple[Path, dict] | None:
+                         cancel_event: Event | None = None,
+                         progress: Callable[[int, int, str], None] | None = None
+                         ) -> tuple[Path, dict] | None:
     """Pull one assigned ZIP package, with compatibility for older page-wise jobs."""
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["token"]
@@ -530,6 +569,7 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             archive_sha256=archive_sha256,
             work_package=package,
             cancel_event=cancel_event,
+            progress=progress,
         )
     identity_name = package.get("identity_filename", "identity.jpg")
     if not isinstance(identity_name, str) or Path(identity_name).suffix.casefold() not in {".jpg", ".jpeg"}:
@@ -579,6 +619,8 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         "documents": normalized_documents,
     }
     station_path = quote(station_id, safe="")
+    if progress:
+        progress(0, page_count, "pages")
     for number in range(1, page_count + 1):
         check_cancelled()
         page_url = (f"{relay_url}/v1/stations/{station_path}/jobs/"
@@ -603,6 +645,8 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
                 os.unlink(temporary)
         if number == 1:
             manifest["identity_sha256"] = hashlib.sha256(content).hexdigest()
+        if progress:
+            progress(number, page_count, "pages")
     check_cancelled()
     (staging / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

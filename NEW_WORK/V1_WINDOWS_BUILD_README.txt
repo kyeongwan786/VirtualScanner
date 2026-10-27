@@ -10,11 +10,16 @@ V1은 예전 OCR 창에 현재 OCR 알고리즘을 적용한 OCR 전용 버전�
 ---------
 - SK: C:\SKT-UScan\agent\WEB-INF\classes\sk_report.txt 갱신
 - KT: C:\IMAGE\myCustomer.db의 T_SCAN_PAPER 갱신, C:\IMAGE\ORG.jpg와 CR.jpg 생성
+- 지원되는 신분증 종류는 미리보기에서 고정 크기 파란 크롭 영역을 표시합니다.
+  영역을 드래그해 옮기거나 영역 밖을 클릭해 새 위치를 지정한 뒤 저장하면,
+  SK의 idCrop 또는 KT의 CR.jpg에 해당 영역이 반영됩니다. 크롭 크기와 저장 크기는
+  신분증 종류별 규격을 사용하며, SK는 idCrop 대상 종류만 제공합니다.
+- 자동 얼굴 영역을 다시 쓰려면 "자동 영역 복원"을 누르세요.
 
 빌드
 ----
 이 V1 전용 ZIP을 풀고 Windows x64에서 Python 3.12 x64를 설치한 뒤
-build_windows.bat을 실행하세요.
+build_windows_v1.bat을 실행하세요. 이 스크립트는 V1 빌드를 명시적으로 선택합니다.
 성공하면 dist\new_work_v1\new_work_v1.exe가 생성됩니다.
 이 ZIP은 빌드 소스이며 완성된 Windows EXE를 포함하지 않습니다.
 
