@@ -1609,17 +1609,28 @@ class ReceiverApp:
         keys = [key for key in keys if key in source_order and key in self._items]
         if not keys:
             return
-        active_keys = self._ready_document_keys()
-        if source_tree is self.scan_tree and active_keys.intersection(keys):
-            messagebox.showinfo(
-                "ready 등록된 서류",
-                "ready에 등록된 서류는 스캔을 마친 뒤 대기열로 옮길 수 있습니다.",
-                parent=self.root,
-            )
-            return
-
         is_promoting = source_tree is self.wait_tree and target_tree is self.scan_tree
+        is_demoting = source_tree is self.scan_tree and target_tree is self.wait_tree
+        demoted_jobs = [
+            job for job in self._ready_jobs
+            if is_demoting and set(job.get("keys", [])).intersection(keys)
+        ]
+        if demoted_jobs:
+            # A staged copy is what the TWAIN source scans. Move it out of
+            # ready before returning the original received document to the wait
+            # list. If Acquire is already reading it, that scan can fail.
+            keys = list(dict.fromkeys(
+                key
+                for job in demoted_jobs
+                for key in job.get("keys", [])
+                if key in source_order and key in self._items
+            ))
+            if not keys:
+                return
+
         published: list[dict[str, object]] = []
+        quarantined: list[tuple[Path, Path]] = []
+        quarantine_root: Path | None = None
         previous_source = list(source_order)
         previous_target = list(target_order)
         previous_ready_jobs = list(self._ready_jobs)
@@ -1628,6 +1639,25 @@ class ReceiverApp:
                 self._validate_ready_directory()
                 for key in keys:
                     published.append(self._publish_ready_document(key))
+            elif demoted_jobs:
+                ready = self._validate_ready_directory()
+                if (ready.is_symlink() or ready.name.casefold() != "ready"
+                        or ready.resolve() == Path(ready.anchor)):
+                    raise ValueError("가상 스캐너 ready 경로가 안전한 폴더가 아닙니다.")
+                quarantine_root = ready.parent / f".ready-demoting-{uuid4().hex}"
+                quarantine_root.mkdir(parents=False, exist_ok=False)
+                for job in demoted_jobs:
+                    scanner_job_id = str(job.get("scanner_job_id", ""))
+                    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", scanner_job_id):
+                        raise ValueError("ready 작업 ID가 올바르지 않습니다.")
+                    staged = ready / scanner_job_id
+                    if not staged.exists():
+                        continue
+                    if staged.is_symlink() or not staged.is_dir():
+                        raise ValueError(f"ready 작업 폴더가 올바르지 않습니다: {scanner_job_id}")
+                    held = quarantine_root / scanner_job_id
+                    os.replace(staged, held)
+                    quarantined.append((held, staged))
 
             selected = set(keys)
             source_order[:] = [key for key in source_order if key not in selected]
@@ -1635,11 +1665,23 @@ class ReceiverApp:
             if is_promoting:
                 self._ready_jobs.extend(published)
                 self._apply_ready_job_order()
+            elif demoted_jobs:
+                demoted_ids = {str(job.get("scanner_job_id", "")) for job in demoted_jobs}
+                self._ready_jobs = [
+                    job for job in self._ready_jobs
+                    if str(job.get("scanner_job_id", "")) not in demoted_ids
+                ]
             self._save_queue_state()
         except (OSError, ValueError, RuntimeError) as exc:
             source_order[:] = previous_source
             target_order[:] = previous_target
             self._ready_jobs = previous_ready_jobs
+            for held, staged in reversed(quarantined):
+                if held.exists() and not staged.exists():
+                    try:
+                        os.replace(held, staged)
+                    except OSError:
+                        pass
             for job in published:
                 shutil.rmtree(
                     Path(self.config.get("scanner_ready_path", ""))
@@ -1649,12 +1691,19 @@ class ReceiverApp:
             self._refresh_queue()
             messagebox.showerror("ready 등록 실패", str(exc), parent=self.root)
             return
+        finally:
+            if quarantine_root is not None:
+                shutil.rmtree(quarantine_root, ignore_errors=True)
 
         self._refresh_queue()
         for key in keys:
             target_tree.selection_add(key)
         if is_promoting:
             self.status.set(f"서류 {len(keys)}개를 스캔 목록으로 옮기고 ready에 등록했습니다")
+        elif demoted_jobs:
+            self.status.set(
+                f"서류 {len(keys)}개를 대기열로 내렸습니다 · 스캔 중이었다면 해당 스캔은 실패할 수 있습니다"
+            )
         else:
             self.status.set(f"서류 {len(keys)}개를 스캔 서류 대기열로 옮겼습니다")
 
