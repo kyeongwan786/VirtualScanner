@@ -1666,10 +1666,10 @@ class NewWorkApp:
         self._resize_source_preview()
 
     def mark_reviewed(self) -> None:
-        if self.draft is None:
+        if self.version == "v1" and self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
-        if self._id_type_detection.code in {
+        if self.draft is not None and self._id_type_detection.code in {
             "1001", "1101", "1102", "1201", "1301", "1302", "1303",
         }:
             resident_number = "".join(
@@ -1686,10 +1686,17 @@ class NewWorkApp:
                 self._entries["ctzCorpNum"].focus_set()
                 return
         if self.version == "v1":
-            if not self.draft.result.lines:
+            if self.draft is None or not self.draft.result.lines:
                 messagebox.showinfo("OCR 결과 확인", "먼저 OCR을 실행해 결과를 확인하세요.")
                 return
             self._save_locally()
+            return
+        if self.draft is None and not self._document_jobs:
+            messagebox.showinfo(
+                "전송할 자료 없음",
+                "신분증 JPG 또는 PDF 서류를 하나 이상 추가하세요.",
+                parent=self.root,
+            )
             return
         store = self._selected_store()
         if store is None:
@@ -1718,21 +1725,26 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
-        if (not self.draft.result.lines
-                or any(item["status"] != "변환 완료" for item in self._document_jobs)):
+        ocr_pending = self.draft is not None and not self.draft.result.lines
+        documents_pending = any(
+            item["status"] != "변환 완료" for item in self._document_jobs
+        )
+        if ocr_pending or documents_pending:
             self._pending_auto_send = (store, self.portal_var.get())
             self.save_button.configure(state="disabled", text="준비되면 자동 전송")
             self._set_transfer_controls(False)
-            self.review_status.set("OCR 및 PDF 변환 완료 후 자동으로 선택 PC에 전송합니다…")
+            self.review_status.set("신분증 OCR 및 PDF 변환이 끝나면 선택 PC로 전송합니다…")
             self._try_start_pending_auto_send()
             return
         self._start_v2_transfer(store, self.portal_var.get())
 
     def _try_start_pending_auto_send(self) -> None:
         pending = self._pending_auto_send
-        if pending is None or self.draft is None:
+        if pending is None:
             return
-        if not self.draft.result.lines:
+        if self.draft is None and not self._document_jobs:
+            return
+        if self.draft is not None and not self.draft.result.lines:
             return
         failed = [item for item in self._document_jobs if item["status"] == "변환 실패"]
         if failed:
@@ -1755,8 +1767,21 @@ class NewWorkApp:
         self.review_status.set(message)
 
     def _start_v2_transfer(self, store: Store, carrier: str) -> None:
-        if self.draft is None or not self.draft.result.lines:
-            messagebox.showinfo("OCR 결과 확인", "OCR 결과가 없어 전송하지 않았습니다.", parent=self.root)
+        result = None
+        if self.draft is not None:
+            if not self.draft.result.lines:
+                messagebox.showinfo(
+                    "OCR 결과 확인", "신분증 OCR이 끝난 뒤 전송할 수 있습니다.",
+                    parent=self.root,
+                )
+                return
+            result = self.draft.result
+        if result is None and not self._document_jobs:
+            messagebox.showinfo(
+                "전송할 자료 없음",
+                "신분증 JPG 또는 PDF 서류를 하나 이상 추가하세요.",
+                parent=self.root,
+            )
             return
         incomplete = [
             str(item["source"].name)
@@ -1771,17 +1796,21 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
-        values = self._current_values()
-        if values.get("kaitIdType", "").strip() not in ID_TYPES:
+        values = self._current_values() if result is not None else {}
+        if result is not None and values.get("kaitIdType", "").strip() not in ID_TYPES:
             messagebox.showinfo(
                 "신분증 종류 확인",
                 "전송 전에 신분증 종류를 선택하고 OCR 항목을 확인하세요.",
                 parent=self.root,
             )
             return
-        result = self.draft.result
-        detection = self._id_type_detection
+        detection = (
+            self._id_type_detection
+            if result is not None else IdTypeDetection(None, None)
+        )
         documents = list(self._document_jobs)
+        session_id = self._document_job_id or str(uuid4())
+        self._document_job_id = session_id
         relay_config = dict(self.relay_config)
         transfer_job_id = str(uuid4())
         cancel_event = Event()
@@ -1793,7 +1822,7 @@ class NewWorkApp:
         self.review_status.set(f"Render Relay로 {carrier} 작업 전송 중…")
         Thread(
             target=self._send_work_package,
-            args=(store, carrier, result, detection, values, documents,
+            args=(store, carrier, session_id, result, detection, values, documents,
                   relay_config, transfer_job_id, cancel_event),
             daemon=True,
         ).start()
@@ -1847,7 +1876,8 @@ class NewWorkApp:
         self,
         store: Store,
         carrier: str,
-        result: OcrResult,
+        session_id: str,
+        result: OcrResult | None,
         detection: IdTypeDetection,
         values: dict[str, str],
         documents: list[dict[str, object]],
@@ -1856,7 +1886,7 @@ class NewWorkApp:
         cancel_event: Event,
     ) -> None:
         try:
-            job_root = default_job_directory() / result.job_id
+            job_root = default_job_directory() / session_id
             package_path = job_root / (
                 f"{transfer_job_id}_{carrier}.zip"
             )
@@ -1905,7 +1935,7 @@ class NewWorkApp:
             return
         finally:
             if cancel_event.is_set():
-                shutil.rmtree(default_job_directory() / result.job_id, ignore_errors=True)
+                shutil.rmtree(default_job_directory() / session_id, ignore_errors=True)
         if cancel_event.is_set():
             self.root.after(
                 0, self._work_package_cancelled,

@@ -9,6 +9,9 @@ KT CR.jpg는 기존 코드 크기 규격에 따라 유형 1001은 340×406, 그 
 320×420으로 저장합니다. 중앙에서 직접 배치한 크롭 좌표도 수신 이미지에 그대로
 적용합니다.
 
+신분증 없이 PDF만 전송된 패키지도 받습니다. 이때 SK/KT 결과는 수정하지 않고 PDF
+서류만 대기열에 추가하며, 신분증 결과 화면에는 서류 전용 작업임을 표시합니다.
+
 Windows x64에서 Python 3.12 x64를 설치하고 build_receiver_windows.bat을
 실행하세요. 결과는 dist\new_work_receiver\new_work_receiver.exe입니다.
 이 ZIP은 빌드 소스이며 완성된 Windows EXE는 포함하지 않습니다.

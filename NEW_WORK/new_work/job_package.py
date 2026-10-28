@@ -32,7 +32,7 @@ def create_work_package(
     job_id: str,
     station_id: str,
     carrier: str,
-    result: OcrResult,
+    result: OcrResult | None,
     detection: IdTypeDetection,
     reviewed_values: Mapping[str, str],
     document_jobs: Sequence[Mapping[str, object]],
@@ -44,6 +44,8 @@ def create_work_package(
         raise ValueError("대상 접수 PC가 지정되지 않았습니다.")
     if any(job.get("status") != "변환 완료" for job in document_jobs):
         raise ValueError("모든 서류 PDF 변환이 끝난 뒤 전송할 수 있습니다.")
+    if result is None and not document_jobs:
+        raise ValueError("신분증 또는 PDF 서류가 하나 이상 있어야 합니다.")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,10 +53,13 @@ def create_work_package(
         raise FileExistsError(output_path)
     package_root = output_path.parent / f"{output_path.stem}_payload"
     package_root.mkdir(parents=True, exist_ok=False)
-    identity_name = result.image_path.suffix.lower()
-    identity_path = package_root / "identity" / f"identity{identity_name}"
-    identity_path.parent.mkdir(parents=True, exist_ok=True)
-    identity_path.write_bytes(_jpeg_payload(result.image_path))
+    identity_relative: str | None = None
+    if result is not None:
+        identity_name = result.image_path.suffix.lower()
+        identity_path = package_root / "identity" / f"identity{identity_name}"
+        identity_path.parent.mkdir(parents=True, exist_ok=True)
+        identity_path.write_bytes(_jpeg_payload(result.image_path))
+        identity_relative = identity_path.relative_to(package_root).as_posix()
 
     document_entries: list[dict[str, object]] = []
     for index, item in enumerate(document_jobs, start=1):
@@ -94,10 +99,10 @@ def create_work_package(
             "preferred_code": detection.preferred_code,
         },
         "reviewed_values": dict(reviewed_values),
-        "identity_image": f"identity/identity{identity_name}",
+        "identity_image": identity_relative,
         "documents": document_entries,
     }
-    if carrier == "SK":
+    if carrier == "SK" and result is not None:
         report_path = package_root / "sk_report.txt"
         write_ocr_result(
             OcrResult(job_id=result.job_id, image_path=identity_path),

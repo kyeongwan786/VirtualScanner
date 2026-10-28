@@ -562,7 +562,14 @@ class ReceiverApp:
             if not applied_marker.exists():
                 if self._cancel_receive.is_set():
                     raise RuntimeError("받은 자료 초기화 요청으로 Relay 적용을 취소했습니다.")
-                if manifest.get("carrier") == "SK":
+                identity_image = manifest.get("identity_image")
+                has_identity = isinstance(identity_image, str) and bool(identity_image)
+                documents = manifest.get("documents", [])
+                if not has_identity:
+                    if not isinstance(documents, list) or not documents:
+                        raise ValueError("신분증과 PDF가 모두 없는 빈 작업입니다.")
+                    applied_details = {"identity_applied": False}
+                elif manifest.get("carrier") == "SK":
                     identity = self._job_file(job_dir, str(manifest.get("identity_image", "")))
                     detection_data = manifest.get("id_type_detection", {})
                     code = str(manifest.get("id_type_code", ""))
@@ -605,7 +612,10 @@ class ReceiverApp:
                 self._delete_previous_received_data(job_dir)
             except (OSError, RuntimeError, ValueError) as exc:
                 cleanup_notice = f"이전 받은 자료 자동 정리 일부 실패 · {exc}"
-            outcome = f"{manifest['carrier']} 저장 완료 · {manifest['job_id']}"
+            if manifest.get("identity_image"):
+                outcome = f"{manifest['carrier']} 저장 완료 · {manifest['job_id']}"
+            else:
+                outcome = f"PDF 서류 수신 완료 · {manifest['job_id']}"
             self._retry_after = 0.0
         except Exception as exc:
             outcome = f"Relay 수신/적용 실패 · {exc}"
@@ -1261,12 +1271,16 @@ class ReceiverApp:
             return
         manifest = job["manifest"]
         image_name = manifest.get("identity_image", "")
-        try:
-            image_path = self._job_file(job["job_dir"], str(image_name))
-            with Image.open(image_path) as image:
-                self._render_identity_image(image)
-        except (OSError, TypeError, ValueError) as exc:
-            self.preview.configure(image="", text=f"신분증 이미지를 열지 못했습니다\n{exc}")
+        if isinstance(image_name, str) and image_name:
+            try:
+                image_path = self._job_file(job["job_dir"], image_name)
+                with Image.open(image_path) as image:
+                    self._render_identity_image(image)
+            except (OSError, TypeError, ValueError) as exc:
+                self.preview.configure(image="", text=f"신분증 이미지를 열지 못했습니다\n{exc}")
+                self._photo = None
+        else:
+            self.preview.configure(image="", text="신분증 없이 PDF 서류만 받은 작업입니다")
             self._photo = None
         values = manifest.get("reviewed_values", {})
         if not isinstance(values, dict):
@@ -1288,11 +1302,14 @@ class ReceiverApp:
         ):
             self.identity_vars[key].set(_display_text(values.get(key, "")))
         document_count = len(manifest.get("documents", [])) if isinstance(manifest.get("documents"), list) else 0
-        correction_hint = (
-            "수신 PC에서 수정 가능"
-            if self._job_can_correct(job)
-            else "구버전 KT 작업 · 최초 적용 행 ID가 없어 수정은 새 전송부터 가능"
-        )
+        if not image_name:
+            correction_hint = "서류 전용 작업 · 신분증 결과는 변경하지 않음"
+        else:
+            correction_hint = (
+                "수신 PC에서 수정 가능"
+                if self._job_can_correct(job)
+                else "구버전 KT 작업 · 최초 적용 행 ID가 없어 수정은 새 전송부터 가능"
+            )
         self.identity_hint.set(
             f"{manifest.get('carrier', '')} 접수 · 서류 폴더 {document_count}개 · 작업 {job_id[:8]} · {correction_hint}"
         )
@@ -1301,6 +1318,8 @@ class ReceiverApp:
     @staticmethod
     def _job_can_correct(job: dict) -> bool:
         manifest = job.get("manifest", {})
+        if not isinstance(manifest, dict) or not manifest.get("identity_image"):
+            return False
         carrier = job.get("carrier") or (
             manifest.get("carrier") if isinstance(manifest, dict) else None
         )

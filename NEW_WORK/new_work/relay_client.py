@@ -116,14 +116,18 @@ def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, 
 
     identity_path = manifest.get("identity_image")
     documents = manifest.get("documents")
-    if not isinstance(identity_path, str) or not isinstance(documents, list):
-        raise TransferError("작업 패키지에 신분증 이미지 또는 서류 목록이 없습니다.")
-    page_paths = [identity_path]
+    if identity_path is not None and not isinstance(identity_path, str):
+        raise TransferError("작업 패키지 신분증 경로가 올바르지 않습니다.")
+    if not isinstance(documents, list):
+        raise TransferError("작업 패키지 서류 목록이 올바르지 않습니다.")
+    page_paths = [identity_path] if identity_path is not None else []
     document_entries = []
     for document in documents:
         if not isinstance(document, dict) or not isinstance(document.get("pages"), list):
             raise TransferError("PDF 페이지 목록 형식이 올바르지 않습니다.")
         numbers = []
+        if not document["pages"]:
+            raise TransferError("PDF 변환 페이지가 비어 있습니다.")
         for relative in document["pages"]:
             if not isinstance(relative, str):
                 raise TransferError("PDF 페이지 경로 형식이 올바르지 않습니다.")
@@ -140,6 +144,8 @@ def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, 
             "page_count": len(numbers),
             "page_numbers": numbers,
         })
+    if not page_paths:
+        raise TransferError("전송할 신분증 JPG 또는 PDF 페이지가 없습니다.")
     if len(page_paths) > MAX_PAGES:
         raise TransferError(f"신분증을 포함한 총 이미지가 {MAX_PAGES}장을 초과했습니다.")
     for path in page_paths:
@@ -164,8 +170,10 @@ def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, 
         "id_type_code": manifest.get("id_type_code"),
         "id_type_detection": manifest.get("id_type_detection", {}),
         "reviewed_values": manifest.get("reviewed_values", {}),
-        "identity_page": 1,
-        "identity_filename": PurePosixPath(identity_path).name,
+        "identity_page": 1 if identity_path is not None else None,
+        "identity_filename": (
+            PurePosixPath(identity_path).name if identity_path is not None else None
+        ),
         "documents": document_entries,
     }
     return work_package, page_paths
@@ -528,7 +536,13 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
     detection = package.get("id_type_detection")
     identity_page = package.get("identity_page")
     if (not isinstance(values, dict) or not isinstance(documents, list)
-            or not isinstance(detection, dict) or identity_page != 1):
+            or not isinstance(detection, dict)
+            or (identity_page is not None and (
+                not isinstance(identity_page, int)
+                or isinstance(identity_page, bool)
+                or identity_page != 1
+            ))
+            or (identity_page is None and not documents)):
         raise TransferError("Relay OCR 또는 서류 메타데이터가 올바르지 않습니다.")
 
     job_root = Path(work_path).expanduser() / "jobs"
@@ -571,13 +585,19 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             cancel_event=cancel_event,
             progress=progress,
         )
-    identity_name = package.get("identity_filename", "identity.jpg")
-    if not isinstance(identity_name, str) or Path(identity_name).suffix.casefold() not in {".jpg", ".jpeg"}:
-        raise TransferError("신분증 이미지 파일명이 올바르지 않습니다.")
-    identity_relative = f"identity/identity{Path(identity_name).suffix.lower()}"
-    page_map: dict[int, Path] = {1: Path(identity_relative)}
+    identity_name = package.get("identity_filename")
+    identity_relative: str | None = None
+    page_map: dict[int, Path] = {}
+    next_document_page = 1
+    if identity_page == 1:
+        if (not isinstance(identity_name, str)
+                or Path(identity_name).suffix.casefold() not in {".jpg", ".jpeg"}):
+            raise TransferError("신분증 이미지 파일명이 올바르지 않습니다.")
+        identity_relative = f"identity/identity{Path(identity_name).suffix.lower()}"
+        page_map[1] = Path(identity_relative)
+        next_document_page = 2
     normalized_documents: list[dict] = []
-    seen_page_numbers = {1}
+    seen_page_numbers = {1} if identity_page == 1 else set()
     for index, document in enumerate(documents, start=1):
         if not isinstance(document, dict):
             raise TransferError("서류 항목 형식이 올바르지 않습니다.")
@@ -590,7 +610,8 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         relative_pages = []
         for page_index, raw_number in enumerate(numbers, start=1):
             if (not isinstance(raw_number, int) or isinstance(raw_number, bool)
-                    or not 2 <= raw_number <= page_count or raw_number in seen_page_numbers):
+                    or not next_document_page <= raw_number <= page_count
+                    or raw_number in seen_page_numbers):
                 raise TransferError("Relay 서류 페이지 번호가 중복되거나 범위를 벗어났습니다.")
             seen_page_numbers.add(raw_number)
             relative = Path("documents") / document_id / f"{page_index:03d}.jpg"
@@ -643,7 +664,7 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-        if number == 1:
+        if number == 1 and identity_relative is not None:
             manifest["identity_sha256"] = hashlib.sha256(content).hexdigest()
         if progress:
             progress(number, page_count, "pages")
@@ -732,11 +753,20 @@ def _extract_work_archive(
 
         expected_images: list[str] = []
         identity = manifest.get("identity_image")
-        if not isinstance(identity, str):
-            raise TransferError("Relay ZIP에 신분증 이미지 경로가 없습니다.")
-        expected_images.append(identity)
+        if identity is not None:
+            if not isinstance(identity, str):
+                raise TransferError("Relay ZIP 신분증 이미지 경로가 올바르지 않습니다.")
+            expected_images.append(identity)
+        if work_package.get("identity_page") != (1 if identity is not None else None):
+            raise TransferError("Relay ZIP 신분증 페이지 메타데이터가 일치하지 않습니다.")
+        if work_package.get("identity_filename") != (
+            PurePosixPath(identity).name if identity is not None else None
+        ):
+            raise TransferError("Relay ZIP 신분증 파일명 메타데이터가 일치하지 않습니다.")
         for document in manifest["documents"]:
-            if not isinstance(document, dict) or not isinstance(document.get("pages"), list):
+            if (not isinstance(document, dict)
+                    or not isinstance(document.get("pages"), list)
+                    or not document["pages"]):
                 raise TransferError("Relay ZIP 서류 목록 형식이 올바르지 않습니다.")
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(document.get("document_id", ""))):
                 raise TransferError("Relay ZIP 서류 작업 ID가 올바르지 않습니다.")
@@ -744,7 +774,7 @@ def _extract_work_archive(
                 if not isinstance(relative, str):
                     raise TransferError("Relay ZIP 서류 페이지 경로가 올바르지 않습니다.")
                 expected_images.append(relative)
-        if not 1 <= len(expected_images) <= MAX_PAGES:
+        if not expected_images or len(expected_images) > MAX_PAGES:
             raise TransferError(f"Relay ZIP 이미지 수가 {MAX_PAGES}장을 초과했습니다.")
         if len(set(expected_images)) != len(expected_images):
             raise TransferError("Relay ZIP manifest에서 이미지 경로가 중복되었습니다.")
@@ -806,9 +836,10 @@ def _extract_work_archive(
                 image.seek(-2, os.SEEK_END)
                 if image.read(2) != b"\xff\xd9":
                     raise TransferError(f"Relay ZIP 이미지가 올바른 JPG가 아닙니다: {relative}")
-        identity_digest = hashlib.sha256()
-        with staging.joinpath(*PurePosixPath(identity).parts).open("rb") as image:
-            while chunk := image.read(1024 * 1024):
-                identity_digest.update(chunk)
-        manifest["identity_sha256"] = identity_digest.hexdigest()
+        if identity is not None:
+            identity_digest = hashlib.sha256()
+            with staging.joinpath(*PurePosixPath(identity).parts).open("rb") as image:
+                while chunk := image.read(1024 * 1024):
+                    identity_digest.update(chunk)
+            manifest["identity_sha256"] = identity_digest.hexdigest()
         return manifest
