@@ -489,7 +489,7 @@ class NewWorkApp:
         documents.rowconfigure(2, weight=1)
         ttk.Label(
             documents,
-            text="PDF는 별도로 관리되며 신분증 OCR과 동시에 변환됩니다.",
+            text="PDF를 이곳에 끌어다 놓거나 버튼으로 추가하세요. 신분증 OCR과 동시에 변환됩니다.",
             style="Muted.TLabel",
             wraplength=330,
         ).grid(row=0, column=0, sticky="w", pady=(0, 5))
@@ -1050,6 +1050,13 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
+        if self._transfer_cancel_event is not None or self._pending_confirmation is not None:
+            messagebox.showinfo(
+                "전송 처리 중",
+                "Receiver 적용이 확인된 뒤 새 신분증을 추가할 수 있습니다.",
+                parent=self.root,
+            )
+            return
         # If PDFs were added first, attach the ID image to that same job.
         reuse_job = self.draft is None and self._document_job_id is not None
         job_id = self._document_job_id if reuse_job else str(uuid4())
@@ -1078,9 +1085,16 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
+        if self._transfer_cancel_event is not None or self._pending_confirmation is not None:
+            messagebox.showinfo(
+                "전송 처리 중",
+                "Receiver 적용이 확인된 뒤 새 PDF를 추가할 수 있습니다.",
+                parent=self.root,
+            )
+            return
         if self._job_sent:
             messagebox.showinfo(
-                "새 작업 필요", "전송을 마친 작업에는 PDF를 추가할 수 없습니다. 새 신분증 작업을 시작하세요.",
+                "새 작업 필요", "전송을 마친 작업은 초기화 중입니다. 잠시 후 PDF를 추가하세요.",
                 parent=self.root,
             )
             return
@@ -2111,21 +2125,9 @@ class NewWorkApp:
             self.review_status.set(message)
             messagebox.showwarning("전송 취소 결과", message, parent=self.root)
             return
-        self._transfer_cancel_event = None
-        self._pending_auto_send = None
-        self._pending_confirmation = None
-        self.status_button.configure(state="disabled", text="전송 상태 확인")
-        self._set_transfer_controls(True)
-        self.pdf_button.configure(state="disabled")
-        self.save_button.configure(state="disabled", text="전송 완료")
-        self._job_sent = True
-        if self.draft is not None:
-            self.draft.mark_reviewed(values)
-        self.review_status.set(f"{store_name} Receiver에서 {carrier} 저장 완료 확인")
-        messagebox.showinfo(
-            "저장 완료",
-            f"{store_name} Receiver가 {carrier} 작업 적용을 완료했습니다.\n작업 ID: {job_id}",
-            parent=self.root,
+        self._clear_sender_session()
+        self.review_status.set(
+            f"{store_name} Receiver에서 {carrier} 저장 완료 · 다음 신분증/PDF를 끌어다 놓으세요"
         )
 
 def main(version: str = "v2") -> None:
