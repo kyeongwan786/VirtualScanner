@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import multiprocessing
 import secrets
@@ -212,7 +213,11 @@ def _backend_process(port: int, token: str) -> None:
     upload_root.mkdir(parents=True, exist_ok=True)
     temporary_uploads: dict[str, str] = {}
     batch_lock = threading.RLock()
-    batch_ocr_lock = threading.Lock()
+    batch_ocr_adapters = [app.ocr, None]
+    batch_ocr_executors = [
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-ocr-1"),
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-ocr-2"),
+    ]
     batch: dict[str, object] = {
         "id": "", "portal": "SK", "status": "idle", "error": "", "items": [],
         "expected_count": 0,
@@ -228,18 +233,18 @@ def _backend_process(port: int, token: str) -> None:
                 "expected_count": batch["expected_count"],
                 "items": [
                     {key: item.get(key) for key in (
-                        "id", "name", "ocr_status", "code", "type_label",
+                        "id", "index", "name", "ocr_status", "code", "type_label",
                         "send_status", "job_id", "error", "reviewed", "defer",
                     )}
                     | {"document_count": len(item.get("documents", []))}
-                    for item in items
+                    for item in sorted(items, key=lambda row: row.get("index", 0))
                 ],
             }
 
     def batch_item_payload(item_id: str) -> dict[str, object] | None:
         with batch_lock:
             item = next((row for row in batch["items"] if row["id"] == item_id), None)
-            if item is None:
+            if item is None or item.get("ocr_status") != "완료":
                 return None
             path = Path(item["path"])
             from PIL import ImageOps
@@ -377,7 +382,7 @@ def _backend_process(port: int, token: str) -> None:
         if app.relay_config is None:
             raise ValueError(app._relay_config_error or "Relay 설정을 확인하세요.")
         with batch_lock:
-            items = list(batch["items"])
+            items = sorted(batch["items"], key=lambda row: row.get("index", 0))
             if len(items) < 2 or batch["status"] not in {"reviewing", "partial"}:
                 raise ValueError("전송할 검토 묶음이 없습니다.")
             if len(items) != batch["expected_count"]:
@@ -681,6 +686,11 @@ def _backend_process(port: int, token: str) -> None:
                         with batch_lock:
                             if batch["status"] in {"sending", "partial", "checking"}:
                                 raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
+                            if any(
+                                row.get("ocr_status") in {"업로드 중", "대기 중", "인식 중"}
+                                for row in batch["items"]
+                            ):
+                                raise ValueError("진행 중인 OCR이 끝난 뒤 묶음을 취소하세요.")
                             batch_dir = (
                                 default_job_directory() / ".sender-batches" / str(batch["id"])
                             )
@@ -824,6 +834,11 @@ def _backend_process(port: int, token: str) -> None:
             filename = Path(query.get("name", [""])[0]).name
             batch_id = query.get("batch_id", [""])[0]
             item_id = query.get("item_id", [""])[0]
+            try:
+                item_index = int(query.get("index", ["0"])[0])
+            except ValueError:
+                self._reply(400, {"ok": False, "error": "신분증 순서 값이 올바르지 않습니다."})
+                return
             length = int(self.headers.get("Content-Length", "0"))
             allowed = {"identity": {".jpg", ".jpeg", ".png"}, "pdf": {".pdf"}}
             if kind not in allowed or Path(filename).suffix.casefold() not in allowed[kind]:
@@ -845,7 +860,9 @@ def _backend_process(port: int, token: str) -> None:
                         remaining -= len(chunk)
                 if kind == "identity":
                     if batch_id:
-                        self._add_batch_identity(batch_id, safe_name, temporary)
+                        self._add_batch_identity(
+                            batch_id, item_index, safe_name, temporary,
+                        )
                         self._reply(200, {"ok": True, "name": safe_name})
                         return
                     self._dispatch("web_identity", {"path": str(temporary)})
@@ -917,22 +934,22 @@ def _backend_process(port: int, token: str) -> None:
                 })
                 item["defer"] = True
 
-        def _add_batch_identity(self, requested_batch_id: str, filename: str, temporary: Path) -> None:
+        def _add_batch_identity(
+            self, requested_batch_id: str, item_index: int,
+            filename: str, temporary: Path,
+        ) -> None:
             from new_work.gui.app import (
-                FOCUS_FIELDS, FOCUS_GROUP_BY_CODE, ID_TYPE_CODE_TO_LABEL,
-                ID_TYPE_LABEL_TO_CODE, recognize_identity_for_review,
-            )
-            from new_work.carrier.sk_report import SK_ID_CROP_CODES
-            from new_work.image.face_crop import (
-                id_portrait_bounds, id_portrait_fallback_bounds, id_portrait_size,
+                ID_TYPE_LABEL_TO_CODE,
             )
             from PIL import ImageOps
 
             with batch_lock:
                 if requested_batch_id != batch["id"] or batch["status"] != "reviewing":
                     raise ValueError("여러 신분증 검토 작업이 만료되었습니다. 다시 선택하세요.")
-                if len(batch["items"]) >= 50:
-                    raise ValueError("한 번에 보낼 수 있는 신분증은 최대 50장입니다.")
+                if not 0 <= item_index < int(batch["expected_count"]):
+                    raise ValueError("신분증 순서 값이 올바르지 않습니다.")
+                if any(row.get("index") == item_index for row in batch["items"]):
+                    raise ValueError("같은 신분증 업로드가 중복되었습니다.")
                 item_id = str(uuid4())
                 batch_dir = default_job_directory() / ".sender-batches" / requested_batch_id / item_id
                 image_dir = batch_dir / "identity"
@@ -944,19 +961,70 @@ def _backend_process(port: int, token: str) -> None:
                 ) + temporary.stat().st_size
                 if total_bytes > 512 * 1024 * 1024:
                     raise ValueError("신분증 묶음이 512 MiB 제한을 초과합니다.")
-                from PIL import ImageOps
+                item = {
+                    "id": item_id, "index": item_index, "name": filename,
+                    "path": destination, "result": None, "detection": None,
+                    "values": {}, "code": None, "type_label": "",
+                    "crop_bounds": None, "crop_size": None,
+                    "crop_fallback": False, "crop_manual": False,
+                    "width": 0, "height": 0,
+                    "ocr_status": "업로드 중", "send_status": "대기", "job_id": "",
+                    "error": "", "reviewed": False, "defer": False,
+                    "documents": [], "fields": [],
+                    "id_type_options": ["유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()],
+                }
+                batch["items"].append(item)
+            try:
                 with Image.open(temporary) as opened:
                     staged = ImageOps.exif_transpose(opened).convert("RGB")
                     staged.save(destination, format="JPEG", quality=95, optimize=True)
                 temporary.unlink(missing_ok=True)
+            except Exception as exc:
+                shutil.rmtree(batch_dir, ignore_errors=True)
+                with batch_lock:
+                    if requested_batch_id == batch["id"]:
+                        item["ocr_status"] = "실패"
+                        item["error"] = str(exc)
+                raise
 
-            if not app._ocr_warmup_finished or not app._ocr_models_ready:
-                raise ValueError("OCR 모델 준비가 끝나지 않았습니다. 잠시 뒤 다시 시도하세요.")
+            with batch_lock:
+                if requested_batch_id != batch["id"]:
+                    shutil.rmtree(batch_dir, ignore_errors=True)
+                    raise ValueError("여러 신분증 검토 작업이 만료되었습니다.")
+                item["ocr_status"] = "대기 중"
+                worker_index = item_index % len(batch_ocr_executors)
+                batch_ocr_executors[worker_index].submit(
+                    _recognize_batch_identity, item, worker_index, requested_batch_id,
+                )
+
+        def _recognize_batch_identity(
+            item: dict[str, object], worker_index: int, requested_batch_id: str,
+        ) -> None:
+            from new_work.gui.app import (
+                FOCUS_FIELDS, FOCUS_GROUP_BY_CODE, ID_TYPE_CODE_TO_LABEL,
+                recognize_identity_for_review,
+            )
+            from new_work.ocr.adapter import PaddleOcrAdapter
+            from new_work.carrier.sk_report import SK_ID_CROP_CODES
+            from new_work.image.face_crop import (
+                id_portrait_bounds, id_portrait_fallback_bounds, id_portrait_size,
+            )
+            from PIL import ImageOps
+
+            destination = Path(item["path"])
             try:
-                with batch_ocr_lock:
-                    ocr_result, detection, values = recognize_identity_for_review(
-                        app.ocr, destination,
-                    )
+                with batch_lock:
+                    if requested_batch_id != batch["id"]:
+                        return
+                    item["ocr_status"] = "인식 중"
+                if worker_index == 1 and batch_ocr_adapters[worker_index] is None:
+                    adapter = PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5")
+                    adapter.warmup()
+                    batch_ocr_adapters[worker_index] = adapter
+                adapter = batch_ocr_adapters[worker_index]
+                ocr_result, detection, values = recognize_identity_for_review(
+                    adapter, destination,
+                )
                 with Image.open(destination) as opened:
                     source_image = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = source_image.size
@@ -990,22 +1058,20 @@ def _backend_process(port: int, token: str) -> None:
                 )
                 with batch_lock:
                     if requested_batch_id != batch["id"]:
-                        raise ValueError("여러 신분증 검토 작업이 취소되었습니다.")
-                    batch["items"].append({
-                        "id": item_id, "name": filename, "path": destination,
+                        return
+                    item.update({
                         "result": ocr_result, "detection": detection,
                         "values": values, "code": code, "type_label": label,
                         "crop_bounds": list(crop_bounds) if crop_bounds else None,
                         "crop_size": crop_size, "crop_fallback": crop_fallback,
-                        "crop_manual": False, "width": width, "height": height,
-                        "ocr_status": "완료", "send_status": "대기", "job_id": "",
-                        "error": "", "reviewed": False, "defer": False,
-                        "documents": [], "fields": fields,
-                        "id_type_options": ["유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()],
+                        "width": width, "height": height,
+                        "ocr_status": "완료", "error": "", "fields": fields,
                     })
-            except Exception:
-                shutil.rmtree(batch_dir, ignore_errors=True)
-                raise
+            except Exception as exc:
+                with batch_lock:
+                    if requested_batch_id == batch["id"]:
+                        item["ocr_status"] = "실패"
+                        item["error"] = str(exc)
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
@@ -1046,6 +1112,8 @@ def _backend_process(port: int, token: str) -> None:
     root.after(0, refresh_state)
     root.mainloop()
     stop_event.set()
+    for executor in batch_ocr_executors:
+        executor.shutdown(wait=False, cancel_futures=True)
     server.shutdown()
     for path in upload_root.glob("*"):
         try:

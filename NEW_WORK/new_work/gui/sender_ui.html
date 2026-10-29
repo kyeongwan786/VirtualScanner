@@ -324,6 +324,8 @@
     let batchCropDrag = null;
     let batchCropManual = false;
     let batchUploading = false;
+    let batchPdfUploading = false;
+    let batchItemLoading = false;
     const $ = (id) => document.getElementById(id);
     async function request(path, options = {}) {
       const headers = new Headers(options.headers || {});
@@ -371,42 +373,49 @@
       try{
         const started=await action("batch_start",{count:images.length});
         const batchId=started.result?.batch_id;if(!batchId)throw new Error("신분증 묶음을 시작하지 못했습니다.");
-        batchUploading=true;batchState={id:batchId,status:"reviewing",items:[]};batchItem=null;batchIndex=0;
-        $("batchDialog").showModal();$("batchEditor").hidden=true;$("batchError").textContent="";$("batchCancel").disabled=false;
-        for(let index=0;index<images.length;index++){
-          const file=images[index];$("batchProgress").textContent=`OCR 준비 ${index+1}/${images.length} · ${file.name}`;
-          const query=new URLSearchParams({kind:"identity",name:file.name,batch_id:batchId});
-          await request(`/api/upload?${query}`,{method:"POST",body:file});
-          await refreshBatch(false);
-        }
+        batchUploading=true;batchState={id:batchId,status:"reviewing",expected_count:images.length,items:[]};batchItem=null;batchIndex=0;
+        $("batchDialog").showModal();$("batchEditor").hidden=false;$("batchError").textContent="";$("batchCancel").disabled=false;
+        refreshBatch(true);
+        const uploads=new Array(images.length);let nextUpload=0;
+        await Promise.all(Array.from({length:Math.min(4,images.length)},async()=>{
+          while(nextUpload<images.length){const index=nextUpload++;const file=images[index];const query=new URLSearchParams({kind:"identity",name:file.name,batch_id:batchId,index:String(index)});
+            try{uploads[index]={status:"fulfilled",value:await request(`/api/upload?${query}`,{method:"POST",body:file})};}
+            catch(reason){uploads[index]={status:"rejected",reason};}
+          }
+        }));
         batchUploading=false;await refreshBatch(false);
-        if(!batchState.items||batchState.items.length!==images.length)throw new Error("일부 신분증 OCR 결과를 받지 못했습니다.");
-        $("batchEditor").hidden=false;await loadBatchItem(batchState.items[0].id);renderBatchList();updateBatchControls();
-        showNotice(`${images.length}장 OCR 완료 · 하나씩 확인한 뒤 전체 전송하세요.`);
-        refreshBatch(true);
+        const failed=uploads.map((result,index)=>result.status==="rejected"?images[index].name:null).filter(Boolean);
+        if(failed.length){$("batchError").textContent=`업로드 실패: ${failed.join(", ")} · 묶음을 취소하고 다시 등록하세요.`;}
+        else showNotice(`${images.length}장 업로드 완료 · OCR 결과가 나오는 순서대로 바로 표시합니다.`);
+        updateBatchControls();
       }catch(error){
-        batchUploading=false;$("batchProgress").textContent="처리 중단";$("batchError").textContent=error.message;
+        batchUploading=false;$("batchProgress").textContent="등록 처리 중단";$("batchError").textContent=error.message;
         await refreshBatch(false);renderBatchList();updateBatchControls();
-        refreshBatch(true);
+        if($("batchDialog").open)refreshBatch(true);
       }
     }
     async function refreshBatch(poll=true){
       try{batchState=await request("/api/batch/state");renderBatchList();updateBatchControls();}
       catch(error){if(poll&&$("batchDialog").open)$("batchError").textContent=error.message;}
+      if(!batchItem&&!batchItemLoading){
+        const index=(batchState?.items||[]).findIndex(item=>item.ocr_status==="완료");
+        if(index>=0){batchItemLoading=true;batchIndex=index;$("batchEditor").hidden=false;try{await loadBatchItem(batchState.items[index].id);}catch(error){$("batchError").textContent=error.message;}finally{batchItemLoading=false;}}
+      }
       if(poll&&$("batchDialog").open)setTimeout(()=>refreshBatch(true),700);
     }
     function renderBatchList(){
       const root=$("batchList");if(!batchState?.items){root.replaceChildren();return;}
-      const signature=JSON.stringify(batchState.items.map(item=>[item.id,item.name,item.send_status,item.error,item.reviewed,item.defer,item.document_count]));
+      const signature=JSON.stringify(batchState.items.map(item=>[item.id,item.index,item.name,item.ocr_status,item.send_status,item.error,item.reviewed,item.defer,item.document_count]));
       if(root.dataset.signature===signature)return;root.dataset.signature=signature;root.replaceChildren();
       batchState.items.forEach((item,index)=>{
         const row=document.createElement("button");row.className=`batch-row ${index===batchIndex?"selected":""}`;
         const number=document.createElement("span");number.className="batch-index";number.textContent=String(index+1);
         const copy=document.createElement("span");copy.className="batch-row-copy";
         const name=document.createElement("span");name.className="batch-row-name";name.textContent=item.name;
-        const status=document.createElement("span");status.className="batch-row-status";status.textContent=item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status;
-        copy.append(name,status);row.append(number,copy);row.disabled=batchUploading||batchState.status==="sending"||batchState.status==="checking";
-        row.onclick=async()=>{if(!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
+        const status=document.createElement("span");status.className="batch-row-status";
+        status.textContent=item.ocr_status!=="완료"?(item.ocr_status==="실패"?"OCR 실패":`OCR ${item.ocr_status}`):(item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status);
+        copy.append(name,status);row.append(number,copy);row.disabled=item.ocr_status!=="완료"||batchState.status==="sending"||batchState.status==="checking";
+        row.onclick=async()=>{if(item.ocr_status!=="완료"||!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
       });
     }
     async function loadBatchItem(itemId){
@@ -445,11 +454,11 @@
     async function uploadBatchPdfs(files){
       if(!batchItem||!files.length)return;if(files.some(file=>! /\.pdf$/i.test(file.name))){$("batchError").textContent="신분증 묶음에는 PDF 파일만 붙일 수 있습니다.";return;}
       if(!$("batchDefer").checked){$("batchError").textContent="먼저 ‘PDF와 함께 뒤에 전송’을 선택하세요.";return;}
-      if(!await saveBatchItem())return;batchUploading=true;updateBatchControls();
+      if(!await saveBatchItem())return;batchPdfUploading=true;updateBatchControls();
       try{for(let index=0;index<files.length;index++){const file=files[index];$("batchProgress").textContent=`PDF 변환 ${index+1}/${files.length} · ${file.name}`;const query=new URLSearchParams({kind:"pdf",name:file.name,batch_id:batchState.id,item_id:batchItem.id});await request(`/api/upload?${query}`,{method:"POST",body:file});}
         await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();$("batchError").textContent="";
       }catch(error){$("batchError").textContent=error.message;await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();}
-      finally{batchUploading=false;updateBatchControls();}
+      finally{batchPdfUploading=false;updateBatchControls();}
     }
     function batchValues(){const values={};document.querySelectorAll("#batchFields [data-field]").forEach(input=>values[input.dataset.field]=input.value);return values;}
     async function saveBatchItem(){
@@ -473,11 +482,12 @@
     $("batchImageBox").addEventListener("dblclick",event=>{if(!batchItem?.crop_size||event.target===$("batchCrop"))return;const image=$("batchIdentityImage").getBoundingClientRect();const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const [width,height]=batchItem.crop_size;const x=Math.round((event.clientX-image.left)/scale),y=Math.round((event.clientY-image.top)/scale);const left=Math.max(0,Math.min(batchItem.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(batchItem.image_height-height,y-Math.round(height/2)));batchItem.crop_bounds=[left,top,left+width,top+height];batchCropManual=true;renderBatchCrop();});
     async function batchAdvance(){if(!await saveBatchItem())return;const items=batchState?.items||[];if(batchIndex+1<items.length){batchIndex++;await loadBatchItem(items[batchIndex].id);renderBatchList();return;}await batchFinish();}
     function updateBatchControls(){
-      const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchUploading||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
-      $("batchProgress").textContent=batchUploading?"신분증 OCR 처리 중":allQueued?`${items.length}건 Relay 등록 완료`:`${reviewedCount} / ${batchState?.expected_count||items.length}건 검토 완료`;
-      $("batchPrevious").disabled=batchIndex<=0||sending||batchUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchUploading;
-      $("batchCancel").disabled=sending||batchUploading||items.some(item=>item.send_status!=="대기");
-      $("batchFinish").disabled=sending||batchUploading||items.length<2||!otherItemsReviewed||items.length!==(batchState?.expected_count||items.length);
+      const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
+      const expected=batchState?.expected_count||items.length;const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const ocrFailed=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
+      $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
+      $("batchPrevious").disabled=batchIndex<=0||sending||batchPdfUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchPdfUploading;
+      $("batchCancel").disabled=sending||batchUploading||items.some(item=>["업로드 중","대기 중","인식 중"].includes(item.ocr_status)||item.send_status!=="대기");
+      $("batchFinish").disabled=sending||batchUploading||batchPdfUploading||items.length<2||!ocrReady||!otherItemsReviewed;
       $("batchFinish").textContent=allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":items.some(item=>item.send_status==="Relay 등록")?"남은 신분증 이어 전송":"모두 저장하고 전송";
       $("batchDefer").disabled=Boolean(locked)||(batchItem?.documents||[]).length>0;
       $("batchPdfAdd").disabled=Boolean(locked)||!$("batchDefer").checked;
