@@ -11,19 +11,21 @@ def main() -> int:
     import paddlex
 
     required_metadata = {name.casefold() for name in paddlex.utils.deps.BASE_DEP_SPECS}
-    required_metadata.update(
-        name.casefold()
-        for name in getattr(paddlex.utils.deps, "EXTRAS", {}).get("ocr", {})
-    )
-    required_metadata.update({"paddleocr", "paddlex", "paddlepaddle"})
+    ocr_extra = getattr(paddlex.utils.deps, "EXTRAS", {}).get("ocr", {})
+    required_metadata.update(name.casefold() for name in ocr_extra)
+    core_metadata = {"paddleocr", "paddlex", "paddlepaddle"}
+    required_metadata.update(core_metadata)
     installed = {
         distribution.metadata["Name"].casefold(): distribution.metadata["Name"]
         for distribution in importlib.metadata.distributions()
         if distribution.metadata.get("Name")
     }
-    missing = sorted(name for name in required_metadata if name not in installed)
-    if missing:
-        raise RuntimeError("OCR build dependency metadata is missing: " + ", ".join(missing))
+    missing_ocr = sorted(name.casefold() for name in ocr_extra if name.casefold() not in installed)
+    missing_core = sorted(name for name in core_metadata if name not in installed)
+    if missing_ocr or missing_core:
+        missing = sorted(set(missing_ocr + missing_core))
+        raise RuntimeError("Required OCR build dependency metadata is missing: " + ", ".join(missing))
+    metadata_to_copy = sorted(installed[name] for name in required_metadata if name in installed)
     command = [
         sys.executable,
         "-m",
@@ -85,7 +87,7 @@ def main() -> int:
             if not (model_dir / filename).is_file():
                 raise RuntimeError(f"Required OCR model is missing: {model_dir / filename}")
         command.extend(("--add-data", f"{model_dir}:ocr_models/{model_name}"))
-    for distribution in sorted(installed[name] for name in required_metadata):
+    for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
     subprocess.run(command, check=True, cwd=root)
     return 0
