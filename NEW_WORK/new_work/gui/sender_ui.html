@@ -160,7 +160,8 @@
     .batch-preview-panel,.batch-fields-panel { min-width:0;min-height:0;padding:12px;border:1px solid #e3eaf3;border-radius:11px;background:white; }
     .batch-preview-panel { display:grid;grid-template-rows:auto minmax(0,1fr) auto; }
     .batch-section-title { color:#3c5574;font-size:11px;font-weight:750;margin-bottom:8px; }
-    .batch-image-area { min-height:0;display:grid;place-items:center;overflow:hidden;border:1px solid #e4eaf2;border-radius:9px;background:#f2f5f9; }
+    .batch-image-area { position:relative;min-height:0;display:grid;place-items:center;overflow:hidden;border:1px solid #e4eaf2;border-radius:9px;background:#f2f5f9; }
+    .batch-image-empty { position:absolute;inset:0;display:grid;place-items:center;color:#8290a4;font-size:12px; }
     .batch-image-box { position:relative;display:inline-block;max-width:100%;max-height:100%;line-height:0; }
     .batch-image-box img { display:block;max-width:100%;max-height:100%;object-fit:contain; }
     .batch-crop { position:absolute;display:none;border:2px solid #1476f2;background:#1476f211;box-shadow:0 0 0 1px #fff9;cursor:move;touch-action:none; }
@@ -304,7 +305,7 @@
       <div class="batch-work">
         <nav class="batch-list" id="batchList"></nav>
         <section class="batch-editor" id="batchEditor">
-          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="검토할 신분증"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note">파란 고정 영역을 드래그하거나 사진을 두 번 눌러 위치를 조정하세요.</div></div>
+          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다.</div></div>
           <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">PDF와 함께 뒤에 전송</label><button class="button" id="batchPdfAdd" type="button">PDF 붙이기</button><input id="batchPdfInput" type="file" accept="application/pdf,.pdf" multiple hidden><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
         </section>
       </div>
@@ -395,11 +396,18 @@
       }
     }
     async function refreshBatch(poll=true){
-      try{batchState=await request("/api/batch/state");renderBatchList();updateBatchControls();}
+      try{batchState=await request("/api/batch/state");}
       catch(error){if(poll&&$("batchDialog").open)$("batchError").textContent=error.message;}
-      if(!batchItem&&!batchItemLoading){
-        const index=(batchState?.items||[]).findIndex(item=>item.ocr_status==="완료");
-        if(index>=0){batchItemLoading=true;batchIndex=index;$("batchEditor").hidden=false;try{await loadBatchItem(batchState.items[index].id);}catch(error){$("batchError").textContent=error.message;}finally{batchItemLoading=false;}}
+      const rows=batchState?.items||[];
+      if(batchItem){const selectedIndex=rows.findIndex(item=>item.id===batchItem.id);if(selectedIndex>=0)batchIndex=selectedIndex;}
+      renderBatchList();updateBatchControls();
+      if(!batchItem&&!batchItemLoading&&rows.length){
+        batchItemLoading=true;batchIndex=0;$("batchEditor").hidden=false;try{await loadBatchItem(rows[0].id);}catch(error){$("batchError").textContent=error.message;}finally{batchItemLoading=false;}
+      }else if(batchItem&&!batchItemLoading){
+        const selected=rows.find(item=>item.id===batchItem.id);
+        if(selected&&(selected.ocr_status!==batchItem.ocr_status||selected.preview_ready!==batchItem.preview_ready)){
+          batchItemLoading=true;batchIndex=rows.indexOf(selected);try{await loadBatchItem(selected.id);}catch(error){$("batchError").textContent=error.message;}finally{batchItemLoading=false;}
+        }
       }
       if(poll&&$("batchDialog").open)setTimeout(()=>refreshBatch(true),700);
     }
@@ -409,26 +417,29 @@
       if(root.dataset.signature===signature)return;root.dataset.signature=signature;root.replaceChildren();
       batchState.items.forEach((item,index)=>{
         const row=document.createElement("button");row.className=`batch-row ${index===batchIndex?"selected":""}`;
-        const number=document.createElement("span");number.className="batch-index";number.textContent=String(index+1);
+        const number=document.createElement("span");number.className="batch-index";number.textContent=String((item.index??index)+1);
         const copy=document.createElement("span");copy.className="batch-row-copy";
         const name=document.createElement("span");name.className="batch-row-name";name.textContent=item.name;
         const status=document.createElement("span");status.className="batch-row-status";
         status.textContent=item.ocr_status!=="완료"?(item.ocr_status==="실패"?"OCR 실패":`OCR ${item.ocr_status}`):(item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status);
-        copy.append(name,status);row.append(number,copy);row.disabled=item.ocr_status!=="완료"||batchState.status==="sending"||batchState.status==="checking";
-        row.onclick=async()=>{if(item.ocr_status!=="완료"||!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
+        copy.append(name,status);row.append(number,copy);row.disabled=batchState.status==="sending"||batchState.status==="checking";
+        row.onclick=async()=>{if(!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
       });
     }
     async function loadBatchItem(itemId){
       const payload=await request(`/api/batch/item?item_id=${encodeURIComponent(itemId)}`);batchItem=payload;batchCropManual=Boolean(payload.crop_manual);
-      $("batchImageTitle").textContent=`${batchIndex+1}. ${payload.name} · idCrop 조정`;
-      const image=$("batchIdentityImage");image.onload=renderBatchCrop;image.src=`data:image/jpeg;base64,${payload.image}`;
+      $("batchImageTitle").textContent=`${(payload.index??batchIndex)+1}. ${payload.name} · ${payload.ocr_status==="완료"?"idCrop 조정":`OCR ${payload.ocr_status}`}`;
+      const image=$("batchIdentityImage");image.onload=renderBatchCrop;
+      if(payload.image){image.src=`data:image/jpeg;base64,${payload.image}`;$("batchImageEmpty").hidden=true;}
+      else{image.removeAttribute("src");$("batchImageEmpty").hidden=false;$("batchImageEmpty").textContent=payload.ocr_status==="실패"?"이미지를 불러오지 못했습니다.":"신분증 이미지를 받는 중…";}
+      $("batchImageNote").textContent=payload.ocr_status==="완료"?"파란 고정 영역을 드래그하거나 사진을 두 번 눌러 위치를 조정하세요.":`이미지를 미리 표시했습니다 · OCR ${payload.ocr_status}`;
       const fields=$("batchFields");fields.replaceChildren();
       const typeRow=document.createElement("div");typeRow.className="batch-type-row";
       const typeLabel=document.createElement("label");typeLabel.textContent="신분증 종류";
       const typeSelect=document.createElement("select");typeSelect.id="batchType";
       for(const value of payload.id_type_options||[]){const option=document.createElement("option");option.value=value;option.textContent=value;typeSelect.append(option);}
-      typeSelect.value=payload.type_label||"유형 선택…";typeRow.append(typeLabel,typeSelect);fields.append(typeRow);
-      for(const field of payload.fields||[]){const row=document.createElement("div");row.className="batch-field-row";const label=document.createElement("label");label.textContent=field.label;label.htmlFor=`batch-${field.key}`;const input=document.createElement("input");input.id=`batch-${field.key}`;input.dataset.field=field.key;input.value=payload.values[field.key]||"";row.append(label,input);fields.append(row);}
+      typeSelect.value=payload.type_label||"유형 선택…";typeSelect.disabled=payload.ocr_status!=="완료";typeRow.append(typeLabel,typeSelect);fields.append(typeRow);
+      for(const field of payload.fields||[]){const row=document.createElement("div");row.className="batch-field-row";const label=document.createElement("label");label.textContent=field.label;label.htmlFor=`batch-${field.key}`;const input=document.createElement("input");input.id=`batch-${field.key}`;input.dataset.field=field.key;input.value=payload.values[field.key]||"";input.disabled=payload.ocr_status!=="완료";row.append(label,input);fields.append(row);}
       const defer=$("batchDefer");defer.checked=Boolean(payload.defer);defer.disabled=!payload.type_label||(payload.documents||[]).length>0;
       renderBatchPdfs(payload.documents||[]);
       typeSelect.onchange=async()=>{
@@ -463,6 +474,7 @@
     function batchValues(){const values={};document.querySelectorAll("#batchFields [data-field]").forEach(input=>values[input.dataset.field]=input.value);return values;}
     async function saveBatchItem(){
       if(!batchItem)return true;
+      if(batchItem.ocr_status!=="완료")return true;
       const typeLabel=$("batchType")?.value||batchItem.type_label;
       if(!typeLabel||typeLabel==="유형 선택…"){$("batchError").textContent=`${batchItem.name}: 신분증 종류를 선택하세요.`;return false;}
       try{await action("batch_update",{item_id:batchItem.id,values:batchValues(),type_label:typeLabel,defer:$("batchDefer").checked,crop_bounds:batchItem.crop_bounds,crop_manual:batchCropManual});
@@ -482,7 +494,7 @@
     $("batchImageBox").addEventListener("dblclick",event=>{if(!batchItem?.crop_size||event.target===$("batchCrop"))return;const image=$("batchIdentityImage").getBoundingClientRect();const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const [width,height]=batchItem.crop_size;const x=Math.round((event.clientX-image.left)/scale),y=Math.round((event.clientY-image.top)/scale);const left=Math.max(0,Math.min(batchItem.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(batchItem.image_height-height,y-Math.round(height/2)));batchItem.crop_bounds=[left,top,left+width,top+height];batchCropManual=true;renderBatchCrop();});
     async function batchAdvance(){if(!await saveBatchItem())return;const items=batchState?.items||[];if(batchIndex+1<items.length){batchIndex++;await loadBatchItem(items[batchIndex].id);renderBatchList();return;}await batchFinish();}
     function updateBatchControls(){
-      const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
+      const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
       const expected=batchState?.expected_count||items.length;const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const ocrFailed=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
       $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
       $("batchPrevious").disabled=batchIndex<=0||sending||batchPdfUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchPdfUploading;

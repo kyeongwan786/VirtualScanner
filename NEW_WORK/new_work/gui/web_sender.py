@@ -236,7 +236,13 @@ def _backend_process(port: int, token: str) -> None:
                         "id", "index", "name", "ocr_status", "code", "type_label",
                         "send_status", "job_id", "error", "reviewed", "defer",
                     )}
-                    | {"document_count": len(item.get("documents", []))}
+                    | {
+                        "document_count": len(item.get("documents", [])),
+                        "preview_ready": (
+                            item.get("ocr_status") != "업로드 중"
+                            and Path(item["path"]).is_file()
+                        ),
+                    }
                     for item in sorted(items, key=lambda row: row.get("index", 0))
                 ],
             }
@@ -244,18 +250,21 @@ def _backend_process(port: int, token: str) -> None:
     def batch_item_payload(item_id: str) -> dict[str, object] | None:
         with batch_lock:
             item = next((row for row in batch["items"] if row["id"] == item_id), None)
-            if item is None or item.get("ocr_status") != "완료":
+            if item is None:
                 return None
             path = Path(item["path"])
-            from PIL import ImageOps
-            with Image.open(path) as opened:
-                image = ImageOps.exif_transpose(opened).convert("RGB")
-            image.thumbnail((1600, 1200), Image.Resampling.LANCZOS)
-            image_stream = BytesIO()
-            image.save(image_stream, format="JPEG", quality=86)
+            image_data = ""
+            if item.get("ocr_status") != "업로드 중" and path.is_file():
+                from PIL import ImageOps
+                with Image.open(path) as opened:
+                    image = ImageOps.exif_transpose(opened).convert("RGB")
+                image.thumbnail((1600, 1200), Image.Resampling.LANCZOS)
+                image_stream = BytesIO()
+                image.save(image_stream, format="JPEG", quality=86)
+                image_data = base64.b64encode(image_stream.getvalue()).decode("ascii")
             return {
-                "id": item["id"], "name": item["name"],
-                "image": base64.b64encode(image_stream.getvalue()).decode("ascii"),
+                "id": item["id"], "index": item["index"], "name": item["name"],
+                "image": image_data, "preview_ready": bool(image_data),
                 "image_width": item["width"], "image_height": item["height"],
                 "crop_bounds": item["crop_bounds"], "crop_size": item["crop_size"],
                 "crop_fallback": item["crop_fallback"], "crop_manual": item["crop_manual"],
@@ -977,6 +986,7 @@ def _backend_process(port: int, token: str) -> None:
             try:
                 with Image.open(temporary) as opened:
                     staged = ImageOps.exif_transpose(opened).convert("RGB")
+                    width, height = staged.size
                     staged.save(destination, format="JPEG", quality=95, optimize=True)
                 temporary.unlink(missing_ok=True)
             except Exception as exc:
@@ -991,6 +1001,8 @@ def _backend_process(port: int, token: str) -> None:
                 if requested_batch_id != batch["id"]:
                     shutil.rmtree(batch_dir, ignore_errors=True)
                     raise ValueError("여러 신분증 검토 작업이 만료되었습니다.")
+                item["width"] = width
+                item["height"] = height
                 item["ocr_status"] = "대기 중"
                 worker_index = item_index % len(batch_ocr_executors)
                 try:
