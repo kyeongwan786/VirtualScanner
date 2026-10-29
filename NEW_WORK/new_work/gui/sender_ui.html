@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>신분증 확인 송신기</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172b4d;
+      --muted: #71819a;
+      --line: #dfe7f1;
+      --canvas: #f4f7fb;
+      --blue: #1769e8;
+      --blue-dark: #1254bd;
+      --blue-soft: #edf5ff;
+      --green: #18865b;
+      --green-soft: #e7f7ef;
+      --amber: #b86a09;
+      --amber-soft: #fff6e8;
+      --white: #fff;
+      font-family: Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      font-synthesis: none;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--canvas); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-rows: 72px minmax(0,1fr) 68px; gap: 14px; padding: 16px 22px 0; }
+    .topbar { display: flex; align-items: center; gap: 22px; padding: 0 20px; border: 1px solid #dbe5f2; border-radius: 16px; background: linear-gradient(110deg,#173b70,#204f8d); color: white; box-shadow: 0 5px 16px #173b7012; }
+    .brand { min-width: 260px; display: flex; align-items: center; gap: 12px; }
+    .brand-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: #ffffff1a; color: #fff; }
+    .brand-icon svg { width: 22px; height: 22px; }
+    .brand-title { font-size: 18px; font-weight: 750; letter-spacing: -.45px; }
+    .brand-subtitle { margin-top: 3px; color: #d2def0; font-size: 11px; }
+    .topbar-spacer { flex: 1; }
+    .connection { display: flex; align-items: center; gap: 8px; color: #a8f0c8; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #38d990; box-shadow: 0 0 0 4px #38d99024; }
+    .divider { height: 26px; border-left: 1px solid #ffffff30; }
+    .intake-label { color: #c7d6eb; font-size: 11px; }
+    .intake-value { font-size: 13px; font-weight: 700; }
+    .header-action { border:1px solid #ffffff35; border-radius:8px; padding:7px 10px; background:#ffffff12; color:#eaf2ff; font-size:11px; font-weight:700; }
+    .header-action:hover { background:#ffffff22; }
+    .portal-switch { display: flex; gap: 3px; padding: 3px; border: 1px solid #ffffff35; border-radius: 10px; background: #102f5a55; }
+    .portal-switch button { min-width: 52px; padding: 7px 12px; border: 0; border-radius: 7px; color: #d4e0f0; background: transparent; font-weight: 700; }
+    .portal-switch button.active { color: #15345e; background: white; box-shadow: 0 1px 4px #102f5a30; }
+    .main { min-height: 0; display: grid; grid-template-rows: minmax(390px,1fr) minmax(178px,auto); gap: 14px; }
+    .workspaces { min-height: 0; display: grid; grid-template-columns: minmax(470px,1fr) minmax(470px,1fr); gap: 14px; }
+    .panel { min-width: 0; display: flex; flex-direction: column; padding: 17px; border: 1px solid var(--line); border-radius: 15px; background: var(--white); box-shadow: 0 2px 7px #173b7008; }
+    .panel-head { min-height: 48px; display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+    .head-icon { width: 36px; height: 36px; display: grid; place-items: center; flex: none; border-radius: 10px; background: var(--blue-soft); color: var(--blue); }
+    .head-icon svg { width: 19px; height: 19px; }
+    .head-copy { min-width: 0; }
+    h1,h2,h3,p { margin: 0; }
+    .panel-title { font-size: 17px; line-height: 1.2; font-weight: 760; letter-spacing: -.35px; }
+    .panel-desc { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .badge { margin-left: auto; padding: 7px 10px; border-radius: 999px; background: var(--green-soft); color: var(--green); font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .dropzone { min-height: 56px; display: flex; align-items: center; gap: 12px; padding: 9px 11px; border: 1px dashed #9bbef4; border-radius: 11px; background: #f8fbff; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 0 13px; border: 1px solid #d9e4f2; border-radius: 9px; background: white; color: #29476d; font-size: 11px; font-weight: 700; white-space: nowrap; transition: .15s ease; }
+    .button:hover { transform: translateY(-1px); border-color: #9bb9e5; background: #f8fbff; }
+    .button svg { width: 15px; height: 15px; }
+    .button.primary { border-color: var(--blue); background: var(--blue); color: white; box-shadow: 0 3px 8px #1769e82b; }
+    .button.primary:hover { background: var(--blue-dark); }
+    .button.soft { border-color: #e4edf8; background: #edf5ff; color: #1d5fbe; }
+    .drop-copy { flex: 1; text-align: center; color: #7185a2; font-size: 11px; line-height: 1.45; }
+    .drop-copy strong { display: block; color: #425b7b; font-size: 11px; }
+    .workspace-content { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(190px,.95fr) minmax(230px,1.05fr); gap: 11px; margin-top: 11px; }
+    .subpanel { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 11px; border: 1px solid #e6ecf4; border-radius: 11px; background: #fff; }
+    .subhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+    .subhead h3 { font-size: 12px; font-weight: 740; }
+    .subhead small { color: var(--muted); font-size: 10px; }
+    .id-preview { min-height: 155px; flex: 1; display: grid; place-items: center; overflow: hidden; position: relative; border: 1px solid #e4eaf2; border-radius: 9px; background: linear-gradient(145deg,#f1f5fa,#e9eef5); }
+    .id-placeholder { display: grid; place-items: center; gap: 9px; color: #8b9ab0; font-size: 11px; text-align: center; }
+    .id-placeholder .avatar { width: 48px; height: 48px; display:grid; place-items:center; border-radius: 15px; background:#fff; color:#6291d8; box-shadow:0 3px 12px #284b7614; }
+    .id-placeholder svg { width:25px;height:25px; }
+    .id-card { display:none; width:96%; height:96%; position:relative; overflow:hidden; border:1px solid #d9e2ee; border-radius:10px; background:#fff; box-shadow:0 8px 18px #31486220; }
+    .id-card.visible { display:block; }
+    .id-card img { width:100%; height:100%; display:block; object-fit:contain; }
+    .id-crop { position:absolute; display:none; border:2px solid #1476f2; background:#1476f211; box-shadow:0 0 0 1px #fff9; cursor:move; touch-action:none; }
+    .id-crop.visible { display:block; }
+    .id-crop::before { content:var(--crop-label,"idCrop"); position:absolute; left:-2px; top:-19px; padding:2px 5px; border-radius:4px 4px 0 0; background:#1476f2; color:white; font-size:9px; font-weight:700; }
+    .id-crop.fallback { border-style:dashed; }
+    .drop-active { background:#eaf3ff !important; border-color:#1769e8 !important; }
+    .panel.drop-active { outline:3px solid #1769e866; outline-offset:2px; box-shadow:0 0 0 7px #1769e812; }
+    body.busy { cursor:progress; }
+    .file-name { margin-top:8px; overflow:hidden; color:#455b78; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+    .field-list { min-height:0; flex:1; display:grid; grid-template-columns:1fr; gap:6px; align-content:start; overflow:auto; padding-right:3px; }
+    .field { display:grid; grid-template-columns:76px minmax(0,1fr); align-items:center; gap:7px; }
+    .field label { color:#64758d; font-size:10px; font-weight:650; }
+    .field input,.field select { width:100%; height:31px; padding:0 9px; border:1px solid #dce5f0; border-radius:7px; outline:none; background:#fff; color:#263e60; font-size:10px; }
+    .field input:focus,.field select:focus { border-color:#72a3ec; box-shadow:0 0 0 3px #1769e817; }
+    .panel-note { margin-top:8px; color:#8090a5; font-size:9px; }
+    .pdf-list { min-height:0; flex:1; overflow:auto; margin-top:11px; border:1px solid #e6ecf4; border-radius:10px; }
+    .list-head,.pdf-row { display:grid; grid-template-columns:minmax(0,1fr) 72px 86px 28px; align-items:center; gap:8px; }
+    .list-head { min-height:32px; padding:0 10px; background:#f7f9fc; color:#7a899e; font-size:9px; font-weight:700; }
+    .pdf-row { min-height:47px; padding:5px 10px; border-top:1px solid #edf1f6; }
+    .pdf-primary { min-width:0; display:flex; align-items:center; gap:8px; }
+    .pdf-icon { width:27px; height:29px; flex:none; display:grid; place-items:center; border-radius:6px; background:#fff0ef; color:#d64a4a; }
+    .pdf-icon svg { width:15px;height:15px; }
+    .pdf-title { min-width:0; overflow:hidden; color:#2c4263; font-size:10px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+    .pdf-meta,.pdf-status { color:#8290a4; font-size:9px; white-space:nowrap; }
+    .pdf-status { color:var(--green); font-weight:700; }
+    .remove { width:25px;height:25px; border:0; border-radius:6px; color:#9aa8ba; background:transparent; font-size:16px; }
+    .remove:hover { background:#fff0ef;color:#c84545; }
+    .pdf-empty { min-height:170px; display:grid; place-items:center; color:#95a2b4; font-size:11px; }
+    .station-panel { display:flex; flex-direction:column; min-height:0; padding:13px 15px 12px; border:1px solid var(--line); border-radius:15px; background:#fff; }
+    .station-head { display:flex;align-items:center;gap:9px;margin-bottom:10px; }
+    .station-head h2 { font-size:13px;font-weight:760; }
+    .station-count { color:#8391a5;font-size:10px; }
+    .station-legend { margin-left:auto; display:flex; gap:13px; color:#75859b; font-size:9px; }
+    .legend { display:flex;align-items:center;gap:5px;white-space:nowrap; }
+    .legend i { width:7px;height:7px;border-radius:50%;background:#28aa6b; }
+    .legend.wait i { background:#f0a21b; }
+    .legend.off i { background:#d24b52; }
+    .stations { min-height:0; flex:1; display:grid; grid-template-columns:repeat(9,minmax(0,1fr)); grid-auto-rows:minmax(48px,1fr); gap:7px; overflow:auto; padding:2px; }
+    .station { min-width:0; display:flex;flex-direction:column;justify-content:center;gap:5px;padding:7px 9px;border:1px solid #e4eaf3;border-radius:9px;background:#fff;text-align:left;transition:.15s ease; }
+    .station:hover { border-color:#99b8e5;background:#f8fbff; }
+    .station.selected { border:1.5px solid #2778ed;background:#edf5ff;box-shadow:0 0 0 2px #2778ed12; }
+    .station-name { overflow:hidden;color:#233e64;font-size:10px;font-weight:750;text-overflow:ellipsis;white-space:nowrap; }
+    .station-state { display:flex;align-items:center;gap:5px;color:#8593a7;font-size:9px; }
+    .station-state i { width:6px;height:6px;flex:none;border-radius:50%;background:#29a96b; }
+    .station.offline .station-state i { background:#d24b52; }
+    .station.queued .station-state i { background:#f0a21b; }
+    .station.selected .station-state { color:#3970bf; }
+    .footer { display:flex;align-items:center;gap:14px;padding:8px 22px;border-top:1px solid #dbe5f1;background:#fff;box-shadow:0 -5px 20px #233e6408; }
+    .summary-title { font-size:11px;font-weight:750;white-space:nowrap; }
+    .summary-card { min-width:145px; display:flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid #e4eaf2;border-radius:9px;background:#fff; }
+    .summary-icon { width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:#edf5ff;color:var(--blue); }
+    .summary-icon.pdf { background:#fff0ef;color:#d64a4a; }
+    .summary-icon svg { width:16px;height:16px; }
+    .summary-label { color:#8693a5;font-size:9px; }
+    .summary-value { margin-top:2px;max-width:240px;overflow:hidden;color:#2b4263;font-size:10px;font-weight:700;text-overflow:ellipsis;white-space:nowrap; }
+    .send-hint { flex:1; color:#7889a1;font-size:10px; }
+    .send-button { min-width:235px;height:42px;border:0;border-radius:10px;background:linear-gradient(105deg,#2379f3,#1263dc);color:white;font-size:12px;font-weight:760;box-shadow:0 4px 12px #1769e833; }
+    .status-button { height:38px;padding:0 12px;border:1px solid #d8e4f4;border-radius:9px;background:#fff;color:#31557f;font-size:10px;font-weight:700; }
+    .send-button:hover { background:linear-gradient(105deg,#1769e8,#0e53bc);transform:translateY(-1px); }
+    dialog.settings-dialog { width:min(720px,92vw); max-height:86vh; overflow:auto; padding:22px; border:1px solid #dce5f0; border-radius:16px; color:var(--ink); box-shadow:0 24px 70px #10233b55; }
+    dialog.settings-dialog::backdrop { background:#10233b88; backdrop-filter:blur(3px); }
+    .settings-title { font-size:18px; font-weight:760; }
+    .settings-desc { margin:6px 0 18px; color:var(--muted); font-size:12px; }
+    .settings-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,.7fr) 34px; gap:8px; margin:8px 0; }
+    .settings-dialog input { min-width:0; height:38px; padding:0 11px; border:1px solid #dce5f0; border-radius:8px; outline:none; color:var(--ink); }
+    .settings-dialog input:focus { border-color:#72a3ec; box-shadow:0 0 0 3px #1769e817; }
+    .settings-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+    .settings-form { display:grid; gap:12px; }
+    .settings-form label { display:grid; gap:6px; color:#526783; font-size:11px; font-weight:700; }
+    .saved-token-state { padding:9px 11px; border-radius:8px; background:#f1f5f9; color:#687b94; font-size:11px; font-weight:700; }
+    .saved-token-state.saved { background:var(--green-soft); color:var(--green); }
+    .token-help { margin:0; }
+    @media (max-width:1120px) {
+      .app { grid-template-rows:auto auto auto; padding:12px; }
+      .topbar { flex-wrap:wrap; gap:12px; padding:12px 16px; }
+      .brand { flex:1; }
+      .workspaces { grid-template-columns:1fr; }
+      .panel { min-height:390px; }
+      .stations { grid-template-columns:repeat(5,minmax(0,1fr)); }
+      .station-panel { min-height:180px; }
+      .footer { flex-wrap:wrap; }
+      .send-hint { min-width:100%; order:4; }
+      .send-button { margin-left:auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3.5h7l4 4V21H7z"/><path d="M14 3.5v4h4M10 12h5M10 16h5"/></svg></div>
+        <div><div class="brand-title">신분증 확인 송신기</div><div class="brand-subtitle">자료를 확인하고 접수 자리를 선택해 전송합니다</div></div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="connection"><i class="dot"></i><span id="connectionText">Relay 확인 중</span></div>
+      <div class="divider"></div>
+      <div><div class="intake-label">접수 작업</div><div class="intake-value">새 접수</div></div>
+      <button class="header-action" id="resetButton">작업 초기화</button>
+      <div class="divider"></div>
+      <div class="intake-label">포탈</div>
+      <div class="portal-switch" role="group" aria-label="포탈 선택"><button class="active" data-portal="SK">SK</button><button data-portal="KT">KT</button></div>
+    </header>
+
+    <main class="main">
+      <section class="workspaces">
+        <article class="panel">
+          <div class="panel-head">
+            <div class="head-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2.5"/><path d="M5.5 17c.5-2.1 1.8-3.2 3.5-3.2s3 1.1 3.5 3.2M15 9h3M15 13h3M15 17h3"/></svg></div>
+            <div class="head-copy"><h1 class="panel-title">신분증 확인</h1><p class="panel-desc">사진과 OCR 내용을 확인하고 필요한 항목을 수정합니다.</p></div>
+            <span class="badge" id="ocrBadge">OCR 준비 완료</span>
+          </div>
+          <div class="dropzone" id="idDrop">
+            <button class="button primary" onclick="document.getElementById('idInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span id="idButtonText">신분증 이미지 선택</span></button>
+            <div class="drop-copy"><strong>신분증 JPG를 여기에 놓으세요</strong>JPG · JPEG · PNG</div>
+            <button class="button soft" id="ocrButton">OCR 다시 실행</button>
+            <input id="idInput" type="file" accept="image/jpeg,image/png" hidden>
+          </div>
+          <div class="workspace-content">
+            <section class="subpanel">
+              <div class="subhead"><h3>신분증 이미지 · idCrop 조정</h3><small id="idSize">사진 선택 전</small></div>
+              <div class="id-preview" id="idPreview">
+                <div class="id-placeholder" id="idEmpty"><span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M5.5 16c.4-1.7 1.6-2.6 3.5-2.6s3.1.9 3.5 2.6M15 9h3M15 13h3"/></svg></span><span>신분증 이미지를 선택하거나<br>여기에 끌어다 놓으세요</span></div>
+                <div class="id-card" id="idCard"><img id="identityImage" alt="선택한 신분증"><div class="id-crop" id="idCropBox"></div></div>
+              </div>
+              <div class="file-name" id="idFileName">선택된 신분증 없음</div>
+              <p class="panel-note">파란 idCrop 영역을 드래그해 옮기고, 더블클릭해 새 위치에 놓을 수 있습니다.</p>
+            </section>
+            <section class="subpanel">
+              <div class="subhead"><h3>OCR 결과 · 확인 및 수정</h3><small>저장 전 내용 확인</small></div>
+              <div class="field-list" id="fieldList"></div>
+              <button class="button soft" id="rawOcrButton" style="align-self:flex-start;margin-top:8px">OCR 원문 모두 보기</button>
+              <p class="panel-note">신분증 확인 후 전송하면 선택한 포탈 저장 흐름을 적용합니다.</p>
+            </section>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div class="head-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg></div>
+            <div class="head-copy"><h2 class="panel-title">서류 PDF → JPG 변환</h2><p class="panel-desc">PDF를 추가하면 페이지별 이미지로 준비합니다.</p></div>
+            <span class="badge" id="pdfBadge">변환 대기</span>
+          </div>
+          <div class="dropzone" id="pdfDrop">
+            <button class="button primary" onclick="document.getElementById('pdfInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg>PDF 추가</button>
+            <div class="drop-copy"><strong>PDF 파일을 여기에 끌어다 놓으세요</strong>여러 PDF를 한 번에 추가할 수 있습니다</div>
+            <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+          </div>
+          <div class="subhead" style="margin:13px 0 0"><h3 id="pdfCount">변환 목록 (0건)</h3><button class="button" id="clearPdf">목록 비우기</button></div>
+          <div class="pdf-list" id="pdfList"><div class="pdf-empty" id="pdfEmpty">추가한 PDF가 없습니다</div></div>
+          <p class="panel-note">전송을 누르면 OCR과 PDF 변환이 끝난 자료부터 선택한 자리로 전송합니다.</p>
+        </article>
+      </section>
+
+      <section class="station-panel">
+        <div class="station-head"><div class="head-icon" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></div><h2>전송 대상 자리</h2><span class="station-count" id="stationCount">17개 자리</span><div class="station-legend"><span class="legend"><i></i>전송 설정 완료</span><span class="legend off"><i></i>접점 설정 필요</span></div><button class="button" id="contactSettings">접점 설정</button><button class="button" id="relaySettings">Relay 설정</button></div>
+        <div class="stations" id="stations"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="summary-title">전송할 내용</div>
+      <div class="summary-card"><div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M5 17c.5-2 1.7-3 4-3s3.5 1 4 3"/></svg></div><div><div class="summary-label">신분증</div><div class="summary-value" id="idSummary">신분증 없음</div></div></div>
+      <div class="summary-card"><div class="summary-icon pdf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 14h7M9 17h5"/></svg></div><div><div class="summary-label">서류 PDF</div><div class="summary-value" id="pdfSummary">PDF 없음</div></div></div>
+      <div class="send-hint" id="sendHint">신분증만, PDF만 또는 함께 보낼 수 있습니다.</div>
+      <button class="status-button" id="statusButton" hidden>전송 상태 확인</button>
+      <button class="send-button" id="sendButton">선택한 자리로 전송</button>
+    </footer>
+  </div>
+  <dialog class="settings-dialog" id="stationsDialog"><h2 class="settings-title">접점 설정</h2><p class="settings-desc">자리 이름과 해당 Receiver의 자리 ID를 입력하세요. 비워 둔 자리 ID는 전송 대상으로 사용할 수 없습니다.</p><div id="stationSettingsRows"></div><button class="button" id="addStationRow">+ 접점 추가</button><div class="settings-actions"><button class="button" data-close="stationsDialog">닫기</button><button class="button primary" id="saveStations">접점 저장</button></div></dialog>
+  <dialog class="settings-dialog" id="relayDialog"><h2 class="settings-title">Relay 설정</h2><p class="settings-desc">Render Relay 주소와 중앙 송신 토큰을 설정합니다.</p><div class="settings-form"><label>Relay HTTPS 주소<input id="relayUrlInput" placeholder="https://example.onrender.com"></label><label>중앙 송신 토큰<input id="relayTokenInput" type="password" autocomplete="new-password" placeholder="새 토큰 입력 시 교체"></label><div class="saved-token-state" id="savedTokenState" role="status"></div><p class="settings-desc token-help">토큰은 보안상 다시 표시하지 않습니다. 새 토큰을 입력하면 교체되고, 비워 두면 현재 저장된 토큰을 유지합니다.</p></div><div class="settings-actions"><button class="button" data-close="relayDialog">닫기</button><button class="button primary" id="saveRelay">Relay 설정 저장</button></div></dialog>
+  <script>
+    const token = new URLSearchParams(location.search).get("token") || "";
+    let currentState = null;
+    let documentSignature = "";
+    let stationSignature = "";
+    let cropDrag = null;
+    const $ = (id) => document.getElementById(id);
+    async function request(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set("X-NewWork-Token", token);
+      const response = await fetch(path, { ...options, headers, cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "요청을 처리하지 못했습니다.");
+      return payload;
+    }
+    async function action(name, data = {}) {
+      try { return await request("/api/action", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:name,data}) }); }
+      catch (error) { showNotice(error.message, true); throw error; }
+    }
+    function showNotice(message, error = false) {
+      const hint=$("sendHint"); hint.textContent=message; hint.style.color=error?"#b42332":"#18865b";
+    }
+    async function upload(file, kind) {
+      if(!file)return;
+      const allowed=kind==="identity"?/\.(jpe?g|png)$/i:/\.pdf$/i;
+      if(!allowed.test(file.name)){showNotice(kind==="identity"?"JPG 또는 PNG 신분증을 선택하세요.":"PDF 파일을 선택하세요.",true);return;}
+      document.body.classList.add("busy"); showNotice(`${file.name} 등록 중…`);
+      const query=new URLSearchParams({kind,name:file.name});
+      try{await request(`/api/upload?${query}`,{method:"POST",body:file});showNotice(`${file.name} 등록 완료 · 처리를 시작했습니다.`);}
+      catch(error){showNotice(error.message,true);}
+      finally{document.body.classList.remove("busy");}
+    }
+    $("idInput").addEventListener("change",(event)=>upload(event.target.files[0],"identity"));
+    $("pdfInput").addEventListener("change",async(event)=>{for(const file of [...event.target.files])await upload(file,"pdf");event.target.value="";});
+    function bindDrop(target,kind){
+      target.addEventListener("dragenter",(event)=>{event.preventDefault();target.classList.add("drop-active");});
+      target.addEventListener("dragover",(event)=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect="copy";});
+      target.addEventListener("dragleave",(event)=>{if(!event.relatedTarget||!target.contains(event.relatedTarget))target.classList.remove("drop-active");});
+      target.addEventListener("drop",async(event)=>{event.preventDefault();event.stopPropagation();target.classList.remove("drop-active");const files=[...event.dataTransfer.files];if(kind==="identity"&&files.length>1){showNotice("신분증은 한 번에 한 장씩 등록하세요.",true);return;}for(const file of files)await upload(file,kind);});
+    }
+    // Each complete work panel is a drop target, including its preview/list and lower controls.
+    bindDrop(document.querySelector(".workspaces > .panel:first-child"),"identity");
+    bindDrop(document.querySelector(".workspaces > .panel:last-child"),"pdf");
+    $("ocrButton").onclick=()=>action("run_ocr");
+    $("sendButton").onclick=()=>action("send");
+    $("statusButton").onclick=()=>action("check_status");
+    $("resetButton").onclick=()=>action("reset");
+    $("rawOcrButton").onclick=()=>action("show_raw_ocr");
+    function stationRow(row={}){const line=document.createElement("div");line.className="settings-row";line.dataset.storeId=row.store_id||"";const name=document.createElement("input");name.placeholder="접점 이름";name.value=row.name||"";name.setAttribute("aria-label","접점 이름");const id=document.createElement("input");id.placeholder="자리 ID (예: desk-01)";id.value=row.relay_station_id||"";id.setAttribute("aria-label","Relay 자리 ID");const remove=document.createElement("button");remove.className="button";remove.textContent="×";remove.title="접점 제거";remove.onclick=()=>line.remove();line.append(name,id,remove);$("stationSettingsRows").append(line);}
+    $("contactSettings").onclick=async()=>{try{const response=await action("settings_stations");$("stationSettingsRows").replaceChildren();for(const row of response.result||[])stationRow(row);$("stationsDialog").showModal();}catch(_error){}};
+    $("addStationRow").onclick=()=>stationRow();
+    $("saveStations").onclick=async()=>{const stations=[...$("stationSettingsRows").children].map(row=>({store_id:row.dataset.storeId,name:row.children[0].value,relay_station_id:row.children[1].value}));try{await action("save_stations",{stations});$("stationsDialog").close();showNotice("접점 설정을 저장했습니다.");}catch(_error){}};
+    $("relaySettings").onclick=async()=>{try{const response=await action("settings_relay");const settings=response.result||{};$("relayUrlInput").value=settings.relay_url||"";$("relayTokenInput").value="";$("savedTokenState").textContent=settings.token_configured?"✓ 중앙 송신 토큰 저장됨 · 입력을 비워두면 유지됩니다":"중앙 송신 토큰이 아직 저장되지 않았습니다.";$("savedTokenState").classList.toggle("saved",Boolean(settings.token_configured));$("relayDialog").showModal();}catch(_error){}};
+    $("saveRelay").onclick=async()=>{try{await action("save_relay_settings",{relay_url:$("relayUrlInput").value,central_token:$("relayTokenInput").value});$("relayDialog").close();showNotice("Relay 설정을 저장했습니다.");}catch(_error){}};
+    document.querySelectorAll("[data-close]").forEach(button=>button.onclick=()=>$(button.dataset.close).close());
+    $("clearPdf").onclick=()=>action("clear_pdfs");
+    document.querySelectorAll(".portal-switch button").forEach((button)=>button.addEventListener("click",()=>action("set_portal",{portal:button.dataset.portal})));
+    let fieldsSignature="";
+    function renderFields(state){
+      const signature=JSON.stringify([state.fields,state.id_type_options]);
+      if(signature!==fieldsSignature){
+        fieldsSignature=signature;const root=$("fieldList");root.replaceChildren();
+        const typeRow=document.createElement("div");typeRow.className="field";
+        const typeLabel=document.createElement("label");typeLabel.htmlFor="idType";typeLabel.textContent="신분증 종류";
+        const typeSelect=document.createElement("select");typeSelect.id="idType";
+        for(const value of state.id_type_options||[]){const option=document.createElement("option");option.value=value;option.textContent=value;typeSelect.append(option);}
+        typeSelect.addEventListener("change",(event)=>action("set_id_type",{value:event.target.value}));typeRow.append(typeLabel,typeSelect);root.append(typeRow);
+        for(const item of state.fields||[]){const row=document.createElement("div");row.className="field";const label=document.createElement("label");label.htmlFor=`field-${item.key}`;label.textContent=item.label;const input=document.createElement("input");input.id=`field-${item.key}`;input.dataset.field=item.key;input.placeholder="OCR 결과";input.addEventListener("change",()=>action("set_field",{field:item.key,value:input.value}));row.append(label,input);root.append(row);}
+      }
+      const select=$("idType");if(select&&document.activeElement!==select)select.value=state.id_type||state.id_type_options?.[0]||"";
+      for(const item of state.fields||[]){const input=$(`field-${item.key}`);if(input&&document.activeElement!==input&&input.value!==(state.values[item.key]||""))input.value=state.values[item.key]||"";}
+    }
+    function renderDocuments(state){
+      const signature=JSON.stringify(state.documents);if(signature===documentSignature)return;documentSignature=signature;
+      const root=$("pdfList");root.replaceChildren();$("pdfCount").textContent=`변환 목록 (${state.documents.length}건)`;
+      $("pdfBadge").textContent=state.documents.length?`${state.documents.length}건 처리 중/완료`:"변환 대기";
+      if(!state.documents.length){root.innerHTML='<div class="pdf-empty">추가한 PDF가 없습니다</div>';return;}
+      const head=document.createElement("div");head.className="list-head";head.innerHTML="<span>파일명</span><span>페이지</span><span>상태</span><span></span>";root.append(head);
+      for(const item of state.documents){
+        const row=document.createElement("div");row.className="pdf-row";
+        const primary=document.createElement("div");primary.className="pdf-primary";primary.innerHTML='<span class="pdf-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M8 15h8M8 18h6"/></svg></span><span class="pdf-title"></span>';
+        primary.querySelector(".pdf-title").textContent=item.name;
+        const pages=document.createElement("span");pages.className="pdf-meta";pages.textContent=item.page_count?`${item.page_count}p`:"—";
+        const status=document.createElement("span");status.className="pdf-status";status.textContent=item.status;
+        const detail=document.createElement("span");detail.className="pdf-meta";detail.textContent=item.detail||"";detail.title=item.detail||"";
+        row.append(primary,pages,status,detail);root.append(row);
+      }
+    }
+    function renderStations(state){
+      const signature=JSON.stringify([state.stations,state.selected_store_index]);if(signature===stationSignature)return;stationSignature=signature;
+      const root=$("stations");root.replaceChildren();$("stationCount").textContent=`${state.stations.length}개 자리`;
+      state.stations.forEach((station)=>{
+        const card=document.createElement("button");card.className=`station ${station.selected?"selected":""} ${station.configured?"":"offline"}`;
+        const name=document.createElement("span");name.className="station-name";name.textContent=station.name;
+        card.title=station.name;
+        const status=document.createElement("span");status.className="station-state";status.innerHTML=`<i></i><span>${station.configured?"전송 설정 완료":"접점 설정 필요"}</span>`;
+        card.append(name,status);if(station.store_id)card.onclick=()=>action("select_station",{store_id:station.store_id});else card.disabled=true;root.append(card);
+      });
+    }
+    function renderCrop(state){
+      const box=$("idCropBox"),b=state.crop_bounds;
+      if(!b||!state.image_width||!state.image_height){box.classList.remove("visible");return;}
+      const area=imageContentRect();
+      box.classList.add("visible");box.style.left=`${area.left+b[0]*area.scale}px`;box.style.top=`${area.top+b[1]*area.scale}px`;
+      box.style.width=`${(b[2]-b[0])*area.scale}px`;box.style.height=`${(b[3]-b[1])*area.scale}px`;
+      box.style.setProperty("--crop-label",state.portal==="KT"?'"CR.jpg"':'"idCrop"');box.classList.toggle("fallback",state.crop_fallback&&!state.crop_manual);
+    }
+    function render(state){
+      if(!state||!state.ready)return;currentState=state;
+      document.querySelectorAll(".portal-switch button").forEach((button)=>button.classList.toggle("active",button.dataset.portal===state.portal));
+      $("connectionText").textContent=state.relay_configured?"Relay 설정됨":"Relay 설정 필요";
+      $("ocrBadge").textContent=state.ocr_status;$("idFileName").textContent=state.identity_name||"선택된 신분증 없음";
+      $("idButtonText").textContent=state.identity_name?"다른 신분증 선택":"신분증 이미지 선택";$("idSummary").textContent=state.identity_name||"신분증 없음";
+      $("idSize").textContent=state.image_width?`${state.image_width} × ${state.image_height}`:"사진 선택 전";
+      if(state.identity_image){$("idEmpty").style.display="none";$("idCard").classList.add("visible");const source=`data:image/jpeg;base64,${state.identity_image}`;if($("identityImage").src!==source)$("identityImage").src=source;}
+      else{$("idEmpty").style.display="grid";$("idCard").classList.remove("visible");$("identityImage").removeAttribute("src");}
+      renderFields(state);
+      renderCrop(state);renderDocuments(state);renderStations(state);
+      $("pdfSummary").textContent=state.documents.length?`${state.documents.length}개 · ${state.documents.filter((item)=>item.status==="변환 완료").length}개 변환 완료`:"PDF 없음";
+      $("sendHint").textContent=state.review_status|| (state.selected_station?`전송 대상: ${state.selected_station}`:"전송 대상을 선택하세요");$("sendHint").style.color="";
+      $("sendButton").textContent=state.sending?"전송 처리 중…":(state.selected_station?`${state.selected_station}로 전송`:"선택한 자리로 전송");$("sendButton").disabled=state.sending;
+      $("statusButton").hidden=!state.awaiting_confirmation;
+    }
+    async function refresh(){try{render(await request("/api/state"));}catch(_error){}setTimeout(refresh,550);}
+    function imageContentRect(){
+      const card=$("idCard").getBoundingClientRect(),w=currentState?.image_width||1,h=currentState?.image_height||1;
+      const scale=Math.min(card.width/w,card.height/h);return{left:(card.width-w*scale)/2,top:(card.height-h*scale)/2,scale,card};
+    }
+    const cropBox=$("idCropBox");
+    cropBox.addEventListener("pointerdown",(event)=>{if(!currentState?.crop_bounds)return;event.preventDefault();cropBox.setPointerCapture(event.pointerId);cropDrag={startX:event.clientX,startY:event.clientY,original:[...currentState.crop_bounds],scale:imageContentRect().scale};});
+    cropBox.addEventListener("pointerup",async(event)=>{if(!cropDrag||!currentState)return;const drag=cropDrag;cropDrag=null;const {image_width:w,image_height:h}=currentState;const dx=Math.round((event.clientX-drag.startX)/drag.scale);const dy=Math.round((event.clientY-drag.startY)/drag.scale);const [l,t,r,b]=drag.original;const width=r-l,height=b-t;const left=Math.min(Math.max(0,l+dx),w-width);const top=Math.min(Math.max(0,t+dy),h-height);await action("set_crop",{bounds:[left,top,left+width,top+height]});});
+    $("idCard").addEventListener("dblclick",async(event)=>{
+      if(event.target===cropBox||!currentState?.crop_size)return;
+      const area=imageContentRect(),x=Math.round((event.clientX-area.card.left-area.left)/area.scale),y=Math.round((event.clientY-area.card.top-area.top)/area.scale);
+      const [width,height]=currentState.crop_size;const left=Math.max(0,Math.min(currentState.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(currentState.image_height-height,y-Math.round(height/2)));
+      await action("set_crop",{bounds:[left,top,left+width,top+height]});
+    });
+    refresh();
+  </script>
+</body>
+</html>

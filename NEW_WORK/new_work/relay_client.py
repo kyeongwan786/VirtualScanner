@@ -303,7 +303,7 @@ def send_work_package(
                     remote_status = cancel_remote_job(job_id)
                     if remote_status == "delivered":
                         raise TransferCancelledError(
-                            "취소 전에 Receiver 적용이 완료됐습니다. "
+                            "취소 전에 Receiver가 자료 수신을 완료했습니다. "
                             f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
                         ) from exc
                 raise TransferCancelledError(
@@ -329,7 +329,7 @@ def send_work_package(
                 remote_status = cancel_remote_job(job_id)
                 if remote_status == "delivered":
                     raise TransferCancelledError(
-                        "취소 전에 Receiver 적용이 완료됐습니다. "
+                        "취소 전에 Receiver가 자료 수신을 완료했습니다. "
                         f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
                     )
                 raise TransferCancelledError(
@@ -347,14 +347,14 @@ def send_work_package(
                 ) from exc
             if result.get("status") == "delivered":
                 return job_id
-            report("Receiver 적용 대기 중…")
+            report("Receiver 수신 확인 대기 중…")
             if cancel_event is not None:
                 cancel_event.wait(1)
             else:
                 time.sleep(1)
     raise DeliveryPendingError(
         job_id,
-        f"Relay에 전송했지만 Receiver 적용 확인을 {wait_seconds}초 안에 받지 못했습니다. "
+        f"Relay에 전송했지만 Receiver 수신 확인을 {wait_seconds}초 안에 받지 못했습니다. "
         "중복 전송하지 말고 접수 PC Receiver 상태를 확인하세요. "
         f"작업 ID: {job_id}"
     )

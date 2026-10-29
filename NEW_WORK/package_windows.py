@@ -18,11 +18,11 @@ except ModuleNotFoundError as exc:
 
 def main() -> int:
     debug_console = os.environ.get("NEW_WORK_DEBUG", "").strip() == "1"
-    version = os.environ.get("NEW_WORK_BUILD_VERSION", "v2").strip().lower()
-    if version not in {"v1", "v2"}:
-        raise ValueError("NEW_WORK_BUILD_VERSION must be v1 or v2")
-    app_name = "new_work_v1" if version == "v1" else "new_work"
-    entry_point = "run_v1.py" if version == "v1" else "run.py"
+    version = os.environ.get("NEW_WORK_BUILD_VERSION", "v3").strip().lower()
+    if version not in {"v1", "v2", "v3"}:
+        raise ValueError("NEW_WORK_BUILD_VERSION must be v1, v2, or v3")
+    app_name = {"v1": "new_work_v1", "v2": "new_work", "v3": "new_work_v3"}[version]
+    entry_point = {"v1": "run_v1.py", "v2": "run.py", "v3": "run_v3.py"}[version]
     # PaddleX checks OCR optional dependencies with importlib.metadata at
     # runtime. A frozen PyInstaller build must carry metadata for the OCR
     # extra as well as PaddleX's base dependencies, or pipeline creation fails
@@ -85,6 +85,14 @@ def main() -> int:
         "--collect-all",
         "pypdfium2",
     ]
+    if version in {"v2", "v3"}:
+        command.extend((
+            "--collect-all", "webview",
+            "--hidden-import", "new_work.gui.web_sender",
+            "--add-data",
+            os.path.join(os.path.dirname(__file__), "new_work", "gui", "sender_ui.html")
+            + ";new_work/gui",
+        ))
     model_root = os.path.join(os.path.dirname(__file__), "ocr_models")
     required_models = (
         "PP-OCRv5_mobile_det",

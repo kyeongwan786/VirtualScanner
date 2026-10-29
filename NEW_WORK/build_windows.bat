@@ -3,7 +3,8 @@ setlocal
 cd /d "%~dp0"
 set "BUILD_EXIT="
 
-echo NEW_WORK build: clean virtual environment, no pip cache, official PyPI index
+if not defined NEW_WORK_BUILD_VERSION set "NEW_WORK_BUILD_VERSION=v3"
+echo NEW_WORK %NEW_WORK_BUILD_VERSION% build: clean virtual environment, no pip cache, official PyPI index
 if exist .venv-build rmdir /s /q .venv-build
 py -3.12 -m venv .venv-build
 if errorlevel 1 goto :build_failed
@@ -29,8 +30,10 @@ if errorlevel 1 goto :build_failed
 echo.
 if /I "%NEW_WORK_BUILD_VERSION%"=="v1" (
   echo Build complete: dist\new_work_v1\new_work_v1.exe
-) else (
+) else if /I "%NEW_WORK_BUILD_VERSION%"=="v2" (
   echo Build complete: dist\new_work\new_work.exe
+) else (
+  echo Build complete: dist\new_work_v3\new_work_v3.exe
 )
 pause
 exit /b 0

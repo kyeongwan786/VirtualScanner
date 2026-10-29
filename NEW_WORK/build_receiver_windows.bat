@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo NEW_WORK Receiver build: clean virtual environment, no pip cache
 if exist build rmdir /s /q build
-if exist dist\new_work_receiver rmdir /s /q dist\new_work_receiver
+if exist dist\new_work_receiver_v3 rmdir /s /q dist\new_work_receiver_v3
 if exist .venv-receiver rmdir /s /q .venv-receiver
 py -3.12 -m venv .venv-receiver
 if errorlevel 1 goto :build_failed
@@ -19,7 +19,7 @@ python package_receiver_windows.py
 if errorlevel 1 goto :build_failed
 
 echo.
-echo Build complete: dist\new_work_receiver\new_work_receiver.exe
+echo Build complete: dist\new_work_receiver_v3\new_work_receiver_v3.exe
 pause
 exit /b 0
 

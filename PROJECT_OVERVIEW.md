@@ -40,13 +40,13 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 ### `NEW_WORK` 중앙 준비 앱과 Receiver
 
-`NEW_WORK` 중앙 OCR GUI는 두 흐름으로 분리돼 있다. V1은 예전 OCR 전용 UI로, 접수 PC에서 실행해 SK `sk_report.txt` 또는 KT `myCustomer.db` 및 `ORG.jpg`/`CR.jpg`를 그 PC에 직접 갱신하며 별도 Receiver가 필요 없다. V2는 중앙 PC에서 접수 PC와 포탈을 선택하고 선택한 자료를 ZIP 작업으로 HTTPS 릴레이에 보낸다. 작업은 신분증만, PDF만 또는 둘 다 가능하다. PDF-only 패키지는 Receiver의 SK/KT 접수 결과를 변경하지 않고 PDF 대기열에만 추가한다. V2의 `receiver_run.py`는 지정된 작업을 로컬에 적용하거나 서류 대기열에 등록한 뒤 완료 응답을 보낸다. V2 Receiver는 PDF 대기열 순서도 관리해 가상 스캐너 `ready` 폴더에 올린다. V1/V2 중앙 앱과 V2 Receiver의 소스 빌드 ZIP을 각각 제공한다.
+`NEW_WORK` 중앙 OCR GUI는 두 흐름으로 분리돼 있다. V1은 OCR 전용 UI로, 접수 PC에서 실행해 SK `sk_report.txt` 또는 KT `myCustomer.db` 및 `ORG.jpg`/`CR.jpg`를 그 PC에 직접 갱신하며 별도 Receiver가 필요 없다. V3는 중앙 PC에서 접수 PC와 포탈을 선택하고 자료를 ZIP 작업으로 HTTPS 릴레이에 보낸다. 작업은 신분증만, PDF만 또는 둘 다 가능하다. Receiver는 받은 자료를 접수 폴더에 보관하고, 신분증은 현장에서 확인한 뒤 SK/KT에 저장하며 PDF 페이지 JPG는 스캔 대기열로 관리한다. V1/V3 중앙 앱과 V3 Receiver의 Windows 소스 빌드 ZIP을 각각 제공한다. V3 Receiver UI도 macOS에서 소스로 실행할 수 있지만 업무페이지 TWAIN 스캔은 Windows 대상 PC에서 확인해야 한다.
 
 중앙 OCR 미리보기의 `idCrop`/`CR.jpg` 영역은 종류별 고정 크기로 표시하고 드래그해 위치만 조정할 수 있다. 선택 좌표는 작업 패키지의 `reviewed_values._idCropBounds`로 전달되며 SK Base64 크롭과 Receiver KT `CR.jpg` 생성에 사용된다. KT 쪽 수동 영역은 이 좌표 필드를 지원하는 Receiver 빌드가 필요하다.
 
 Receiver의 **받은 자료 초기화**는 로컬 수신 작업 패키지와 신분증/OCR/서류 메모리 참조, 스캔 목록 상태, 설정된 스캐너 `ready` 폴더 안의 작업을 강제 삭제한다. 진행 중인 페이지 요청이 끝난 뒤 정리하며, 적용이 시작된 작업은 적용과 Relay 응답을 마친 뒤 정리한다. 진행 중 스캔은 실패할 수 있다. 이미 적용된 SK/KT 대상 파일과 백업, Relay에 남은 미수신 작업은 유지한다.
 
-Render 릴레이의 최근 배포 화면은 커밋 `69c5cb6`을 Live로 표시했다. V2 Receiver는 GUI가 열린 동안 2초 간격으로 새 작업을 확인하고, 중앙 PC는 1초 간격으로 적용 완료 응답을 확인한다. 릴레이는 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. 실제 업무 자료를 이용한 Windows 종단간 적용은 별도 확인이 필요하다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
+Render 릴레이의 최근 배포 화면은 커밋 `69c5cb6`을 Live로 표시했다. V3 Receiver는 GUI가 열린 동안 2초 간격으로 새 작업을 확인하고, 중앙 PC는 1초 간격으로 수신 완료 응답을 확인한다. 릴레이는 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. 실제 업무 자료를 이용한 Windows 종단간 적용은 별도 확인이 필요하다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
 
 ## 지금까지 확인된 중요한 점
 
