@@ -799,6 +799,16 @@ class ReceiverApp:
         backup.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(database, timeout=5.0) as source, sqlite3.connect(backup) as target:
             source.backup(target)
+        if not target_element_id:
+            image_backup_dir = (
+                Path(self.config["work_path"]).expanduser()
+                / "backups" / f"kt_images_{manifest['job_id']}_{datetime.now():%Y%m%d_%H%M%S_%f}"
+            )
+            for filename in ("ORG.jpg", "CR.jpg"):
+                image_path = images / filename
+                if image_path.is_file():
+                    image_backup_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(image_path, image_backup_dir / filename)
         _, new_element_id = save_kt_submission(
             result, detection, values,
             database_path=database,
@@ -1046,7 +1056,10 @@ class ReceiverApp:
             except (OSError, json.JSONDecodeError):
                 continue
             job_id = manifest.get("job_id")
-            if manifest.get("station_id") != self.config.get("station_id"):
+            if (
+                manifest.get("source") != "local"
+                and manifest.get("station_id") != self.config.get("station_id")
+            ):
                 continue
             if not (
                 (manifest_path.parent / "received.json").exists()
@@ -1719,7 +1732,7 @@ class ReceiverApp:
         *,
         carrier_override: str | None = None,
         web: bool = False,
-    ) -> None:
+    ) -> str | None:
         try:
             carrier = carrier_override or str(manifest.get("carrier", ""))
             image_path = self._job_file(job_dir, str(manifest.get("identity_image", "")))
@@ -1832,9 +1845,11 @@ class ReceiverApp:
             self._write_json_atomic(marker_path, marker)
             callback = self._web_identity_correction_finished if web else self._identity_correction_finished
             self.root.after(0, callback, job_id, "")
+            return None
         except Exception as exc:
             callback = self._web_identity_correction_finished if web else self._identity_correction_finished
             self.root.after(0, callback, job_id, str(exc))
+            return str(exc)
 
     @staticmethod
     def _write_json_atomic(path: Path, value: object) -> None:

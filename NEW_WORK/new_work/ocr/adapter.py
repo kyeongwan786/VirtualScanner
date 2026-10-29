@@ -192,6 +192,15 @@ class PaddleOcrAdapter:
         """
         self._get_engine()
 
+    def warmup_focused_recognizer(self) -> None:
+        """Load the focused Korean recognizer used for number/name recovery.
+
+        Sender OCR keeps this lazy to avoid slowing its startup. The receiver's
+        local-prep screen can call it in a background thread so this one-time
+        initialization does not delay the first identity submitted there.
+        """
+        self._get_number_recognizer()
+
     def recognize_card_heading(self, image_path: Path) -> tuple[OcrLine, ...]:
         """Re-read the small upper-left document heading when full OCR is unsure."""
         import cv2

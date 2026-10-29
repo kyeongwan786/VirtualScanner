@@ -45,7 +45,8 @@
     .portal-switch button { min-width: 52px; padding: 7px 12px; border: 0; border-radius: 7px; color: #d4e0f0; background: transparent; font-weight: 700; }
     .portal-switch button.active { color: #15345e; background: white; box-shadow: 0 1px 4px #102f5a30; }
     .main { min-height: 0; display: grid; grid-template-rows: minmax(390px,1fr) minmax(178px,auto); gap: 14px; }
-    .workspaces { min-height: 0; display: grid; grid-template-columns: minmax(470px,1fr) minmax(470px,1fr); gap: 14px; }
+    /* Give the identity review the space it needs; PDF conversion is secondary. */
+    .workspaces { min-height: 0; display: grid; grid-template-columns: minmax(0,1.65fr) minmax(390px,1fr); gap: 14px; }
     .panel { min-width: 0; display: flex; flex-direction: column; padding: 17px; border: 1px solid var(--line); border-radius: 15px; background: var(--white); box-shadow: 0 2px 7px #173b7008; }
     .panel-head { min-height: 48px; display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
     .head-icon { width: 36px; height: 36px; display: grid; place-items: center; flex: none; border-radius: 10px; background: var(--blue-soft); color: var(--blue); }
@@ -64,7 +65,7 @@
     .button.soft { border-color: #e4edf8; background: #edf5ff; color: #1d5fbe; }
     .drop-copy { flex: 1; text-align: center; color: #7185a2; font-size: 11px; line-height: 1.45; }
     .drop-copy strong { display: block; color: #425b7b; font-size: 11px; }
-    .workspace-content { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(190px,.95fr) minmax(230px,1.05fr); gap: 11px; margin-top: 11px; }
+    .workspace-content { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0,.78fr) minmax(0,1.22fr); gap: 11px; margin-top: 11px; }
     .subpanel { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 11px; border: 1px solid #e6ecf4; border-radius: 11px; background: #fff; }
     .subhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
     .subhead h3 { font-size: 12px; font-weight: 740; }
@@ -85,9 +86,9 @@
     body.busy { cursor:progress; }
     .file-name { margin-top:8px; overflow:hidden; color:#455b78; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
     .field-list { min-height:0; flex:1; display:grid; grid-template-columns:1fr; gap:6px; align-content:start; overflow:auto; padding-right:3px; }
-    .field { display:grid; grid-template-columns:76px minmax(0,1fr); align-items:center; gap:7px; }
-    .field label { color:#64758d; font-size:10px; font-weight:650; }
-    .field input,.field select { width:100%; height:31px; padding:0 9px; border:1px solid #dce5f0; border-radius:7px; outline:none; background:#fff; color:#263e60; font-size:10px; }
+    .field { display:grid; grid-template-columns:88px minmax(0,1fr); align-items:center; gap:9px; }
+    .field label { color:#536984; font-size:11px; font-weight:680; }
+    .field input,.field select { width:100%; height:39px; padding:0 11px; border:1px solid #d5e1ef; border-radius:8px; outline:none; background:#fff; color:#263e60; font-size:12px; }
     .field input:focus,.field select:focus { border-color:#72a3ec; box-shadow:0 0 0 3px #1769e817; }
     .panel-note { margin-top:8px; color:#8090a5; font-size:9px; }
     .pdf-list { min-height:0; flex:1; overflow:auto; margin-top:11px; border:1px solid #e6ecf4; border-radius:10px; }
@@ -251,6 +252,7 @@
     let documentSignature = "";
     let stationSignature = "";
     let cropDrag = null;
+    let pendingCropBounds = null;
     const $ = (id) => document.getElementById(id);
     async function request(path, options = {}) {
       const headers = new Headers(options.headers || {});
@@ -345,7 +347,10 @@
       });
     }
     function renderCrop(state){
-      const box=$("idCropBox"),b=state.crop_bounds;
+      const box=$("idCropBox");
+      let b=cropDrag?.bounds||pendingCropBounds||state.crop_bounds;
+      if(pendingCropBounds&&state.crop_bounds?.every((value,index)=>value===pendingCropBounds[index]))pendingCropBounds=null;
+      b=cropDrag?.bounds||pendingCropBounds||state.crop_bounds;
       if(!b||!state.image_width||!state.image_height){box.classList.remove("visible");return;}
       const area=imageContentRect();
       box.classList.add("visible");box.style.left=`${area.left+b[0]*area.scale}px`;box.style.top=`${area.top+b[1]*area.scale}px`;
@@ -373,9 +378,20 @@
       const card=$("idCard").getBoundingClientRect(),w=currentState?.image_width||1,h=currentState?.image_height||1;
       const scale=Math.min(card.width/w,card.height/h);return{left:(card.width-w*scale)/2,top:(card.height-h*scale)/2,scale,card};
     }
+    function cropBoundsAt(event){
+      if(!cropDrag||!currentState)return null;
+      const {image_width:w,image_height:h}=currentState;
+      const dx=Math.round((event.clientX-cropDrag.startX)/cropDrag.scale);
+      const dy=Math.round((event.clientY-cropDrag.startY)/cropDrag.scale);
+      const [l,t,r,b]=cropDrag.original,width=r-l,height=b-t;
+      const left=Math.min(Math.max(0,l+dx),w-width),top=Math.min(Math.max(0,t+dy),h-height);
+      return [left,top,left+width,top+height];
+    }
     const cropBox=$("idCropBox");
-    cropBox.addEventListener("pointerdown",(event)=>{if(!currentState?.crop_bounds)return;event.preventDefault();cropBox.setPointerCapture(event.pointerId);cropDrag={startX:event.clientX,startY:event.clientY,original:[...currentState.crop_bounds],scale:imageContentRect().scale};});
-    cropBox.addEventListener("pointerup",async(event)=>{if(!cropDrag||!currentState)return;const drag=cropDrag;cropDrag=null;const {image_width:w,image_height:h}=currentState;const dx=Math.round((event.clientX-drag.startX)/drag.scale);const dy=Math.round((event.clientY-drag.startY)/drag.scale);const [l,t,r,b]=drag.original;const width=r-l,height=b-t;const left=Math.min(Math.max(0,l+dx),w-width);const top=Math.min(Math.max(0,t+dy),h-height);await action("set_crop",{bounds:[left,top,left+width,top+height]});});
+    cropBox.addEventListener("pointerdown",(event)=>{if(!currentState?.crop_bounds)return;event.preventDefault();cropBox.setPointerCapture(event.pointerId);cropDrag={startX:event.clientX,startY:event.clientY,original:[...currentState.crop_bounds],bounds:[...currentState.crop_bounds],scale:imageContentRect().scale};});
+    cropBox.addEventListener("pointermove",(event)=>{if(!cropDrag)return;const bounds=cropBoundsAt(event);if(!bounds)return;cropDrag.bounds=bounds;renderCrop(currentState);});
+    cropBox.addEventListener("pointerup",async(event)=>{if(!cropDrag||!currentState)return;const bounds=cropBoundsAt(event)||cropDrag.bounds;cropDrag=null;pendingCropBounds=bounds;renderCrop(currentState);try{await action("set_crop",{bounds});}catch(_error){pendingCropBounds=null;renderCrop(currentState);}});
+    cropBox.addEventListener("pointercancel",()=>{if(!cropDrag)return;cropDrag=null;renderCrop(currentState);});
     $("idCard").addEventListener("dblclick",async(event)=>{
       if(event.target===cropBox||!currentState?.crop_size)return;
       const area=imageContentRect(),x=Math.round((event.clientX-area.card.left-area.left)/area.scale),y=Math.round((event.clientY-area.card.top-area.top)/area.scale);

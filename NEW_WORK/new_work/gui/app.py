@@ -1145,13 +1145,11 @@ class NewWorkApp:
         preview_area.grid(row=3, column=0, sticky="nsew")
         preview_area.rowconfigure(0, weight=1)
         preview_area.columnconfigure(0, weight=1)
-        self.image_label = tk.Label(
-            preview_area, text="", anchor="center", justify="center",
-            background="#FFFFFF", foreground="#667085", font=("Segoe UI", 9),
-            borderwidth=0, highlightthickness=0,
+        self.image_label = tk.Canvas(
+            preview_area, background="#FFFFFF", highlightthickness=0, borderwidth=0,
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
-        self.image_label.bind("<Configure>", self._schedule_preview_resize)
+        self.image_label.bind("<Configure>", self._schedule_preview_resize, add="+")
         self.image_label.bind("<ButtonPress-1>", self._crop_pointer_down)
         self.image_label.bind("<B1-Motion>", self._crop_pointer_move)
         self.image_label.bind("<ButtonRelease-1>", self._crop_pointer_up)
@@ -1292,8 +1290,8 @@ class NewWorkApp:
 
         work = ttk.Frame(shell, style="App.TFrame")
         work.grid(row=1, column=0, sticky="nsew")
-        work.columnconfigure(0, weight=1, uniform="work_panels")
-        work.columnconfigure(1, weight=1, uniform="work_panels")
+        work.columnconfigure(0, weight=11)
+        work.columnconfigure(1, weight=9)
         work.rowconfigure(0, weight=1)
         work.configure(height=work_height)
         work.grid_propagate(False)
@@ -1340,8 +1338,8 @@ class NewWorkApp:
 
         identity_body = ttk.Frame(ocr_panel, style="PanelContent.TFrame")
         identity_body.grid(row=3, column=0, sticky="nsew")
-        identity_body.columnconfigure(0, weight=1, uniform="id_body")
-        identity_body.columnconfigure(1, weight=1, uniform="id_body")
+        identity_body.columnconfigure(0, weight=11)
+        identity_body.columnconfigure(1, weight=9)
         identity_body.rowconfigure(0, weight=1)
         preview_shell, preview_column = self._make_v2_rounded_panel(
             identity_body, radius=9, outside_color="#FFFFFF",
@@ -1353,13 +1351,8 @@ class NewWorkApp:
             preview_column, text="신분증 이미지 · idCrop 조정",
             style="PanelFieldName.TLabel",
         ).grid(row=0, column=0, sticky="w", pady=(0, 5))
-        self.image_label = tk.Label(
-            preview_column,
-            text="신분증 사진 놓기\nJPG · PNG · OCR 자동 시작",
-            anchor="center", justify="center", compound="top",
-            background="#FFFFFF", foreground="#667085",
-            font=("Segoe UI", 10), padx=10, pady=10, borderwidth=0,
-            highlightthickness=0,
+        self.image_label = tk.Canvas(
+            preview_column, background="#FFFFFF", highlightthickness=0, borderwidth=0,
         )
         empty_identity_icon = Image.new("RGBA", (72, 72), (255, 255, 255, 0))
         empty_identity_draw = ImageDraw.Draw(empty_identity_icon)
@@ -1373,9 +1366,17 @@ class NewWorkApp:
         empty_identity_draw.line((38, 36, 50, 36), fill="#FFFFFF", width=2)
         empty_identity_draw.line((38, 42, 47, 42), fill="#FFFFFF", width=2)
         self._identity_empty_photo = ImageTk.PhotoImage(empty_identity_icon, master=self.root)
-        self.image_label.configure(image=self._identity_empty_photo)
+        self.image_label.create_image(
+            0, 0, anchor="center", image=self._identity_empty_photo, tags="empty-state",
+        )
+        self.image_label.create_text(
+            0, 0, text="신분증 사진 놓기\nJPG · PNG · OCR 자동 시작",
+            anchor="n", justify="center", fill="#667085", font=("Segoe UI", 10),
+            tags="empty-state",
+        )
         self.image_label.grid(row=1, column=0, sticky="nsew")
-        self.image_label.bind("<Configure>", self._schedule_preview_resize)
+        self.image_label.bind("<Configure>", self._draw_empty_preview)
+        self.image_label.bind("<Configure>", self._schedule_preview_resize, add="+")
         self.image_label.bind("<ButtonPress-1>", self._crop_pointer_down)
         self.image_label.bind("<B1-Motion>", self._crop_pointer_move)
         self.image_label.bind("<ButtonRelease-1>", self._crop_pointer_up)
@@ -2422,28 +2423,6 @@ class NewWorkApp:
         width = max(1, self.image_label.winfo_width() - 8)
         height = max(1, self.image_label.winfo_height() - 8)
         preview = self._source_image.copy()
-        if self._id_crop_preview_bounds is not None:
-            left, top, right, bottom = self._id_crop_preview_bounds
-            overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
-            draw = ImageDraw.Draw(overlay)
-            outline_width = max(3, round(min(preview.size) / 220))
-            draw.rectangle(
-                (left, top, right - 1, bottom - 1),
-                outline=(0, 120, 255, 255),
-                width=outline_width,
-            )
-            label = "idCrop" if self.portal_var.get() == "SK" else "CR.jpg"
-            label_box = draw.textbbox((left, top), label)
-            label_height = label_box[3] - label_box[1]
-            label_top = max(0, top - label_height - 8)
-            draw.rectangle(
-                (left, label_top, label_box[2] + 6, top),
-                fill=(0, 90, 220, 235),
-            )
-            draw.text((left + 3, label_top + 2), label, fill=(255, 255, 255, 255))
-            preview = Image.alpha_composite(
-                preview.convert("RGBA"), overlay
-            ).convert("RGB")
         if self.version == "v2" and MASK_PREVIEW_ENABLED and self._mask_preview_position:
             bounds = _parse_mask_position(self._mask_preview_position)
             if bounds is not None:
@@ -2462,10 +2441,60 @@ class NewWorkApp:
                 ).convert("RGB")
         preview.thumbnail((width, height), Image.Resampling.LANCZOS)
         self._preview_base = preview
+        self._display_preview(preview)
         if self._scan_active:
             self._render_scan_frame()
-        else:
-            self._display_preview(preview)
+
+    def _draw_crop_overlay(self) -> None:
+        """Update only the vector crop outline; do not resample the ID during drag."""
+        if not isinstance(self.image_label, tk.Canvas):
+            return
+        canvas = self.image_label
+        canvas.delete("crop-overlay")
+        if self._source_image is None or self._preview_base is None:
+            return
+        bounds = self._id_crop_preview_bounds
+        if bounds is None:
+            return
+        pw, ph = self._preview_base.size
+        sw, sh = self._source_image.size
+        if min(pw, ph, sw, sh) < 1:
+            return
+        offset_x = (canvas.winfo_width() - pw) / 2
+        offset_y = (canvas.winfo_height() - ph) / 2
+        sx, sy = pw / sw, ph / sh
+        left, top, right, bottom = bounds
+        x0, y0 = offset_x + left * sx, offset_y + top * sy
+        x1, y1 = offset_x + right * sx, offset_y + bottom * sy
+        canvas.create_rectangle(
+            x0, y0, x1, y1, outline="#0878FF", width=2, tags="crop-overlay",
+        )
+        label = "idCrop" if self.portal_var.get() == "SK" else "CR.jpg"
+        label_y = max(offset_y, y0 - 19)
+        text_id = canvas.create_text(
+            x0 + 5, label_y + 2, text=label, anchor="nw", fill="white",
+            font=("Segoe UI", 9, "bold"), tags="crop-overlay",
+        )
+        box = canvas.bbox(text_id)
+        if box:
+            background = canvas.create_rectangle(
+                box[0] - 3, box[1] - 2, box[2] + 3, box[3] + 2,
+                fill="#075FD4", outline="#075FD4", tags="crop-overlay",
+            )
+            canvas.tag_lower(background, text_id)
+
+    def _draw_empty_preview(self, _event=None) -> None:
+        if self._source_image is not None or not isinstance(self.image_label, tk.Canvas):
+            return
+        canvas = self.image_label
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width < 2 or height < 2:
+            return
+        icon_y = height / 2 - 28
+        canvas.coords("empty-state", width / 2, icon_y)
+        items = canvas.find_withtag("empty-state")
+        if len(items) > 1:
+            canvas.coords(items[1], width / 2, icon_y + 44)
 
     def _preview_point_to_source(self, event) -> tuple[int, int] | None:
         if self._source_image is None or self._preview_base is None:
@@ -2519,7 +2548,7 @@ class NewWorkApp:
             left = min(max(x - width // 2, 0), self._source_image.width - width)
             top = min(max(y - height // 2, 0), self._source_image.height - height)
             self._id_crop_preview_bounds = (left, top, left + width, top + height)
-            self._resize_source_preview()
+            self._draw_crop_overlay()
             self._update_id_crop_value()
         self.image_label.configure(cursor="fleur")
 
@@ -2544,8 +2573,7 @@ class NewWorkApp:
             top = min(max(y - height // 2, 0), self._source_image.height - height)
             bounds = (left, top, left + width, top + height)
         self._id_crop_preview_bounds = bounds
-        self._resize_source_preview()
-        self._update_id_crop_value()
+        self._draw_crop_overlay()
 
     def _crop_pointer_up(self, _event=None) -> None:
         if self._id_crop_drag is None:
@@ -2566,7 +2594,17 @@ class NewWorkApp:
 
     def _display_preview(self, preview: Image.Image) -> None:
         self._preview = ImageTk.PhotoImage(preview, master=self.root)
-        self.image_label.configure(image=self._preview, text="")
+        if isinstance(self.image_label, tk.Canvas):
+            canvas = self.image_label
+            canvas.delete("preview-image", "empty-state")
+            x = max(0, (canvas.winfo_width() - preview.width) / 2)
+            y = max(0, (canvas.winfo_height() - preview.height) / 2)
+            self._preview_item = canvas.create_image(
+                x, y, anchor="nw", image=self._preview, tags="preview-image",
+            )
+            self._draw_crop_overlay()
+        else:
+            self.image_label.configure(image=self._preview, text="")
 
     def _start_scan_animation(self, image_path: Path) -> None:
         self._stop_scan_animation(restore=False)
@@ -4019,9 +4057,18 @@ class NewWorkApp:
         for field in REVIEW_TEXT_FIELDS:
             self._value_vars[field].set("")
         self._id_type_var.set("유형 선택…")
-        self.image_label.configure(
-            image="", text="신분증 이미지를 선택하거나 이 영역에 끌어다 놓으세요"
-        )
+        if isinstance(self.image_label, tk.Canvas):
+            self.image_label.delete("all")
+            self.image_label.create_text(
+                self.image_label.winfo_width() / 2,
+                self.image_label.winfo_height() / 2,
+                text="신분증 이미지를 선택하거나 이 영역에 끌어다 놓으세요",
+                fill="#667085", font=("Segoe UI", 10), justify="center",
+            )
+        else:
+            self.image_label.configure(
+                image="", text="신분증 이미지를 선택하거나 이 영역에 끌어다 놓으세요"
+            )
         self.id_image_name.set("선택된 신분증 없음")
         self.raw_ocr_button.configure(state="disabled")
         self.crop_reset_button.configure(state="disabled")
@@ -4180,3 +4227,49 @@ def main(version: str = "v2") -> None:
                     ),
                 )
     root.mainloop()
+
+
+def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[OcrResult, IdTypeDetection, dict[str, str]]:
+    """Run the exact sender OCR/retry pipeline without constructing its UI."""
+    callbacks: list[tuple[object, tuple[object, ...]]] = []
+
+    class _CallbackCapture:
+        @staticmethod
+        def after(_delay: int, callback, *args) -> None:
+            callbacks.append((callback, args))
+
+    worker = NewWorkApp.__new__(NewWorkApp)
+    worker.ocr = ocr
+    worker.root = _CallbackCapture()
+    worker._recognize_in_background(Path(image_path))
+    if not callbacks:
+        raise RuntimeError("OCR 결과를 받지 못했습니다.")
+    callback, args = callbacks[-1]
+    if getattr(callback, "__name__", "") == "_ocr_failed":
+        error = args[-1] if args else RuntimeError("OCR에 실패했습니다.")
+        raise error
+    if getattr(callback, "__name__", "") != "_ocr_succeeded" or len(args) < 2:
+        raise RuntimeError("OCR 결과 형식이 올바르지 않습니다.")
+    result = args[-1]
+    if not isinstance(result, OcrResult):
+        raise RuntimeError("OCR 결과 데이터가 올바르지 않습니다.")
+    detection = detect_id_type(result.lines)
+    values = extract_identity_fields(result.lines, id_type_code=detection.code)
+    values.update({key: str(value) for key, value in result.values.items()})
+    for key in REVIEW_TEXT_FIELDS:
+        values.setdefault(key, "")
+    if detection.code == "1401":
+        mask_position = result.values.get("mskPos", "")
+    else:
+        mask_position = result.values.get("mskPos") or detect_mask_position(
+            result.lines, image_path=result.image_path,
+        )
+    values["mskPos"] = str(mask_position or "")
+    if detection.code:
+        values.update({
+            "kaitIdType": detection.code,
+            "recogSubCd": detection.code,
+            "idType": detection.type_code or "",
+            "nationClCd": "F" if detection.code == "1401" else "I",
+        })
+    return result, detection, values
