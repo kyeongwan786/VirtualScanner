@@ -150,6 +150,7 @@
     .batch-list { min-height:0; overflow:auto; padding:12px; border-right:1px solid var(--line); background:#fff; }
     .batch-row { width:100%; display:flex; align-items:center; gap:8px; padding:9px 8px; border:1px solid transparent; border-radius:8px; background:white; text-align:left; }
     .batch-row:hover { background:#f4f8fe; }
+    .batch-row:focus-visible { outline:2px solid #1769e8;outline-offset:1px; }
     .batch-row.selected { border-color:#8bb7f2; background:#edf5ff; }
     .batch-index { width:25px;height:25px; flex:none; display:grid;place-items:center;border-radius:7px;background:#eef2f7;color:#536984;font-size:10px;font-weight:750; }
     .batch-row.selected .batch-index { background:#1769e8;color:white; }
@@ -330,6 +331,7 @@
     let batchUploading = false;
     let batchPdfUploading = false;
     let batchItemLoading = false;
+    let batchSelectionId = null;
     const $ = (id) => document.getElementById(id);
     async function request(path, options = {}) {
       const headers = new Headers(options.headers || {});
@@ -402,7 +404,8 @@
       try{batchState=await request("/api/batch/state");}
       catch(error){if(poll&&$("batchDialog").open)$("batchError").textContent=error.message;}
       const rows=batchState?.items||[];
-      if(batchItem){const selectedIndex=rows.findIndex(item=>item.id===batchItem.id);if(selectedIndex>=0)batchIndex=selectedIndex;}
+      const selectedId=batchSelectionId||batchItem?.id;
+      if(selectedId){const selectedIndex=rows.findIndex(item=>item.id===selectedId);if(selectedIndex>=0)batchIndex=selectedIndex;}
       renderBatchList();updateBatchControls();
       if(!batchItem&&!batchItemLoading&&rows.length){
         batchItemLoading=true;batchIndex=0;$("batchEditor").hidden=false;try{await loadBatchItem(rows[0].id);}catch(error){$("batchError").textContent=error.message;}finally{batchItemLoading=false;}
@@ -417,17 +420,31 @@
     function renderBatchList(){
       const root=$("batchList");if(!batchState?.items){root.replaceChildren();return;}
       const signature=JSON.stringify(batchState.items.map(item=>[item.id,item.index,item.name,item.ocr_status,item.send_status,item.error,item.reviewed,item.defer,item.document_count]));
-      if(root.dataset.signature===signature)return;root.dataset.signature=signature;root.replaceChildren();
+      if(root.dataset.signature===signature)return;const preserveFocus=root.contains(document.activeElement);root.dataset.signature=signature;root.replaceChildren();
       batchState.items.forEach((item,index)=>{
-        const row=document.createElement("button");row.className=`batch-row ${index===batchIndex?"selected":""}`;
+        const row=document.createElement("button");row.className=`batch-row ${index===batchIndex?"selected":""}`;row.setAttribute("aria-pressed",index===batchIndex?"true":"false");
         const number=document.createElement("span");number.className="batch-index";number.textContent=String((item.index??index)+1);
         const copy=document.createElement("span");copy.className="batch-row-copy";
         const name=document.createElement("span");name.className="batch-row-name";name.textContent=item.name;
         const status=document.createElement("span");status.className="batch-row-status";
         status.textContent=item.ocr_status!=="완료"?(item.ocr_status==="실패"?"OCR 실패":`OCR ${item.ocr_status}`):(item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status);
         copy.append(name,status);row.append(number,copy);row.disabled=batchState.status==="sending"||batchState.status==="checking";
-        row.onclick=async()=>{if(!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
+        row.onclick=async()=>{
+          const previousIndex=batchIndex;const previousId=batchSelectionId||batchItem?.id||batchState.items[previousIndex]?.id;
+          batchIndex=index;batchSelectionId=item.id;focusBatchRow(index);
+          if(!await saveBatchItem()){
+            batchSelectionId=previousId;batchIndex=previousIndex;renderBatchList();focusBatchRow(previousIndex);return;
+          }
+          const currentIndex=(batchState?.items||[]).findIndex(row=>row.id===item.id);if(currentIndex>=0)batchIndex=currentIndex;
+          await loadBatchItem(item.id);batchSelectionId=null;renderBatchList();focusBatchRow(batchIndex);
+        };root.append(row);
       });
+      if(preserveFocus)focusBatchRow(batchIndex);
+    }
+    function focusBatchRow(index){
+      const rows=[...$("batchList").children];
+      rows.forEach((row,rowIndex)=>{const selected=rowIndex===index;row.classList.toggle("selected",selected);row.setAttribute("aria-pressed",selected?"true":"false");});
+      rows[index]?.focus({preventScroll:true});
     }
     async function loadBatchItem(itemId){
       const payload=await request(`/api/batch/item?item_id=${encodeURIComponent(itemId)}`);batchItem=payload;batchCropManual=Boolean(payload.crop_manual);
