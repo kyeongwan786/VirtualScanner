@@ -993,10 +993,17 @@ def _backend_process(port: int, token: str) -> None:
                     raise ValueError("여러 신분증 검토 작업이 만료되었습니다.")
                 item["ocr_status"] = "대기 중"
                 worker_index = item_index % len(batch_ocr_executors)
-                batch_ocr_executors[worker_index].submit(
-                    _recognize_batch_identity, item, worker_index, requested_batch_id,
-                )
+                try:
+                    batch_ocr_executors[worker_index].submit(
+                        self._recognize_batch_identity,
+                        item, worker_index, requested_batch_id,
+                    )
+                except Exception as exc:
+                    item["ocr_status"] = "실패"
+                    item["error"] = str(exc)
+                    raise
 
+        @staticmethod
         def _recognize_batch_identity(
             item: dict[str, object], worker_index: int, requested_batch_id: str,
         ) -> None:
