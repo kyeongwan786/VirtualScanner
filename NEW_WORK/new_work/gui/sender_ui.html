@@ -172,6 +172,9 @@
     .batch-fields-panel { display:grid;grid-template-rows:auto auto minmax(0,1fr); }
     .batch-fields { min-height:0;display:grid;align-content:start;gap:7px;overflow:auto;padding-right:4px; }
     .batch-pdf-tools { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center;margin-bottom:9px;padding:8px;border:1px solid #e6ecf4;border-radius:8px;background:#f9fbfe; }
+    .batch-file-picker { position:relative;display:inline-grid; }
+    .batch-file-input { position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer; }
+    .batch-file-input:disabled { pointer-events:none; }
     .batch-defer-label { display:flex;align-items:center;gap:7px;color:#536984;font-size:10px;font-weight:700; }
     .batch-defer-label input { width:15px;height:15px;accent-color:#1769e8; }
     .batch-pdf-list { grid-column:1/-1;display:grid;gap:4px;max-height:92px;overflow:auto; }
@@ -306,7 +309,7 @@
         <nav class="batch-list" id="batchList"></nav>
         <section class="batch-editor" id="batchEditor">
           <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다.</div></div>
-          <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">PDF와 함께 뒤에 전송</label><button class="button" id="batchPdfAdd" type="button">PDF 붙이기</button><input id="batchPdfInput" type="file" accept="application/pdf,.pdf" multiple hidden><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
+          <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">PDF와 함께 뒤에 전송</label><span class="batch-file-picker"><button class="button" id="batchPdfAdd" type="button">PDF 붙이기</button><input id="batchPdfInput" class="batch-file-input" type="file" accept="application/pdf,.pdf" multiple></span><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
         </section>
       </div>
       <footer class="batch-foot"><div class="batch-error" id="batchError"></div><button class="button" id="batchCancel">묶음 취소</button><button class="button" id="batchPrevious">이전</button><button class="button" id="batchNext">확인 · 다음</button><button class="button primary" id="batchFinish">모두 저장하고 전송</button></footer>
@@ -443,20 +446,22 @@
       const defer=$("batchDefer");defer.checked=Boolean(payload.defer);defer.disabled=!payload.type_label||(payload.documents||[]).length>0;
       renderBatchPdfs(payload.documents||[]);
       typeSelect.onchange=async()=>{
-        const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,type_changed:true,crop_bounds:null,crop_manual:false});
-        await loadBatchItem(batchItem.id);renderBatchList();
+        try{const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,type_changed:true,crop_bounds:null,crop_manual:false});
+          await loadBatchItem(batchItem.id);renderBatchList();}
+        catch(error){$("batchError").textContent=error.message;}
       };
       defer.onchange=async()=>{
-        const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,defer:defer.checked,crop_bounds:batchItem.crop_bounds,crop_manual:batchCropManual});
-        batchItem.defer=defer.checked;$("batchPdfAdd").disabled=!defer.checked||batchUploading;const row=batchState?.items?.find(item=>item.id===batchItem.id);if(row)row.defer=defer.checked;renderBatchList();updateBatchControls();
+        try{const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,defer:defer.checked,crop_bounds:batchItem.crop_bounds,crop_manual:batchCropManual});
+          batchItem.defer=defer.checked;const row=batchState?.items?.find(item=>item.id===batchItem.id);if(row)row.defer=defer.checked;renderBatchList();updateBatchControls();}
+        catch(error){$("batchDefer").checked=Boolean(batchItem.defer);$("batchError").textContent=error.message;}
       };
-      $("batchPdfAdd").disabled=!defer.checked||batchUploading;$("batchPdfAdd").onclick=()=>$("batchPdfInput").click();
+      $("batchPdfAdd").disabled=!defer.checked||batchUploading;$("batchPdfInput").disabled=$("batchPdfAdd").disabled;
       batchCropManual=Boolean(payload.crop_manual);renderBatchCrop();updateBatchControls();
     }
     function renderBatchPdfs(documents){
       const root=$("batchPdfList");root.replaceChildren();
-      for(const document of documents){const row=document.createElement("div");row.className="batch-pdf-row";const name=document.createElement("span");name.className="batch-pdf-name";name.textContent=document.name;const meta=document.createElement("span");meta.className="batch-pdf-meta";meta.textContent=`${document.page_count}페이지`;
-        const remove=document.createElement("button");remove.className="batch-pdf-remove";remove.type="button";remove.textContent="×";remove.title="이 신분증에서 PDF 분리";remove.onclick=async()=>{if(!confirm(`${document.name}을(를) 이 신분증에서 뺄까요? 원본 PDF는 삭제하지 않습니다.`))return;await action("batch_remove_pdf",{item_id:batchItem.id,document_key:document.key});await refreshBatch(false);await loadBatchItem(batchItem.id);};row.append(name,meta,remove);root.append(row);}
+      for(const entry of documents){const row=document.createElement("div");row.className="batch-pdf-row";const name=document.createElement("span");name.className="batch-pdf-name";name.textContent=entry.name;const meta=document.createElement("span");meta.className="batch-pdf-meta";meta.textContent=`${entry.page_count}페이지`;
+        const remove=document.createElement("button");remove.className="batch-pdf-remove";remove.type="button";remove.textContent="×";remove.title="이 신분증에서 PDF 분리";remove.onclick=async()=>{if(!confirm(`${entry.name}을(를) 이 신분증에서 뺄까요? 원본 PDF는 삭제하지 않습니다.`))return;await action("batch_remove_pdf",{item_id:batchItem.id,document_key:entry.key});await refreshBatch(false);await loadBatchItem(batchItem.id);};row.append(name,meta,remove);root.append(row);}
     }
     $("batchPdfInput").addEventListener("change",event=>{const files=[...event.target.files];event.target.value="";uploadBatchPdfs(files);});
     $("batchPdfTools").addEventListener("dragover",event=>{event.preventDefault();event.currentTarget.classList.add("drop-active");});
@@ -496,13 +501,15 @@
     function updateBatchControls(){
       const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
       const expected=batchState?.expected_count||items.length;const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const ocrFailed=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
-      $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
+      const deliveryCount=items.filter(item=>item.send_status==="Relay 등록").length;
+      $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchState?.status==="checking"?"Relay 전송 상태 확인 중…":sending?`Relay 등록 ${deliveryCount}/${expected}건 · 처리 중`:batchPdfUploading?"PDF를 페이지 이미지로 변환 중…":batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
       $("batchPrevious").disabled=batchIndex<=0||sending||batchPdfUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchPdfUploading;
       $("batchCancel").disabled=sending||batchUploading||items.some(item=>["업로드 중","대기 중","인식 중"].includes(item.ocr_status)||item.send_status!=="대기");
       $("batchFinish").disabled=sending||batchUploading||batchPdfUploading||items.length<2||!ocrReady||!otherItemsReviewed;
       $("batchFinish").textContent=allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":items.some(item=>item.send_status==="Relay 등록")?"남은 신분증 이어 전송":"모두 저장하고 전송";
       $("batchDefer").disabled=Boolean(locked)||(batchItem?.documents||[]).length>0;
       $("batchPdfAdd").disabled=Boolean(locked)||!$("batchDefer").checked;
+      $("batchPdfInput").disabled=$("batchPdfAdd").disabled;
       $("batchFields").querySelectorAll("input,select").forEach(control=>control.disabled=Boolean(locked));
       $("batchPdfList").querySelectorAll("button").forEach(control=>control.disabled=Boolean(locked));
       if(batchState?.error)$("batchError").textContent=batchState.error;
@@ -514,7 +521,7 @@
       if(batchState?.items?.some(item=>item.send_status==="확인 필요")){await action("batch_check");return;}
       if(!await saveBatchItem())return;await action("batch_send");await refreshBatch(false);refreshBatch(true);
     }
-    $("batchFinish").onclick=batchFinish;
+    $("batchFinish").onclick=async()=>{try{await batchFinish();}catch(error){$("batchError").textContent=error.message;await refreshBatch(false);}};
     $("batchCancel").onclick=async()=>{if(!confirm("선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다."))return;await action("batch_cancel");$("batchDialog").close();batchState=null;batchItem=null;};
     $("batchDialog").addEventListener("cancel",event=>event.preventDefault());
     $("ocrButton").onclick=()=>action("run_ocr");
