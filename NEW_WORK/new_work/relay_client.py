@@ -187,6 +187,7 @@ def send_work_package(
     *,
     wait_seconds: int = 300,
     cancel_event: Event | None = None,
+    wait_for_delivery: bool = True,
 ) -> str:
     """Upload the complete work ZIP in bounded encrypted chunks."""
     def check_cancelled() -> None:
@@ -242,7 +243,14 @@ def send_work_package(
                 archive_sha256.update(chunk)
         archive_sha256_hex = archive_sha256.hexdigest()
         chunk_count = (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES
-        source_name = f"{work_package['carrier']} {len(work_package['documents'])}개 서류"
+        document_count = len(work_package["documents"])
+        has_identity = work_package.get("identity_filename") is not None
+        if has_identity and document_count:
+            source_name = f"{work_package['carrier']} 신분증 + PDF {document_count}건"
+        elif has_identity:
+            source_name = f"{work_package['carrier']} 신분증 1건"
+        else:
+            source_name = f"{work_package['carrier']} PDF {document_count}건"
         metadata = {
             "job_id": job_id,
             "station_id": station_id,
@@ -323,35 +331,38 @@ def send_work_package(
                     pass
             raise
 
-        deadline = time.monotonic() + wait_seconds
-        while time.monotonic() < deadline:
-            if cancel_event is not None and cancel_event.is_set():
-                remote_status = cancel_remote_job(job_id)
-                if remote_status == "delivered":
-                    raise TransferCancelledError(
-                        "취소 전에 Receiver가 자료 수신을 완료했습니다. "
-                        f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
-                    )
+    if not wait_for_delivery:
+        return job_id
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            remote_status = cancel_remote_job(job_id)
+            if remote_status == "delivered":
                 raise TransferCancelledError(
-                    f"Receiver 대기 중 Relay 작업을 취소했습니다. 작업 ID: {job_id}"
+                    "취소 전에 Receiver가 자료 수신을 완료했습니다. "
+                    f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
                 )
-            try:
-                status, result = _request(
-                    f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status", token,
-                )
-            except TransferError as exc:
-                raise DeliveryPendingError(
-                    job_id,
-                    f"작업 {job_id}은 Relay에 접수됐지만 완료 상태를 확인할 수 없습니다. "
-                    "중복 전송하지 말고 Receiver와 Render 상태를 확인하세요.",
-                ) from exc
-            if result.get("status") == "delivered":
-                return job_id
-            report("Receiver 수신 확인 대기 중…")
-            if cancel_event is not None:
-                cancel_event.wait(1)
-            else:
-                time.sleep(1)
+            raise TransferCancelledError(
+                f"Receiver 대기 중 Relay 작업을 취소했습니다. 작업 ID: {job_id}"
+            )
+        try:
+            status, result = _request(
+                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status", token,
+            )
+        except TransferError as exc:
+            raise DeliveryPendingError(
+                job_id,
+                f"작업 {job_id}은 Relay에 접수됐지만 완료 상태를 확인할 수 없습니다. "
+                "중복 전송하지 말고 Receiver와 Render 상태를 확인하세요.",
+            ) from exc
+        if result.get("status") == "delivered":
+            return job_id
+        report("Receiver 수신 확인 대기 중…")
+        if cancel_event is not None:
+            cancel_event.wait(1)
+        else:
+            time.sleep(1)
     raise DeliveryPendingError(
         job_id,
         f"Relay에 전송했지만 Receiver 수신 확인을 {wait_seconds}초 안에 받지 못했습니다. "

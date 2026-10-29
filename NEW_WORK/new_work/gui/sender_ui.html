@@ -137,6 +137,53 @@
     .send-button:hover { background:linear-gradient(105deg,#1769e8,#0e53bc);transform:translateY(-1px); }
     dialog.settings-dialog { width:min(720px,92vw); max-height:86vh; overflow:auto; padding:22px; border:1px solid #dce5f0; border-radius:16px; color:var(--ink); box-shadow:0 24px 70px #10233b55; }
     dialog.settings-dialog::backdrop { background:#10233b88; backdrop-filter:blur(3px); }
+    dialog.batch-dialog { width:min(1160px,96vw); height:min(860px,94vh); max-width:none; max-height:none; padding:0; overflow:hidden; border:1px solid #dce5f0; border-radius:16px; color:var(--ink); box-shadow:0 24px 70px #10233b55; }
+    dialog.batch-dialog::backdrop { background:#10233bcc; backdrop-filter:blur(4px); }
+    .batch-shell { height:100%; display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
+    .batch-head,.batch-foot { display:flex; align-items:center; gap:12px; padding:14px 18px; background:#fff; }
+    .batch-head { border-bottom:1px solid var(--line); }
+    .batch-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .batch-title { font-size:17px; font-weight:760; }
+    .batch-subtitle { color:var(--muted); font-size:11px; margin-top:3px; }
+    .batch-progress { margin-left:auto; color:#41658f; font-size:11px; font-weight:700; }
+    .batch-work { min-height:0; display:grid; grid-template-columns:220px minmax(0,1fr); background:#f4f7fb; }
+    .batch-list { min-height:0; overflow:auto; padding:12px; border-right:1px solid var(--line); background:#fff; }
+    .batch-row { width:100%; display:flex; align-items:center; gap:8px; padding:9px 8px; border:1px solid transparent; border-radius:8px; background:white; text-align:left; }
+    .batch-row:hover { background:#f4f8fe; }
+    .batch-row.selected { border-color:#8bb7f2; background:#edf5ff; }
+    .batch-index { width:25px;height:25px; flex:none; display:grid;place-items:center;border-radius:7px;background:#eef2f7;color:#536984;font-size:10px;font-weight:750; }
+    .batch-row.selected .batch-index { background:#1769e8;color:white; }
+    .batch-row-copy { min-width:0; flex:1; }
+    .batch-row-name { display:block;overflow:hidden;color:#29415f;font-size:10px;font-weight:700;text-overflow:ellipsis;white-space:nowrap; }
+    .batch-row-status { display:block;margin-top:3px;color:#8290a4;font-size:9px; }
+    .batch-editor { min-height:0; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); gap:12px; padding:14px; }
+    .batch-preview-panel,.batch-fields-panel { min-width:0;min-height:0;padding:12px;border:1px solid #e3eaf3;border-radius:11px;background:white; }
+    .batch-preview-panel { display:grid;grid-template-rows:auto minmax(0,1fr) auto; }
+    .batch-section-title { color:#3c5574;font-size:11px;font-weight:750;margin-bottom:8px; }
+    .batch-image-area { min-height:0;display:grid;place-items:center;overflow:hidden;border:1px solid #e4eaf2;border-radius:9px;background:#f2f5f9; }
+    .batch-image-box { position:relative;display:inline-block;max-width:100%;max-height:100%;line-height:0; }
+    .batch-image-box img { display:block;max-width:100%;max-height:100%;object-fit:contain; }
+    .batch-crop { position:absolute;display:none;border:2px solid #1476f2;background:#1476f211;box-shadow:0 0 0 1px #fff9;cursor:move;touch-action:none; }
+    .batch-crop.visible { display:block; }
+    .batch-crop::before { content:var(--crop-label,"idCrop");position:absolute;left:-2px;top:-19px;padding:2px 5px;border-radius:4px 4px 0 0;background:#1476f2;color:white;font-size:9px;font-weight:700;line-height:14px; }
+    .batch-crop.fallback { border-style:dashed; }
+    .batch-image-note { padding-top:8px;color:#8090a5;font-size:9px; }
+    .batch-fields-panel { display:grid;grid-template-rows:auto auto minmax(0,1fr); }
+    .batch-fields { min-height:0;display:grid;align-content:start;gap:7px;overflow:auto;padding-right:4px; }
+    .batch-pdf-tools { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center;margin-bottom:9px;padding:8px;border:1px solid #e6ecf4;border-radius:8px;background:#f9fbfe; }
+    .batch-defer-label { display:flex;align-items:center;gap:7px;color:#536984;font-size:10px;font-weight:700; }
+    .batch-defer-label input { width:15px;height:15px;accent-color:#1769e8; }
+    .batch-pdf-list { grid-column:1/-1;display:grid;gap:4px;max-height:92px;overflow:auto; }
+    .batch-pdf-row { display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;background:white;color:#536984;font-size:9px; }
+    .batch-pdf-name { min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+    .batch-pdf-meta { color:#8290a4;white-space:nowrap; }
+    .batch-pdf-remove { border:0;background:transparent;color:#b42332;font-size:14px;cursor:pointer; }
+    .batch-type-row,.batch-field-row { display:grid;grid-template-columns:92px minmax(0,1fr);align-items:center;gap:8px; }
+    .batch-type-row label,.batch-field-row label { color:#536984;font-size:10px;font-weight:680; }
+    .batch-type-row select,.batch-field-row input { width:100%;height:34px;padding:0 9px;border:1px solid #d5e1ef;border-radius:7px;outline:none;background:#fff;color:#263e60;font-size:11px; }
+    .batch-type-row select:focus,.batch-field-row input:focus { border-color:#72a3ec;box-shadow:0 0 0 3px #1769e817; }
+    .batch-error { margin-right:auto;color:#b42332;font-size:10px; }
+    .batch-error:empty { display:none; }
     .settings-title { font-size:18px; font-weight:760; }
     .settings-desc { margin:6px 0 18px; color:var(--muted); font-size:12px; }
     .settings-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,.7fr) 34px; gap:8px; margin:8px 0; }
@@ -159,6 +206,11 @@
       .footer { flex-wrap:wrap; }
       .send-hint { min-width:100%; order:4; }
       .send-button { margin-left:auto; }
+      dialog.batch-dialog { width:96vw; height:94vh; }
+      .batch-work { grid-template-columns:170px minmax(0,1fr); }
+      .batch-editor { grid-template-columns:1fr; overflow:auto; }
+      .batch-preview-panel { min-height:300px; }
+      .batch-fields-panel { min-height:300px; }
     }
   </style>
 </head>
@@ -189,9 +241,9 @@
           </div>
           <div class="dropzone" id="idDrop">
             <button class="button primary" onclick="document.getElementById('idInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span id="idButtonText">신분증 이미지 선택</span></button>
-            <div class="drop-copy"><strong>신분증 JPG를 여기에 놓으세요</strong>JPG · JPEG · PNG</div>
+            <div class="drop-copy"><strong>신분증 JPG를 여기에 놓으세요</strong>JPG · JPEG · PNG · 여러 장이면 묶음 검토</div>
             <button class="button soft" id="ocrButton">OCR 다시 실행</button>
-            <input id="idInput" type="file" accept="image/jpeg,image/png" hidden>
+            <input id="idInput" type="file" accept="image/jpeg,image/png" multiple hidden>
           </div>
           <div class="workspace-content">
             <section class="subpanel">
@@ -246,6 +298,19 @@
   </div>
   <dialog class="settings-dialog" id="stationsDialog"><h2 class="settings-title">접점 설정</h2><p class="settings-desc">자리 이름과 해당 Receiver의 자리 ID를 입력하세요. 비워 둔 자리 ID는 전송 대상으로 사용할 수 없습니다.</p><div id="stationSettingsRows"></div><button class="button" id="addStationRow">+ 접점 추가</button><div class="settings-actions"><button class="button" data-close="stationsDialog">닫기</button><button class="button primary" id="saveStations">접점 저장</button></div></dialog>
   <dialog class="settings-dialog" id="relayDialog"><h2 class="settings-title">Relay 설정</h2><p class="settings-desc">Render Relay 주소와 중앙 송신 토큰을 설정합니다.</p><div class="settings-form"><label>Relay HTTPS 주소<input id="relayUrlInput" placeholder="https://example.onrender.com"></label><label>중앙 송신 토큰<input id="relayTokenInput" type="password" autocomplete="new-password" placeholder="새 토큰 입력 시 교체"></label><div class="saved-token-state" id="savedTokenState" role="status"></div><p class="settings-desc token-help">토큰은 보안상 다시 표시하지 않습니다. 새 토큰을 입력하면 교체되고, 비워 두면 현재 저장된 토큰을 유지합니다.</p></div><div class="settings-actions"><button class="button" data-close="relayDialog">닫기</button><button class="button primary" id="saveRelay">Relay 설정 저장</button></div></dialog>
+  <dialog class="batch-dialog" id="batchDialog">
+    <div class="batch-shell">
+      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">OCR 결과와 idCrop을 하나씩 확인하세요. PDF를 붙인 신분증은 나머지 신분증 뒤에 함께 등록됩니다. 메인 PDF 목록은 별도 전송용으로 남습니다.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
+      <div class="batch-work">
+        <nav class="batch-list" id="batchList"></nav>
+        <section class="batch-editor" id="batchEditor">
+          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="검토할 신분증"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note">파란 고정 영역을 드래그하거나 사진을 두 번 눌러 위치를 조정하세요.</div></div>
+          <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">PDF와 함께 뒤에 전송</label><button class="button" id="batchPdfAdd" type="button">PDF 붙이기</button><input id="batchPdfInput" type="file" accept="application/pdf,.pdf" multiple hidden><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
+        </section>
+      </div>
+      <footer class="batch-foot"><div class="batch-error" id="batchError"></div><button class="button" id="batchCancel">묶음 취소</button><button class="button" id="batchPrevious">이전</button><button class="button" id="batchNext">확인 · 다음</button><button class="button primary" id="batchFinish">모두 저장하고 전송</button></footer>
+    </div>
+  </dialog>
   <script>
     const token = new URLSearchParams(location.search).get("token") || "";
     let currentState = null;
@@ -253,6 +318,12 @@
     let stationSignature = "";
     let cropDrag = null;
     let pendingCropBounds = null;
+    let batchState = null;
+    let batchItem = null;
+    let batchIndex = 0;
+    let batchCropDrag = null;
+    let batchCropManual = false;
+    let batchUploading = false;
     const $ = (id) => document.getElementById(id);
     async function request(path, options = {}) {
       const headers = new Headers(options.headers || {});
@@ -279,17 +350,151 @@
       catch(error){showNotice(error.message,true);}
       finally{document.body.classList.remove("busy");}
     }
-    $("idInput").addEventListener("change",(event)=>upload(event.target.files[0],"identity"));
+    $("idInput").addEventListener("change",(event)=>{const files=[...event.target.files];event.target.value="";uploadIdentityFiles(files);});
     $("pdfInput").addEventListener("change",async(event)=>{for(const file of [...event.target.files])await upload(file,"pdf");event.target.value="";});
     function bindDrop(target,kind){
       target.addEventListener("dragenter",(event)=>{event.preventDefault();target.classList.add("drop-active");});
       target.addEventListener("dragover",(event)=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect="copy";});
       target.addEventListener("dragleave",(event)=>{if(!event.relatedTarget||!target.contains(event.relatedTarget))target.classList.remove("drop-active");});
-      target.addEventListener("drop",async(event)=>{event.preventDefault();event.stopPropagation();target.classList.remove("drop-active");const files=[...event.dataTransfer.files];if(kind==="identity"&&files.length>1){showNotice("신분증은 한 번에 한 장씩 등록하세요.",true);return;}for(const file of files)await upload(file,kind);});
+      target.addEventListener("drop",async(event)=>{event.preventDefault();event.stopPropagation();target.classList.remove("drop-active");const files=[...event.dataTransfer.files];if(kind==="identity"){await uploadIdentityFiles(files);return;}for(const file of files)await upload(file,kind);});
     }
     // Each complete work panel is a drop target, including its preview/list and lower controls.
     bindDrop(document.querySelector(".workspaces > .panel:first-child"),"identity");
     bindDrop(document.querySelector(".workspaces > .panel:last-child"),"pdf");
+    async function uploadIdentityFiles(files){
+      const images=files.filter(file=>/\.(jpe?g|png)$/i.test(file.name));
+      if(images.length!==files.length){showNotice("신분증은 JPG, JPEG, PNG만 등록할 수 있습니다.",true);return;}
+      if(images.length===1){await upload(images[0],"identity");return;}
+      if(images.length<2)return;
+      if(images.length>50){showNotice("한 번에 신분증을 최대 50장까지 검토할 수 있습니다.",true);return;}
+      if(currentState?.identity_name||currentState?.sending){showNotice("현재 작업을 마치거나 초기화한 뒤 신분증 묶음을 시작하세요.",true);return;}
+      try{
+        const started=await action("batch_start",{count:images.length});
+        const batchId=started.result?.batch_id;if(!batchId)throw new Error("신분증 묶음을 시작하지 못했습니다.");
+        batchUploading=true;batchState={id:batchId,status:"reviewing",items:[]};batchItem=null;batchIndex=0;
+        $("batchDialog").showModal();$("batchEditor").hidden=true;$("batchError").textContent="";$("batchCancel").disabled=false;
+        for(let index=0;index<images.length;index++){
+          const file=images[index];$("batchProgress").textContent=`OCR 준비 ${index+1}/${images.length} · ${file.name}`;
+          const query=new URLSearchParams({kind:"identity",name:file.name,batch_id:batchId});
+          await request(`/api/upload?${query}`,{method:"POST",body:file});
+          await refreshBatch(false);
+        }
+        batchUploading=false;await refreshBatch(false);
+        if(!batchState.items||batchState.items.length!==images.length)throw new Error("일부 신분증 OCR 결과를 받지 못했습니다.");
+        $("batchEditor").hidden=false;await loadBatchItem(batchState.items[0].id);renderBatchList();updateBatchControls();
+        showNotice(`${images.length}장 OCR 완료 · 하나씩 확인한 뒤 전체 전송하세요.`);
+        refreshBatch(true);
+      }catch(error){
+        batchUploading=false;$("batchProgress").textContent="처리 중단";$("batchError").textContent=error.message;
+        await refreshBatch(false);renderBatchList();updateBatchControls();
+        refreshBatch(true);
+      }
+    }
+    async function refreshBatch(poll=true){
+      try{batchState=await request("/api/batch/state");renderBatchList();updateBatchControls();}
+      catch(error){if(poll&&$("batchDialog").open)$("batchError").textContent=error.message;}
+      if(poll&&$("batchDialog").open)setTimeout(()=>refreshBatch(true),700);
+    }
+    function renderBatchList(){
+      const root=$("batchList");if(!batchState?.items){root.replaceChildren();return;}
+      const signature=JSON.stringify(batchState.items.map(item=>[item.id,item.name,item.send_status,item.error,item.reviewed,item.defer,item.document_count]));
+      if(root.dataset.signature===signature)return;root.dataset.signature=signature;root.replaceChildren();
+      batchState.items.forEach((item,index)=>{
+        const row=document.createElement("button");row.className=`batch-row ${index===batchIndex?"selected":""}`;
+        const number=document.createElement("span");number.className="batch-index";number.textContent=String(index+1);
+        const copy=document.createElement("span");copy.className="batch-row-copy";
+        const name=document.createElement("span");name.className="batch-row-name";name.textContent=item.name;
+        const status=document.createElement("span");status.className="batch-row-status";status.textContent=item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status;
+        copy.append(name,status);row.append(number,copy);row.disabled=batchUploading||batchState.status==="sending"||batchState.status==="checking";
+        row.onclick=async()=>{if(!await saveBatchItem())return;batchIndex=index;await loadBatchItem(item.id);renderBatchList();};root.append(row);
+      });
+    }
+    async function loadBatchItem(itemId){
+      const payload=await request(`/api/batch/item?item_id=${encodeURIComponent(itemId)}`);batchItem=payload;batchCropManual=Boolean(payload.crop_manual);
+      $("batchImageTitle").textContent=`${batchIndex+1}. ${payload.name} · idCrop 조정`;
+      const image=$("batchIdentityImage");image.onload=renderBatchCrop;image.src=`data:image/jpeg;base64,${payload.image}`;
+      const fields=$("batchFields");fields.replaceChildren();
+      const typeRow=document.createElement("div");typeRow.className="batch-type-row";
+      const typeLabel=document.createElement("label");typeLabel.textContent="신분증 종류";
+      const typeSelect=document.createElement("select");typeSelect.id="batchType";
+      for(const value of payload.id_type_options||[]){const option=document.createElement("option");option.value=value;option.textContent=value;typeSelect.append(option);}
+      typeSelect.value=payload.type_label||"유형 선택…";typeRow.append(typeLabel,typeSelect);fields.append(typeRow);
+      for(const field of payload.fields||[]){const row=document.createElement("div");row.className="batch-field-row";const label=document.createElement("label");label.textContent=field.label;label.htmlFor=`batch-${field.key}`;const input=document.createElement("input");input.id=`batch-${field.key}`;input.dataset.field=field.key;input.value=payload.values[field.key]||"";row.append(label,input);fields.append(row);}
+      const defer=$("batchDefer");defer.checked=Boolean(payload.defer);defer.disabled=!payload.type_label||(payload.documents||[]).length>0;
+      renderBatchPdfs(payload.documents||[]);
+      typeSelect.onchange=async()=>{
+        const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,type_changed:true,crop_bounds:null,crop_manual:false});
+        await loadBatchItem(batchItem.id);renderBatchList();
+      };
+      defer.onchange=async()=>{
+        const values=batchValues();await action("batch_update",{item_id:batchItem.id,values,type_label:typeSelect.value,defer:defer.checked,crop_bounds:batchItem.crop_bounds,crop_manual:batchCropManual});
+        batchItem.defer=defer.checked;$("batchPdfAdd").disabled=!defer.checked||batchUploading;const row=batchState?.items?.find(item=>item.id===batchItem.id);if(row)row.defer=defer.checked;renderBatchList();updateBatchControls();
+      };
+      $("batchPdfAdd").disabled=!defer.checked||batchUploading;$("batchPdfAdd").onclick=()=>$("batchPdfInput").click();
+      batchCropManual=Boolean(payload.crop_manual);renderBatchCrop();updateBatchControls();
+    }
+    function renderBatchPdfs(documents){
+      const root=$("batchPdfList");root.replaceChildren();
+      for(const document of documents){const row=document.createElement("div");row.className="batch-pdf-row";const name=document.createElement("span");name.className="batch-pdf-name";name.textContent=document.name;const meta=document.createElement("span");meta.className="batch-pdf-meta";meta.textContent=`${document.page_count}페이지`;
+        const remove=document.createElement("button");remove.className="batch-pdf-remove";remove.type="button";remove.textContent="×";remove.title="이 신분증에서 PDF 분리";remove.onclick=async()=>{if(!confirm(`${document.name}을(를) 이 신분증에서 뺄까요? 원본 PDF는 삭제하지 않습니다.`))return;await action("batch_remove_pdf",{item_id:batchItem.id,document_key:document.key});await refreshBatch(false);await loadBatchItem(batchItem.id);};row.append(name,meta,remove);root.append(row);}
+    }
+    $("batchPdfInput").addEventListener("change",event=>{const files=[...event.target.files];event.target.value="";uploadBatchPdfs(files);});
+    $("batchPdfTools").addEventListener("dragover",event=>{event.preventDefault();event.currentTarget.classList.add("drop-active");});
+    $("batchPdfTools").addEventListener("dragleave",event=>{if(!event.relatedTarget||!event.currentTarget.contains(event.relatedTarget))event.currentTarget.classList.remove("drop-active");});
+    $("batchPdfTools").addEventListener("drop",event=>{event.preventDefault();event.stopPropagation();event.currentTarget.classList.remove("drop-active");uploadBatchPdfs([...event.dataTransfer.files]);});
+    async function uploadBatchPdfs(files){
+      if(!batchItem||!files.length)return;if(files.some(file=>! /\.pdf$/i.test(file.name))){$("batchError").textContent="신분증 묶음에는 PDF 파일만 붙일 수 있습니다.";return;}
+      if(!$("batchDefer").checked){$("batchError").textContent="먼저 ‘PDF와 함께 뒤에 전송’을 선택하세요.";return;}
+      if(!await saveBatchItem())return;batchUploading=true;updateBatchControls();
+      try{for(let index=0;index<files.length;index++){const file=files[index];$("batchProgress").textContent=`PDF 변환 ${index+1}/${files.length} · ${file.name}`;const query=new URLSearchParams({kind:"pdf",name:file.name,batch_id:batchState.id,item_id:batchItem.id});await request(`/api/upload?${query}`,{method:"POST",body:file});}
+        await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();$("batchError").textContent="";
+      }catch(error){$("batchError").textContent=error.message;await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();}
+      finally{batchUploading=false;updateBatchControls();}
+    }
+    function batchValues(){const values={};document.querySelectorAll("#batchFields [data-field]").forEach(input=>values[input.dataset.field]=input.value);return values;}
+    async function saveBatchItem(){
+      if(!batchItem)return true;
+      const typeLabel=$("batchType")?.value||batchItem.type_label;
+      if(!typeLabel||typeLabel==="유형 선택…"){$("batchError").textContent=`${batchItem.name}: 신분증 종류를 선택하세요.`;return false;}
+      try{await action("batch_update",{item_id:batchItem.id,values:batchValues(),type_label:typeLabel,defer:$("batchDefer").checked,crop_bounds:batchItem.crop_bounds,crop_manual:batchCropManual});
+        batchItem.values=batchValues();batchItem.type_label=typeLabel;batchItem.crop_manual=batchCropManual;batchItem.defer=$("batchDefer").checked;batchItem.reviewed=true;const saved=batchState?.items?.find(item=>item.id===batchItem.id);if(saved){saved.reviewed=true;saved.defer=batchItem.defer;}$("batchError").textContent="";renderBatchList();updateBatchControls();return true;
+      }catch(error){$("batchError").textContent=error.message;return false;}
+    }
+    function renderBatchCrop(){
+      if(!batchItem)return;const box=$("batchCrop"),image=$("batchIdentityImage");const bounds=batchCropDrag?.bounds||batchItem.crop_bounds;
+      if(!bounds||!image.clientWidth||!batchItem.image_width){box.classList.remove("visible");return;}
+      const scale=image.clientWidth/batchItem.image_width;box.classList.add("visible");box.style.left=`${bounds[0]*scale}px`;box.style.top=`${bounds[1]*scale}px`;box.style.width=`${(bounds[2]-bounds[0])*scale}px`;box.style.height=`${(bounds[3]-bounds[1])*scale}px`;box.style.setProperty("--crop-label",batchState?.portal==="KT"?'"CR.jpg"':'"idCrop"');box.classList.toggle("fallback",batchItem.crop_fallback&&!batchCropManual);
+    }
+    function batchCropAt(event){if(!batchCropDrag||!batchItem)return null;const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const dx=Math.round((event.clientX-batchCropDrag.x)/scale),dy=Math.round((event.clientY-batchCropDrag.y)/scale);const [left,top,right,bottom]=batchCropDrag.original,w=right-left,h=bottom-top;const x=Math.min(Math.max(0,left+dx),batchItem.image_width-w),y=Math.min(Math.max(0,top+dy),batchItem.image_height-h);return[x,y,x+w,y+h];}
+    $("batchCrop").addEventListener("pointerdown",event=>{if(!batchItem?.crop_bounds)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);batchCropDrag={x:event.clientX,y:event.clientY,original:[...batchItem.crop_bounds],bounds:[...batchItem.crop_bounds]};});
+    $("batchCrop").addEventListener("pointermove",event=>{if(!batchCropDrag)return;batchCropDrag.bounds=batchCropAt(event);renderBatchCrop();});
+    $("batchCrop").addEventListener("pointerup",event=>{if(!batchCropDrag)return;batchItem.crop_bounds=batchCropAt(event)||batchCropDrag.bounds;batchCropDrag=null;batchCropManual=true;renderBatchCrop();});
+    $("batchCrop").addEventListener("pointercancel",()=>{batchCropDrag=null;renderBatchCrop();});
+    $("batchImageBox").addEventListener("dblclick",event=>{if(!batchItem?.crop_size||event.target===$("batchCrop"))return;const image=$("batchIdentityImage").getBoundingClientRect();const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const [width,height]=batchItem.crop_size;const x=Math.round((event.clientX-image.left)/scale),y=Math.round((event.clientY-image.top)/scale);const left=Math.max(0,Math.min(batchItem.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(batchItem.image_height-height,y-Math.round(height/2)));batchItem.crop_bounds=[left,top,left+width,top+height];batchCropManual=true;renderBatchCrop();});
+    async function batchAdvance(){if(!await saveBatchItem())return;const items=batchState?.items||[];if(batchIndex+1<items.length){batchIndex++;await loadBatchItem(items[batchIndex].id);renderBatchList();return;}await batchFinish();}
+    function updateBatchControls(){
+      const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchUploading||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
+      $("batchProgress").textContent=batchUploading?"신분증 OCR 처리 중":allQueued?`${items.length}건 Relay 등록 완료`:`${reviewedCount} / ${batchState?.expected_count||items.length}건 검토 완료`;
+      $("batchPrevious").disabled=batchIndex<=0||sending||batchUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchUploading;
+      $("batchCancel").disabled=sending||batchUploading||items.some(item=>item.send_status!=="대기");
+      $("batchFinish").disabled=sending||batchUploading||items.length<2||!otherItemsReviewed||items.length!==(batchState?.expected_count||items.length);
+      $("batchFinish").textContent=allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":items.some(item=>item.send_status==="Relay 등록")?"남은 신분증 이어 전송":"모두 저장하고 전송";
+      $("batchDefer").disabled=Boolean(locked)||(batchItem?.documents||[]).length>0;
+      $("batchPdfAdd").disabled=Boolean(locked)||!$("batchDefer").checked;
+      $("batchFields").querySelectorAll("input,select").forEach(control=>control.disabled=Boolean(locked));
+      $("batchPdfList").querySelectorAll("button").forEach(control=>control.disabled=Boolean(locked));
+      if(batchState?.error)$("batchError").textContent=batchState.error;
+    }
+    $("batchPrevious").onclick=async()=>{if(!await saveBatchItem())return;batchIndex=Math.max(0,batchIndex-1);await loadBatchItem(batchState.items[batchIndex].id);renderBatchList();};
+    $("batchNext").onclick=batchAdvance;
+    async function batchFinish(){
+      if(batchState?.items?.every(item=>item.send_status==="Relay 등록")){const count=batchState.items.length;await action("batch_close");$("batchDialog").close();batchState=null;batchItem=null;showNotice(`${count}건 모두 Relay에 등록했습니다.`);return;}
+      if(batchState?.items?.some(item=>item.send_status==="확인 필요")){await action("batch_check");return;}
+      if(!await saveBatchItem())return;await action("batch_send");await refreshBatch(false);refreshBatch(true);
+    }
+    $("batchFinish").onclick=batchFinish;
+    $("batchCancel").onclick=async()=>{if(!confirm("선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다."))return;await action("batch_cancel");$("batchDialog").close();batchState=null;batchItem=null;};
+    $("batchDialog").addEventListener("cancel",event=>event.preventDefault());
     $("ocrButton").onclick=()=>action("run_ocr");
     $("sendButton").onclick=()=>action("send");
     $("statusButton").onclick=()=>action("check_status");

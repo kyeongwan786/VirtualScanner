@@ -211,7 +211,311 @@ def _backend_process(port: int, token: str) -> None:
     upload_root = default_job_directory() / ".sender_web_uploads"
     upload_root.mkdir(parents=True, exist_ok=True)
     temporary_uploads: dict[str, str] = {}
+    batch_lock = threading.RLock()
+    batch_ocr_lock = threading.Lock()
+    batch: dict[str, object] = {
+        "id": "", "portal": "SK", "status": "idle", "error": "", "items": [],
+        "expected_count": 0,
+    }
     stop_event = threading.Event()
+
+    def batch_summary() -> dict[str, object]:
+        with batch_lock:
+            items = batch["items"]
+            return {
+                "id": batch["id"], "portal": batch["portal"],
+                "status": batch["status"], "error": batch["error"],
+                "expected_count": batch["expected_count"],
+                "items": [
+                    {key: item.get(key) for key in (
+                        "id", "name", "ocr_status", "code", "type_label",
+                        "send_status", "job_id", "error", "reviewed", "defer",
+                    )}
+                    | {"document_count": len(item.get("documents", []))}
+                    for item in items
+                ],
+            }
+
+    def batch_item_payload(item_id: str) -> dict[str, object] | None:
+        with batch_lock:
+            item = next((row for row in batch["items"] if row["id"] == item_id), None)
+            if item is None:
+                return None
+            path = Path(item["path"])
+            from PIL import ImageOps
+            with Image.open(path) as opened:
+                image = ImageOps.exif_transpose(opened).convert("RGB")
+            image.thumbnail((1600, 1200), Image.Resampling.LANCZOS)
+            image_stream = BytesIO()
+            image.save(image_stream, format="JPEG", quality=86)
+            return {
+                "id": item["id"], "name": item["name"],
+                "image": base64.b64encode(image_stream.getvalue()).decode("ascii"),
+                "image_width": item["width"], "image_height": item["height"],
+                "crop_bounds": item["crop_bounds"], "crop_size": item["crop_size"],
+                "crop_fallback": item["crop_fallback"], "crop_manual": item["crop_manual"],
+                "code": item["code"], "type_label": item["type_label"],
+                "id_type_options": item["id_type_options"],
+                "fields": item["fields"], "values": dict(item["values"]),
+                "ocr_status": item["ocr_status"],
+                "reviewed": item["reviewed"],
+                "defer": item["defer"],
+                "documents": [
+                    {"key": document["key"], "name": document.get("name", Path(document["source"]).name),
+                     "page_count": document["page_count"], "status": document["status"]}
+                    for document in item["documents"]
+                ],
+            }
+
+    def update_batch_item(data: dict[str, object]) -> None:
+        from new_work.gui.app import (
+            FOCUS_FIELDS, FOCUS_GROUP_BY_CODE, ID_TYPE_LABEL_TO_CODE,
+        )
+        from new_work.ocr.id_types import ID_TYPES, IdTypeDetection
+        from new_work.ocr.field_extractor import extract_identity_fields
+        from new_work.image.face_crop import (
+            id_portrait_bounds, id_portrait_fallback_bounds, id_portrait_size,
+        )
+        from new_work.carrier.sk_report import SK_ID_CROP_CODES
+
+        item_id = str(data.get("item_id", ""))
+        with batch_lock:
+            item = next((row for row in batch["items"] if row["id"] == item_id), None)
+            if item is None or item.get("ocr_status") != "완료":
+                raise ValueError("검토할 신분증을 찾지 못했습니다.")
+            if item.get("send_status") in {"전송 중", "확인 필요", "Relay 등록"}:
+                raise ValueError("이미 Relay 전송을 시작한 신분증은 수정할 수 없습니다.")
+            raw_values = data.get("values")
+            if not isinstance(raw_values, dict):
+                raise ValueError("OCR 수정값 형식이 올바르지 않습니다.")
+            values = dict(item["values"])
+            for key, value in raw_values.items():
+                if key in REVIEW_TEXT_FIELDS:
+                    values[key] = str(value)[:2048]
+            label = str(data.get("type_label", ""))
+            code = ID_TYPE_LABEL_TO_CODE.get(label)
+            if not code:
+                raise ValueError("신분증 종류를 선택하세요.")
+            values["kaitIdType"] = code
+            values["recogSubCd"] = code
+            values["idType"] = ID_TYPES[code]["type"]
+            values["nationClCd"] = "F" if code == "1401" else "I"
+
+            raw_bounds = None if data.get("type_changed") else data.get("crop_bounds")
+            crop_manual = bool(data.get("crop_manual", False)) and not data.get("type_changed")
+            bounds = None
+            if raw_bounds is not None:
+                if (not isinstance(raw_bounds, list) or len(raw_bounds) != 4
+                        or any(not isinstance(value, int) for value in raw_bounds)):
+                    raise ValueError("idCrop 좌표가 올바르지 않습니다.")
+                left, top, right, bottom = raw_bounds
+                if not (0 <= left < right <= item["width"]
+                        and 0 <= top < bottom <= item["height"]):
+                    raise ValueError("idCrop 영역이 이미지 범위를 벗어났습니다.")
+                bounds = [left, top, right, bottom]
+                if crop_manual or not item.get("crop_fallback"):
+                    values["_idCropBounds"] = ",".join(str(value) for value in bounds)
+
+            if code == "1302":
+                extracted = extract_identity_fields(item["result"].lines, id_type_code=code)
+                for field in ("custNm", "ctzCorpNum", "veteranNum"):
+                    if extracted.get(field) and not values.get(field, "").strip():
+                        values[field] = extracted[field]
+
+            documents = item.get("documents", [])
+            defer = bool(data.get("defer", item.get("defer", False))) or bool(documents)
+
+            source = Image.open(item["path"]).convert("RGB")
+            portal = str(batch["portal"])
+            is_crop_type = portal == "KT" or code in SK_ID_CROP_CODES
+            fallback = bool(item.get("crop_fallback")) and not crop_manual
+            crop_size = list(id_portrait_size(code)) if is_crop_type else None
+            if is_crop_type and bounds is None:
+                automatic = id_portrait_bounds(
+                    source, recog_sub_cd=code, require_face=True,
+                )
+                fallback = automatic is None
+                automatic = automatic or id_portrait_fallback_bounds(
+                    source, recog_sub_cd=code,
+                )
+                bounds = list(automatic) if automatic else None
+                if bounds and fallback:
+                    values.pop("_idCropBounds", None)
+            if not is_crop_type:
+                values.pop("_idCropBounds", None)
+                bounds = None
+
+            detection = IdTypeDetection(
+                name=ID_TYPES[code]["name"], type_code=ID_TYPES[code]["type"],
+                candidate_codes=(code,), preferred_code=code,
+            )
+            item.update({
+                "values": values, "code": code, "type_label": label,
+                "detection": detection, "crop_bounds": bounds,
+                "crop_size": crop_size, "crop_fallback": fallback,
+                "crop_manual": crop_manual,
+                "defer": defer,
+                "fields": [
+                    {"key": field, "label": title}
+                    for field, title in FOCUS_FIELDS.get(
+                        FOCUS_GROUP_BY_CODE.get(code, "resident"), FOCUS_FIELDS["resident"],
+                    )
+                ],
+                "reviewed": True,
+            })
+            item["fields"] = item["fields"] + [
+                {"key": field, "label": label}
+                for field, label in (("addr", "주소"), ("isuePlc", "발급기관"))
+                if values.get(field, "").strip()
+                and field not in {entry["key"] for entry in item["fields"]}
+            ]
+
+    def _start_batch_send() -> None:
+        store = app._selected_store()
+        if store is None or not store.relay_station_id:
+            raise ValueError("전송 대상을 선택하고 Relay 자리 ID를 설정하세요.")
+        if app.relay_config is None:
+            raise ValueError(app._relay_config_error or "Relay 설정을 확인하세요.")
+        with batch_lock:
+            items = list(batch["items"])
+            if len(items) < 2 or batch["status"] not in {"reviewing", "partial"}:
+                raise ValueError("전송할 검토 묶음이 없습니다.")
+            if len(items) != batch["expected_count"]:
+                raise ValueError("선택한 모든 신분증의 OCR 준비를 마친 뒤 전송하세요.")
+            if any(item.get("ocr_status") != "완료" for item in items):
+                raise ValueError("OCR가 완료되지 않은 신분증이 있습니다.")
+            if any(not item.get("reviewed") for item in items):
+                raise ValueError("모든 신분증을 하나씩 확인하고 저장하세요.")
+            if any(not item.get("code") for item in items):
+                raise ValueError("모든 신분증의 종류를 선택하세요.")
+            if any(item.get("send_status") == "확인 필요" for item in items):
+                raise ValueError("Relay 작업 상태를 먼저 확인하세요.")
+            pending = [item for item in items if item.get("send_status") != "Relay 등록"]
+            pending.sort(key=lambda item: bool(item.get("defer") or item.get("documents")))
+            if not pending:
+                raise ValueError("모든 신분증이 이미 Relay에 등록되었습니다.")
+            batch["status"] = "sending"
+            batch["error"] = ""
+            portal = str(batch["portal"])
+            batch_id = str(batch["id"])
+            relay_config = dict(app.relay_config)
+        threading.Thread(
+            target=_send_batch_worker,
+            args=(batch_id, items, pending, store, portal, relay_config),
+            daemon=True,
+            name="new-work-batch-send",
+        ).start()
+
+    def _send_batch_worker(
+        batch_id: str, all_items: list[dict[str, object]],
+        pending: list[dict[str, object]], store, carrier: str,
+        relay_config: dict[str, str],
+    ) -> None:
+        from new_work.gui.app import DeliveryPendingError
+        from new_work.relay_client import send_work_package
+        from new_work.job_package import create_work_package
+        from new_work.domain import OcrResult
+
+        for item in pending:
+            with batch_lock:
+                item["send_status"] = "전송 중"
+                item["error"] = ""
+            transfer_id = str(uuid4())
+            item_dir = Path(item["path"]).parent.parent
+            package = item_dir / f"{transfer_id}_{carrier}.zip"
+            result = item["result"]
+            if not isinstance(result, OcrResult):
+                with batch_lock:
+                    item["send_status"] = "실패"
+                    item["error"] = "OCR 결과를 찾지 못했습니다."
+                    batch["status"] = "partial"
+                    batch["error"] = item["error"]
+                break
+            try:
+                create_work_package(
+                    package, job_id=transfer_id,
+                    station_id=store.relay_station_id, carrier=carrier,
+                    result=result, detection=item["detection"],
+                    reviewed_values=dict(item["values"]),
+                    document_jobs=list(item.get("documents", [])),
+                )
+                job_id = send_work_package(
+                    relay_config, store.relay_station_id, package,
+                    progress=lambda message, row=item: _set_batch_item_progress(row, message),
+                    wait_for_delivery=False,
+                )
+            except DeliveryPendingError as exc:
+                with batch_lock:
+                    item["send_status"] = "확인 필요"
+                    item["job_id"] = exc.job_id
+                    item["error"] = str(exc)
+                    batch["status"] = "partial"
+                    batch["error"] = str(exc)
+                break
+            except Exception as exc:
+                with batch_lock:
+                    item["send_status"] = "실패"
+                    item["error"] = str(exc)
+                    batch["status"] = "partial"
+                    batch["error"] = str(exc)
+                break
+            else:
+                with batch_lock:
+                    item["send_status"] = "Relay 등록"
+                    item["job_id"] = job_id
+                    item["error"] = ""
+
+        with batch_lock:
+            if all(item.get("send_status") == "Relay 등록" for item in all_items):
+                batch["status"] = "complete"
+                batch["error"] = ""
+            elif batch["status"] == "sending":
+                batch["status"] = "partial"
+        app.root.after(0, lambda: app.review_status.set(
+            f"신분증 묶음 전송 상태: {batch_summary()['status']}"
+        ))
+
+    def _set_batch_item_progress(item: dict[str, object], message: str) -> None:
+        with batch_lock:
+            item["error"] = message
+
+    def _check_batch_status() -> None:
+        with batch_lock:
+            checking = [item for item in batch["items"] if item.get("send_status") == "확인 필요"]
+            if not checking:
+                raise ValueError("확인할 Relay 작업이 없습니다.")
+            batch["status"] = "checking"
+        threading.Thread(
+            target=_check_batch_worker, args=(checking,), daemon=True,
+            name="new-work-batch-status",
+        ).start()
+
+    def _check_batch_worker(items: list[dict[str, object]]) -> None:
+        from new_work.relay_client import get_work_package_status
+
+        for item in items:
+            try:
+                status = get_work_package_status(
+                    dict(app.relay_config), str(item["job_id"]),
+                )
+            except Exception as exc:
+                with batch_lock:
+                    item["error"] = f"상태 확인 실패: {exc}"
+                continue
+            with batch_lock:
+                if status in {"queued", "delivered"}:
+                    item["send_status"] = "Relay 등록"
+                    item["error"] = ""
+                elif status == "cancelled":
+                    item["send_status"] = "실패"
+                    item["error"] = "Relay에서 취소된 작업입니다. 재전송할 수 있습니다."
+                else:
+                    item["error"] = f"Relay 상태: {status} · 중복 전송하지 않았습니다."
+        with batch_lock:
+            batch["status"] = (
+                "complete" if all(row.get("send_status") == "Relay 등록" for row in batch["items"])
+                else "partial"
+            )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "NewWorkLocalUI/1"
@@ -249,6 +553,14 @@ def _backend_process(port: int, token: str) -> None:
                 with snapshot_lock:
                     current = dict(state)
                 self._reply(200, current)
+                return
+            if parsed.path == "/api/batch/state" and self._authorized():
+                self._reply(200, batch_summary())
+                return
+            if parsed.path == "/api/batch/item" and self._authorized():
+                item_id = query.get("item_id", [""])[0]
+                item = batch_item_payload(item_id)
+                self._reply(200 if item else 404, item or {"error": "신분증을 찾지 못했습니다."})
                 return
             self._reply(404, {"error": "not found"})
 
@@ -319,6 +631,80 @@ def _backend_process(port: int, token: str) -> None:
                         app.run_ocr()
                     elif action == "send":
                         app.mark_reviewed()
+                    elif action == "batch_start":
+                        count = int(data.get("count", 0))
+                        if count < 2 or count > 50:
+                            raise ValueError("한 번에 2~50장의 신분증을 선택하세요.")
+                        if (app._transfer_cancel_event is not None
+                                or app._pending_confirmation is not None
+                                or app._pending_auto_send is not None):
+                            raise ValueError("진행 중인 전송을 마친 뒤 여러 신분증을 등록하세요.")
+                        if app.draft is not None:
+                            raise ValueError("현재 열려 있는 신분증을 먼저 초기화하거나 전송하세요.")
+                        if not app._ocr_warmup_finished or not app._ocr_models_ready:
+                            raise ValueError("OCR 모델 준비가 끝난 뒤 신분증 묶음을 시작하세요.")
+                        selected = app._selected_store()
+                        if selected is None or not selected.relay_station_id:
+                            raise ValueError("먼저 전송 대상을 선택하고 Relay 자리 ID를 설정하세요.")
+                        if app.relay_config is None:
+                            raise ValueError(app._relay_config_error or "먼저 Relay 설정을 완료하세요.")
+                        if batch["status"] not in {"idle", "closed"}:
+                            raise ValueError("이미 여러 신분증 검토 작업이 열려 있습니다.")
+                        batch.update({
+                            "id": str(uuid4()), "portal": app.portal_var.get(),
+                            "status": "reviewing", "error": "", "items": [],
+                            "expected_count": count,
+                        })
+                        result["value"] = {"batch_id": batch["id"]}
+                    elif action == "batch_update":
+                        update_batch_item(data)
+                    elif action == "batch_remove_pdf":
+                        item_id = str(data.get("item_id", ""))
+                        document_key = str(data.get("document_key", ""))
+                        with batch_lock:
+                            item = next(
+                                (row for row in batch["items"] if row["id"] == item_id), None,
+                            )
+                            if item is None or item.get("send_status") != "대기":
+                                raise ValueError("PDF를 제거할 신분증을 찾지 못했습니다.")
+                            document = next(
+                                (row for row in item.get("documents", [])
+                                 if row["key"] == document_key), None,
+                            )
+                            if document is None:
+                                raise ValueError("PDF를 찾지 못했습니다.")
+                            item["documents"].remove(document)
+                            shutil.rmtree(Path(document["source"]).parent, ignore_errors=True)
+                            if not item["documents"]:
+                                item["defer"] = False
+                    elif action == "batch_cancel":
+                        with batch_lock:
+                            if batch["status"] in {"sending", "partial", "checking"}:
+                                raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
+                            batch_dir = (
+                                default_job_directory() / ".sender-batches" / str(batch["id"])
+                            )
+                            shutil.rmtree(batch_dir, ignore_errors=True)
+                            batch.update({
+                                "id": "", "status": "closed", "error": "", "items": [],
+                                "expected_count": 0,
+                            })
+                    elif action == "batch_send":
+                        _start_batch_send()
+                    elif action == "batch_check":
+                        _check_batch_status()
+                    elif action == "batch_close":
+                        with batch_lock:
+                            if batch["status"] not in {"complete", "closed"}:
+                                raise ValueError("모든 전송이 Relay에 등록된 뒤 묶음을 닫을 수 있습니다.")
+                            batch_dir = (
+                                default_job_directory() / ".sender-batches" / str(batch["id"])
+                            )
+                            shutil.rmtree(batch_dir, ignore_errors=True)
+                            batch.update({
+                                "id": "", "status": "closed", "error": "", "items": [],
+                                "expected_count": 0,
+                            })
                     elif action == "reset":
                         app._reset_sender_session()
                     elif action == "clear_pdfs":
@@ -436,6 +822,8 @@ def _backend_process(port: int, token: str) -> None:
             query = urllib.parse.parse_qs(raw_query)
             kind = query.get("kind", [""])[0]
             filename = Path(query.get("name", [""])[0]).name
+            batch_id = query.get("batch_id", [""])[0]
+            item_id = query.get("item_id", [""])[0]
             length = int(self.headers.get("Content-Length", "0"))
             allowed = {"identity": {".jpg", ".jpeg", ".png"}, "pdf": {".pdf"}}
             if kind not in allowed or Path(filename).suffix.casefold() not in allowed[kind]:
@@ -456,15 +844,168 @@ def _backend_process(port: int, token: str) -> None:
                         output.write(chunk)
                         remaining -= len(chunk)
                 if kind == "identity":
+                    if batch_id:
+                        self._add_batch_identity(batch_id, safe_name, temporary)
+                        self._reply(200, {"ok": True, "name": safe_name})
+                        return
                     self._dispatch("web_identity", {"path": str(temporary)})
                     temporary.unlink(missing_ok=True)
                 else:
+                    if batch_id:
+                        self._add_batch_pdf(batch_id, item_id, safe_name, temporary)
+                        self._reply(200, {"ok": True, "name": safe_name})
+                        return
                     self._dispatch("web_pdf", {"path": str(temporary)})
                     temporary_uploads[str(temporary)] = "pdf"
                 self._reply(200, {"ok": True, "name": safe_name})
             except Exception as exc:
                 temporary.unlink(missing_ok=True)
                 self._reply(400, {"ok": False, "error": str(exc)})
+
+        def _add_batch_pdf(
+            self, requested_batch_id: str, item_id: str, filename: str, temporary: Path,
+        ) -> None:
+            from new_work.pdf_render import render_pdf_to_jpegs
+
+            if not item_id:
+                raise ValueError("PDF를 연결할 신분증을 선택하세요.")
+            with batch_lock:
+                if requested_batch_id != batch["id"] or batch["status"] != "reviewing":
+                    raise ValueError("신분증 묶음 검토 작업이 만료되었습니다.")
+                item = next((row for row in batch["items"] if row["id"] == item_id), None)
+                if item is None or item.get("send_status") != "대기":
+                    raise ValueError("PDF를 연결할 신분증을 찾지 못했습니다.")
+                if not item.get("defer"):
+                    raise ValueError("먼저 이 신분증을 PDF와 함께 뒤에 보내기로 표시하세요.")
+                previous_bytes = sum(
+                    Path(row["path"]).stat().st_size
+                    for row in batch["items"] if Path(row["path"]).is_file()
+                )
+                previous_bytes += sum(
+                    Path(document["source"]).stat().st_size
+                    for row in batch["items"] for document in row.get("documents", [])
+                    if Path(document["source"]).is_file()
+                )
+                if previous_bytes + temporary.stat().st_size > 512 * 1024 * 1024:
+                    raise ValueError("신분증과 PDF 묶음이 512 MiB 제한을 초과합니다.")
+                document_key = str(uuid4())
+                item_dir = Path(item["path"]).parent.parent
+                docs_root = item_dir / "documents"
+                docs_root.mkdir(parents=True, exist_ok=True)
+                safe_stem = "".join(
+                    char if char.isalnum() or char in " ._-" else "_"
+                    for char in Path(filename).stem
+                ).strip(" .")[:100] or "document"
+                document_dir = docs_root / document_key
+                document_dir.mkdir(parents=True, exist_ok=False)
+                source = document_dir / f"{safe_stem}.pdf"
+                output = document_dir / "pages"
+                temporary.replace(source)
+            try:
+                pages = render_pdf_to_jpegs(source, output)
+            except Exception:
+                shutil.rmtree(source.parent, ignore_errors=True)
+                raise
+            with batch_lock:
+                current = next((row for row in batch["items"] if row["id"] == item_id), None)
+                if requested_batch_id != batch["id"] or current is not item:
+                    shutil.rmtree(source.parent, ignore_errors=True)
+                    raise ValueError("신분증 묶음 검토가 취소되었습니다.")
+                item.setdefault("documents", []).append({
+                    "key": document_key, "source": source, "output": output,
+                    "name": source.name, "status": "변환 완료", "page_count": len(pages),
+                })
+                item["defer"] = True
+
+        def _add_batch_identity(self, requested_batch_id: str, filename: str, temporary: Path) -> None:
+            from new_work.gui.app import (
+                FOCUS_FIELDS, FOCUS_GROUP_BY_CODE, ID_TYPE_CODE_TO_LABEL,
+                ID_TYPE_LABEL_TO_CODE, recognize_identity_for_review,
+            )
+            from new_work.carrier.sk_report import SK_ID_CROP_CODES
+            from new_work.image.face_crop import (
+                id_portrait_bounds, id_portrait_fallback_bounds, id_portrait_size,
+            )
+            from PIL import ImageOps
+
+            with batch_lock:
+                if requested_batch_id != batch["id"] or batch["status"] != "reviewing":
+                    raise ValueError("여러 신분증 검토 작업이 만료되었습니다. 다시 선택하세요.")
+                if len(batch["items"]) >= 50:
+                    raise ValueError("한 번에 보낼 수 있는 신분증은 최대 50장입니다.")
+                item_id = str(uuid4())
+                batch_dir = default_job_directory() / ".sender-batches" / requested_batch_id / item_id
+                image_dir = batch_dir / "identity"
+                image_dir.mkdir(parents=True, exist_ok=False)
+                destination = image_dir / "identity.jpg"
+                total_bytes = sum(
+                    Path(row["path"]).stat().st_size
+                    for row in batch["items"] if Path(row["path"]).is_file()
+                ) + temporary.stat().st_size
+                if total_bytes > 512 * 1024 * 1024:
+                    raise ValueError("신분증 묶음이 512 MiB 제한을 초과합니다.")
+                from PIL import ImageOps
+                with Image.open(temporary) as opened:
+                    staged = ImageOps.exif_transpose(opened).convert("RGB")
+                    staged.save(destination, format="JPEG", quality=95, optimize=True)
+                temporary.unlink(missing_ok=True)
+
+            if not app._ocr_warmup_finished or not app._ocr_models_ready:
+                raise ValueError("OCR 모델 준비가 끝나지 않았습니다. 잠시 뒤 다시 시도하세요.")
+            try:
+                with batch_ocr_lock:
+                    ocr_result, detection, values = recognize_identity_for_review(
+                        app.ocr, destination,
+                    )
+                with Image.open(destination) as opened:
+                    source_image = ImageOps.exif_transpose(opened).convert("RGB")
+                    width, height = source_image.size
+                code = detection.code
+                label = ID_TYPE_CODE_TO_LABEL.get(code or "", "")
+                portal = str(batch["portal"])
+                crop_type = bool(code and (portal == "KT" or code in SK_ID_CROP_CODES))
+                crop_size = list(id_portrait_size(code)) if crop_type else None
+                crop_bounds = None
+                crop_fallback = False
+                if crop_type:
+                    crop_bounds = id_portrait_bounds(
+                        source_image, recog_sub_cd=code, require_face=True,
+                    )
+                    crop_fallback = crop_bounds is None
+                    crop_bounds = crop_bounds or id_portrait_fallback_bounds(
+                        source_image, recog_sub_cd=code,
+                    )
+                fields = [
+                    {"key": field, "label": title}
+                    for field, title in FOCUS_FIELDS.get(
+                        FOCUS_GROUP_BY_CODE.get(code or "", "resident"),
+                        FOCUS_FIELDS["resident"],
+                    )
+                ]
+                fields.extend(
+                    {"key": field, "label": title}
+                    for field, title in (("addr", "주소"), ("isuePlc", "발급기관"))
+                    if values.get(field, "").strip()
+                    and field not in {entry["key"] for entry in fields}
+                )
+                with batch_lock:
+                    if requested_batch_id != batch["id"]:
+                        raise ValueError("여러 신분증 검토 작업이 취소되었습니다.")
+                    batch["items"].append({
+                        "id": item_id, "name": filename, "path": destination,
+                        "result": ocr_result, "detection": detection,
+                        "values": values, "code": code, "type_label": label,
+                        "crop_bounds": list(crop_bounds) if crop_bounds else None,
+                        "crop_size": crop_size, "crop_fallback": crop_fallback,
+                        "crop_manual": False, "width": width, "height": height,
+                        "ocr_status": "완료", "send_status": "대기", "job_id": "",
+                        "error": "", "reviewed": False, "defer": False,
+                        "documents": [], "fields": fields,
+                        "id_type_options": ["유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()],
+                    })
+            except Exception:
+                shutil.rmtree(batch_dir, ignore_errors=True)
+                raise
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
@@ -478,6 +1019,9 @@ def _backend_process(port: int, token: str) -> None:
         try:
             current = _snapshot(app)
             current["ready"] = True
+            current["batch_count"] = len(batch["items"])
+            if batch["status"] in {"sending", "checking"}:
+                current["sending"] = True
             with snapshot_lock:
                 state.clear()
                 state.update(current)
