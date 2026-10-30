@@ -3505,8 +3505,9 @@ class NewWorkApp:
         self.ocr_status.set(
             f"OCR 완료 · {len(result.lines)}개 인식 항목 · {result.elapsed_seconds:.1f}초"
         )
-        self.ocr_footer_var.set("이미지 선택 즉시 OCR이 자동으로 실행되었습니다.")
-        self.ocr_elapsed_var.set(f"처리 시간 {result.elapsed_seconds:.1f}초")
+        if hasattr(self, "ocr_footer_var"):
+            self.ocr_footer_var.set("이미지 선택 즉시 OCR이 자동으로 실행되었습니다.")
+            self.ocr_elapsed_var.set(f"처리 시간 {result.elapsed_seconds:.1f}초")
         self._refresh_package_summary()
         for field in REVIEW_TEXT_FIELDS:
             value = result.values.get(field, "")
