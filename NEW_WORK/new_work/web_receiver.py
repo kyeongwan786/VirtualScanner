@@ -691,8 +691,12 @@ def _backend_process(port: int, token: str) -> None:
                                 if bounds:
                                     if bounds[2] > opened.width or bounds[3] > opened.height:
                                         raise ValueError("idCrop 영역이 신분증 이미지 범위를 벗어났습니다.")
-                                    expected = tuple(min(value, dimension) for value, dimension in zip(id_portrait_size(code), opened.size))
-                                    if (bounds[2] - bounds[0], bounds[3] - bounds[1]) != expected:
+                                    actual = (bounds[2] - bounds[0], bounds[3] - bounds[1])
+                                    expected_sizes = {
+                                        tuple(min(value, dimension) for value, dimension in zip(size, opened.size))
+                                        for size in (id_portrait_size(code, opened.size), id_portrait_size(code))
+                                    }
+                                    if actual not in expected_sizes:
                                         bounds = None
                                         values.pop("_idCropBounds", None)
                                 used_fallback = identity.get("code") != code or bounds is None
@@ -746,8 +750,12 @@ def _backend_process(port: int, token: str) -> None:
                                 if bounds and (bounds[2] > image.width or bounds[3] > image.height):
                                     raise ValueError("idCrop 영역이 신분증 이미지 범위를 벗어났습니다.")
                                 from new_work.image.face_crop import id_portrait_fallback_bounds, id_portrait_size
-                                expected = tuple(min(value, dimension) for value, dimension in zip(id_portrait_size(code), image.size))
-                                if bounds and (bounds[2] - bounds[0], bounds[3] - bounds[1]) != expected:
+                                actual = (bounds[2] - bounds[0], bounds[3] - bounds[1]) if bounds else None
+                                expected_sizes = {
+                                    tuple(min(value, dimension) for value, dimension in zip(size, image.size))
+                                    for size in (id_portrait_size(code, image.size), id_portrait_size(code))
+                                }
+                                if bounds and actual not in expected_sizes:
                                     bounds = None
                                 if identity.get("code") != code or bounds is None:
                                     bounds = id_portrait_fallback_bounds(image, recog_sub_cd=code)

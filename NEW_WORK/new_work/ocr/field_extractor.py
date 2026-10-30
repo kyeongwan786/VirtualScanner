@@ -80,6 +80,12 @@ _ADDRESS_PREFIX = re.compile(
 _ADDRESS_DETAIL = re.compile(
     r"\d+\s*(?:\ubc88\uc9c0?|\ub3d9|\uce35|\ud638|\ubc88\uae38|\ub85c|\uae38)"
 )
+_ADDRESS_PARCEL_NUMBER = re.compile(r"^\s*\d{2,5}(?:\s*-\s*\d{1,4})?\s*[.,]?\s*$")
+_ADDRESS_RI_NUMBER = re.compile(r"\ub9ac\s*\d{1,4}(?:\s*-\s*\d{1,4})?")
+_ADDRESS_ADMIN_SUFFIX = re.compile(
+    r"(?:\uc2dc|\uad70|\uad6c|\uc74d|\uba74|\ub3d9|\ub9ac)\s*[).,]?\s*$"
+)
+_ADDRESS_ROAD_SUFFIX = re.compile(r"(?:\ub85c|\uae38)\s*\d*\s*[).,]?\s*$")
 _FIELD_STOP = re.compile(
     r"\uc131\uba85|\uc774\ub984|\ub4f1\ub85d\s*\ubc88\ud638|\uad6d\uc801|"
     r"\uc131\ubcc4|\ucd9c\uc0dd|\ubc1c\uae09|\uccb4\ub958\uc790\uaca9|"
@@ -164,13 +170,10 @@ def extract_identity_fields(
         )
 
     dates: set[str] = set()
-    issuer_dates: set[str] = set()
     for line in lines:
         line_dates = _dates_in_text(line.text)
         dates.update(line_dates)
-        issuer_text = _strip_issue_date(line.text)
-        if _ISSUER.search(issuer_text):
-            issuer_dates.update(line_dates)
+    issuer_dates = _issuer_linked_dates(lines)
     for start in range(len(lines)):
         for end in range(start + 2, min(len(lines), start + 3) + 1):
             dates.update(_dates_in_text(" ".join(item.text for item in lines[start:end])))
@@ -581,7 +584,7 @@ def _extract_labeled_address(lines: tuple[OcrLine, ...]) -> str:
             if not text or _DATE.search(text) or _FIELD_STOP.search(text) or _ISSUER.search(_strip_issue_date(text)):
                 break
             parts.append(_clean_address_line(text))
-        candidate = " ".join(part for part in parts if part).strip(" :：")
+        candidate = " ".join(part for part in parts if part).strip(" -—.,:：")
         if candidate and re.search(r"\d|[\uac00-\ud7a3]", candidate):
             return candidate
     return ""
@@ -589,7 +592,10 @@ def _extract_labeled_address(lines: tuple[OcrLine, ...]) -> str:
 
 def _dates_in_text(text: str) -> set[str]:
     values: set[str] = set()
-    text = text.translate(str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"}))
+    text = text.translate(_NUMERIC_OCR_TRANSLATION)
+    # A resident number such as 921102-2074111 contains digit sequences that
+    # resemble dates. Mask the complete number before looking for date shapes.
+    text = _RRN.sub(lambda match: " " * len(match.group()), text)
     # OCR can drop the dot after a one-digit month: "2020. 1. 23." becomes
     # "2020.123". The normal parser reads that as December 3. Restore the
     # one-digit-month/two-digit-day split when the compact day is 10..31.
@@ -615,6 +621,34 @@ def _dates_in_text(text: str) -> set[str]:
         except ValueError:
             pass
     return values
+
+
+def _issuer_linked_dates(lines: tuple[OcrLine, ...]) -> set[str]:
+    """Return dates printed on, or immediately beside, an issuing authority."""
+    dates: set[str] = set()
+    issuer_rows = [
+        line for line in lines
+        if _ISSUER.search(_strip_issue_date(line.text))
+    ]
+    for issuer in issuer_rows:
+        dates.update(_dates_in_text(issuer.text))
+        if issuer.box is None:
+            continue
+        _, top, _, bottom = issuer.box
+        center = (top + bottom) / 2
+        height = max(1.0, bottom - top)
+        for line in lines:
+            if line is issuer or line.box is None:
+                continue
+            candidates = _dates_in_text(line.text)
+            if not candidates:
+                continue
+            _, date_top, _, date_bottom = line.box
+            date_center = (date_top + date_bottom) / 2
+            date_height = max(1.0, date_bottom - date_top)
+            if abs(date_center - center) <= max(height, date_height) * 1.3:
+                dates.update(candidates)
+    return dates
 
 
 def _structured_rrn_candidates(text: str) -> set[str]:
@@ -820,35 +854,77 @@ def _extract_address(lines: tuple[OcrLine, ...]) -> str:
         if _DATE.search(text):
             continue
         has_road_number = bool(re.search(r"(?:\ub85c|\uae38)\s*\d", text))
-        has_detail = bool(_ADDRESS_DETAIL.search(text))
-        if not (has_road_number or has_detail):
+        has_detail = bool(
+            _ADDRESS_DETAIL.search(text)
+            or _ADDRESS_RI_NUMBER.search(text)
+            or _is_address_parcel_number(text)
+        )
+        split_road_number = (
+            bool(_ADDRESS_ROAD_SUFFIX.search(text))
+            and index + 1 < len(lines)
+            and _is_address_parcel_number(_clean_address_line(lines[index + 1].text))
+        )
+        if not (has_road_number or has_detail or split_road_number):
             continue
         parts: list[str] = []
         for previous in reversed(lines[max(0, index - 3):index]):
             prior = _clean_address_line(previous.text)
             if not prior or _DATE.search(prior) or _ISSUER.search(_strip_issue_date(prior)) or _FIELD_STOP.search(prior):
                 break
-            if _ADDRESS_PREFIX.search(prior):
+            if (
+                _ADDRESS_PREFIX.search(prior)
+                or _ADDRESS_ADMIN_SUFFIX.search(prior)
+                or _ADDRESS_ROAD_SUFFIX.search(prior)
+            ):
                 parts.insert(0, prior)
             else:
                 break
         parts.append(text)
-        for following in lines[index + 1:index + 3]:
+        for following in lines[index + 1:index + 5]:
             detail = _clean_address_line(following.text)
             if (
                 detail and not _DATE.search(detail)
                 and not _FIELD_STOP.search(detail)
                 and not _ISSUER.search(_strip_issue_date(detail))
-                and _ADDRESS_DETAIL.search(detail)
+                and (
+                    _ADDRESS_DETAIL.search(detail)
+                    or _ADDRESS_RI_NUMBER.search(detail)
+                    or _is_address_parcel_number(detail)
+                    or (
+                        detail.startswith("(")
+                        and (
+                            _ADDRESS_DETAIL.search(" ".join(parts))
+                            or _ADDRESS_ROAD_SUFFIX.search(" ".join(parts))
+                        )
+                    )
+                    or (parts and parts[-1].endswith("("))
+                )
             ):
                 parts.append(detail)
+            elif detail and (
+                len(detail.strip("() .,:：")) <= 2
+                or re.fullmatch(r"[A-Za-z]{1,3}", detail)
+            ):
+                # OCR may split road and parcel lines with a stray glyph or
+                # punctuation-only box between them on photographed cards.
+                continue
             else:
                 break
-        candidates.append(" ".join(parts))
+        candidates.append(" ".join(parts).strip(" -—.,:："))
     detailed = [item for item in candidates if _ADDRESS_DETAIL.search(item) or re.search(r"(?:\ub85c|\uae38)\s*\d", item)]
     return max(detailed or candidates, key=len) if candidates else ""
 
 
 def _clean_address_line(text: str) -> str:
     value = unicodedata.normalize("NFKC", str(text)).replace("\u200b", "").replace("\ufeff", "")
+    value = value.replace("\uad11\uc5ed\uc0ac", "\uad11\uc5ed\uc2dc")
+    value = re.sub(r"(\uad11\uc5ed\uc2dc)(?=[\uac00-\ud7a3]{1,4}(?:\uc2dc|\uad70|\uad6c))", r"\1 ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _is_address_parcel_number(text: str) -> bool:
+    candidate = text.strip().strip(".,")
+    return bool(
+        _ADDRESS_PARCEL_NUMBER.fullmatch(candidate)
+        and not re.fullmatch(r"20\d{2}", candidate)
+    )

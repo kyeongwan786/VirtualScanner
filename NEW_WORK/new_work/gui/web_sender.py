@@ -147,7 +147,10 @@ def _snapshot(app) -> dict[str, object]:
     if detected_code:
         from new_work.image.face_crop import id_portrait_size
 
-        crop_size = list(id_portrait_size(detected_code))
+        source_image = getattr(app, "_source_image", None)
+        crop_size = list(id_portrait_size(
+            detected_code, source_image.size if source_image is not None else None
+        ))
 
     status_var = getattr(app, "review_status", None)
     ocr_status_var = getattr(app, "ocr_status", None)
@@ -343,7 +346,7 @@ def _backend_process(port: int, token: str) -> None:
             portal = str(batch["portal"])
             is_crop_type = portal == "KT" or code in SK_ID_CROP_CODES
             fallback = bool(item.get("crop_fallback")) and not crop_manual
-            crop_size = list(id_portrait_size(code)) if is_crop_type else None
+            crop_size = list(id_portrait_size(code, source.size)) if is_crop_type else None
             if is_crop_type and bounds is None:
                 automatic = id_portrait_bounds(
                     source, recog_sub_cd=code, require_face=True,
@@ -1051,7 +1054,7 @@ def _backend_process(port: int, token: str) -> None:
                 label = ID_TYPE_CODE_TO_LABEL.get(code or "", "")
                 portal = str(batch["portal"])
                 crop_type = bool(code and (portal == "KT" or code in SK_ID_CROP_CODES))
-                crop_size = list(id_portrait_size(code)) if crop_type else None
+                crop_size = list(id_portrait_size(code, source_image.size)) if crop_type else None
                 crop_bounds = None
                 crop_fallback = False
                 if crop_type:

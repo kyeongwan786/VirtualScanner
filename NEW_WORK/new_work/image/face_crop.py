@@ -89,12 +89,18 @@ def parse_crop_bounds(value: object) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
-def id_portrait_size(recog_sub_cd: str | None) -> tuple[int, int]:
-    """Return the fixed source-window size used for this identity type."""
+def id_portrait_size(
+    recog_sub_cd: str | None,
+    source_size: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    """Return the source window, scaled from a standard 1008x640 card image."""
     spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
-    if spec is None:
-        return 320, 420
-    return spec[0], spec[1]
+    crop_width, crop_height = (spec[:2] if spec is not None else (320, 420))
+    if source_size is None:
+        return crop_width, crop_height
+    source_width, source_height = source_size
+    scale = max(source_width / 1008, source_height / 640, 1.0)
+    return round(crop_width * scale), round(crop_height * scale)
 
 
 def id_portrait_fallback_bounds(
@@ -102,13 +108,13 @@ def id_portrait_fallback_bounds(
     *,
     recog_sub_cd: str | None = None,
 ) -> tuple[int, int, int, int] | None:
-    """Return a visible, fixed-size starting box when face detection misses.
+    """Return a visible, resolution-scaled starting box when face detection misses.
 
     This is only a UI placement hint. Callers must not silently save it as an
     automatically detected portrait; the operator should confirm its position.
     """
     spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
-    crop_width, crop_height = id_portrait_size(recog_sub_cd)
+    crop_width, crop_height = id_portrait_size(recog_sub_cd, source.size)
     crop_width = min(crop_width, source.width)
     crop_height = min(crop_height, source.height)
     if crop_width < 20 or crop_height < 20:
@@ -136,6 +142,18 @@ def id_portrait_bounds(
     try:
         gray = np.asarray(source.convert("L"))
         face_detector = detector if detector is not None else _face_detector()
+        detection_scale = max(source.width / 1008, source.height / 640, 1.0)
+        if detection_scale > 1.0:
+            detection_width = max(1, round(source.width / detection_scale))
+            detection_height = max(1, round(source.height / detection_scale))
+            gray = cv2.resize(
+                gray, (detection_width, detection_height),
+                interpolation=cv2.INTER_AREA,
+            )
+            scale_x = source.width / detection_width
+            scale_y = source.height / detection_height
+        else:
+            scale_x = scale_y = 1.0
         faces = face_detector.detectMultiScale(
             gray,
             scaleFactor=1.05,
@@ -146,6 +164,13 @@ def id_portrait_bounds(
         return None
     if faces is None or len(faces) == 0:
         return None
+    if scale_x != 1.0 or scale_y != 1.0:
+        faces = np.asarray(faces, dtype=np.float64)
+        faces[:, 0] *= scale_x
+        faces[:, 1] *= scale_y
+        faces[:, 2] *= scale_x
+        faces[:, 3] *= scale_y
+        faces = np.rint(faces).astype(np.int32)
     spec = _ID_CROP_SPECS.get(recog_sub_cd or "")
     if spec is None:
         # Preserve the pre-type-selection helper behavior for callers that do
@@ -189,13 +214,13 @@ def id_portrait_bounds(
             return None
 
     x, y, width, height = (int(value) for value in ordered[0])
-    crop_width, crop_height = spec[:2]
+    crop_width, crop_height = id_portrait_size(recog_sub_cd, source.size)
     face_top_offset = spec[5]
     if source.width < crop_width or source.height < crop_height:
         return None
 
-    # The detector positions a fixed source window around the printed portrait.
-    # crop_id_portrait_jpeg then converts that window to the legacy output size.
+    # The detector positions a reference-size source window around the portrait.
+    # Large photos scale that window up; saving still uses the legacy output size.
     face_center_x = x + width / 2
     left = round(face_center_x - crop_width / 2)
     top = round(y - height * face_top_offset)

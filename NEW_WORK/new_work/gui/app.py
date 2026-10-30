@@ -2535,7 +2535,7 @@ class NewWorkApp:
         else:
             mode = "place"
             crop_width, crop_height = id_portrait_size(
-                self._id_type_detection.code
+                self._id_type_detection.code, self._source_image.size
             )
             crop_width = min(crop_width, self._source_image.width)
             crop_height = min(crop_height, self._source_image.height)
@@ -3350,16 +3350,13 @@ class NewWorkApp:
                 result.lines, id_type_code=detection.code
             )
             from new_work.ocr.field_extractor import (
-                _ISSUER,
-                _dates_in_text,
-                _strip_issue_date,
+                _issuer_linked_dates,
             )
 
             full_card_issue_date = full_card_fields.get("isueDt", "")
-            source_date_is_linked_to_issuer = bool(full_card_issue_date) and any(
-                _ISSUER.search(_strip_issue_date(line.text))
-                and full_card_issue_date in _dates_in_text(line.text)
-                for line in result.lines
+            source_date_is_linked_to_issuer = (
+                bool(full_card_issue_date)
+                and full_card_issue_date in _issuer_linked_dates(result.lines)
             )
             needs_focused_issuer_read = (
                 not full_card_fields.get("isuePlc")

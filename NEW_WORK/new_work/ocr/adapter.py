@@ -136,6 +136,47 @@ class PaddleOcrAdapter:
                     self._detail_engine = self._create_engine(detection_limit=1024)
         return self._detail_engine
 
+    def _recognize_card_lines(self, engine: Any, image_path: Path, source: str) -> list[OcrLine]:
+        """Run card OCR without PaddleX's 4000-pixel resize warning.
+
+        Photos just over the detector's hard 4000-pixel ceiling are reduced by
+        less than one percent. Map the resulting boxes back to the original
+        image so later focused readers still crop the correct source pixels.
+        """
+        from PIL import Image, ImageOps
+
+        path = Path(image_path)
+        with Image.open(path) as opened:
+            oriented = ImageOps.exif_transpose(opened)
+            original_width, original_height = oriented.size
+            if max(original_width, original_height) <= 4000:
+                outputs = engine.predict(input=str(path))
+                return [
+                    OcrLine(line.text, line.confidence, line.box, source)
+                    for line in self._read_lines(outputs)
+                ]
+            resized = oriented.convert("RGB")
+            resized.thumbnail((3999, 3999), Image.Resampling.LANCZOS)
+            resized_width, resized_height = resized.size
+            with TemporaryDirectory(prefix="new_work_ocr_resize_") as temp_dir:
+                resized_path = Path(temp_dir) / "card.png"
+                resized.save(resized_path, format="PNG")
+                outputs = engine.predict(input=str(resized_path))
+                scale_x = original_width / resized_width
+                scale_y = original_height / resized_height
+                lines = self._read_lines(outputs)
+                mapped: list[OcrLine] = []
+                for line in lines:
+                    box = line.box
+                    if box is not None:
+                        left, top, right, bottom = box
+                        box = (
+                            left * scale_x, top * scale_y,
+                            right * scale_x, bottom * scale_y,
+                        )
+                    mapped.append(OcrLine(line.text, line.confidence, box, source))
+                return mapped
+
     def _get_english_engine(self) -> Any:
         if self._english_engine is None:
             with self._lock:
@@ -274,36 +315,58 @@ class PaddleOcrAdapter:
         # Keep the crop width close to the detected row. The old generous
         # margin forced the recognition model to shrink the actual name and
         # include more security-print noise than useful text.
-        pad_x = row_height * 0.12
+        pad_x = row_height * (0.55 if name_above else 0.3)
         crop_left = max(0, int(left - pad_x))
         crop_right = min(width, int(right + pad_x))
         if name_above:
-            crop_top = max(0, int(top - row_height * 1.9))
-            crop_bottom = max(crop_top + 1, int(top - row_height * 0.6))
+            crop_top = max(0, int(top - row_height * 2.15))
+            crop_bottom = max(crop_top + 1, int(top - row_height * 0.25))
         else:
-            crop_top = min(height - 1, int(bottom + row_height * 0.35))
+            crop_top = min(height - 1, int(bottom + row_height * 0.1))
             crop_bottom = min(height, int(bottom + row_height * 1.25))
         crop = rgb[crop_top:crop_bottom, crop_left:crop_right]
         if crop.size == 0:
             return ""
-        crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        background_sigma = max(3.0, min(18.0, crop.shape[0] * 0.18))
+        background = cv2.GaussianBlur(gray, (0, 0), background_sigma)
+        normalized = cv2.divide(gray, background, scale=255)
+        variants = (crop, normalized)
 
         with TemporaryDirectory(prefix="new_work_name_focus_") as temp_dir:
-            crop_path = Path(temp_dir) / "name.png"
-            if not cv2.imwrite(
-                str(crop_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
-            ):
-                return ""
-            focused_lines = self._read_lines(
-                self._get_number_recognizer().predict(input=str(crop_path))
-            )
-        from new_work.ocr.field_extractor import extract_identity_fields
+            from new_work.ocr.field_extractor import extract_identity_fields
 
-        focused = tuple(
-            OcrLine(line.text, line.confidence, None, "korean_name_focus")
-            for line in focused_lines
-        )
-        return extract_identity_fields(focused, id_type_code).get("custNm", "")
+            names: list[str] = []
+            recognizer = self._get_number_recognizer()
+            for index, variant in enumerate(variants):
+                scaled = cv2.resize(
+                    variant, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC
+                )
+                if scaled.ndim == 2:
+                    scaled = cv2.cvtColor(scaled, cv2.COLOR_GRAY2RGB)
+                crop_path = Path(temp_dir) / f"name_{index}.png"
+                if not cv2.imwrite(
+                    str(crop_path), cv2.cvtColor(scaled, cv2.COLOR_RGB2BGR)
+                ):
+                    continue
+                focused_lines = self._read_lines(
+                    recognizer.predict(input=str(crop_path))
+                )
+                focused = tuple(
+                    OcrLine(line.text, line.confidence, None, "korean_name_focus")
+                    for line in focused_lines
+                )
+                name = extract_identity_fields(focused, id_type_code).get("custNm", "")
+                if name:
+                    names.append(name)
+        if not names:
+            return ""
+        longest = max(names, key=len)
+        if all(longest.startswith(name) for name in names):
+            return longest
+        if len(set(names)) == 1:
+            return names[0]
+        return ""
 
     def recognize_numeric_fields(
         self,
@@ -669,10 +732,8 @@ class PaddleOcrAdapter:
 
         started = perf_counter()
         try:
-            outputs = self._get_engine().predict(input=str(path))
             lines = tuple(
-                OcrLine(line.text, line.confidence, line.box, "korean")
-                for line in self._read_lines(outputs)
+                self._recognize_card_lines(self._get_engine(), path, "korean")
             )
         except OcrUnavailableError:
             raise
@@ -734,10 +795,10 @@ class PaddleOcrAdapter:
                 or needs_numeric_retry
                 or needs_low_confidence_retry
             ):
-                detail_outputs = self._get_detail_engine().predict(input=str(path))
                 detail_lines = tuple(
-                    OcrLine(line.text, line.confidence, line.box, "korean_detail")
-                    for line in self._read_lines(detail_outputs)
+                    self._recognize_card_lines(
+                        self._get_detail_engine(), path, "korean_detail"
+                    )
                 )
                 detail_type = detect_id_type(detail_lines)
                 detail_fields = extract_identity_fields(
