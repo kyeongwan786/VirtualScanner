@@ -258,7 +258,7 @@
                 <div class="id-card" id="idCard"><img id="identityImage" alt="선택한 신분증"><div class="id-crop" id="idCropBox"></div></div>
               </div>
               <div class="file-name" id="idFileName">선택된 신분증 없음</div>
-              <p class="panel-note">파란 idCrop 영역을 드래그해 옮기고, 더블클릭해 새 위치에 놓을 수 있습니다.</p>
+              <p class="panel-note">파란 idCrop 영역을 드래그해 옮길 수 있습니다. 네모 밖 클릭은 영역을 바꾸지 않습니다.</p>
             </section>
             <section class="subpanel">
               <div class="subhead"><h3>OCR 결과 · 확인 및 수정</h3><small>저장 전 내용 확인</small></div>
@@ -513,7 +513,6 @@
     $("batchCrop").addEventListener("pointermove",event=>{if(!batchCropDrag)return;batchCropDrag.bounds=batchCropAt(event);renderBatchCrop();});
     $("batchCrop").addEventListener("pointerup",event=>{if(!batchCropDrag)return;batchItem.crop_bounds=batchCropAt(event)||batchCropDrag.bounds;batchCropDrag=null;batchCropManual=true;renderBatchCrop();});
     $("batchCrop").addEventListener("pointercancel",()=>{batchCropDrag=null;renderBatchCrop();});
-    $("batchImageBox").addEventListener("dblclick",event=>{if(!batchItem?.crop_size||event.target===$("batchCrop"))return;const image=$("batchIdentityImage").getBoundingClientRect();const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const [width,height]=batchItem.crop_size;const x=Math.round((event.clientX-image.left)/scale),y=Math.round((event.clientY-image.top)/scale);const left=Math.max(0,Math.min(batchItem.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(batchItem.image_height-height,y-Math.round(height/2)));batchItem.crop_bounds=[left,top,left+width,top+height];batchCropManual=true;renderBatchCrop();});
     async function batchAdvance(){if(!await saveBatchItem())return;const items=batchState?.items||[];if(batchIndex+1<items.length){batchIndex++;await loadBatchItem(items[batchIndex].id);renderBatchList();return;}await batchFinish();}
     function updateBatchControls(){
       const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
@@ -643,12 +642,6 @@
     cropBox.addEventListener("pointermove",(event)=>{if(!cropDrag)return;const bounds=cropBoundsAt(event);if(!bounds)return;cropDrag.bounds=bounds;renderCrop(currentState);});
     cropBox.addEventListener("pointerup",async(event)=>{if(!cropDrag||!currentState)return;const bounds=cropBoundsAt(event)||cropDrag.bounds;cropDrag=null;pendingCropBounds=bounds;renderCrop(currentState);try{await action("set_crop",{bounds});}catch(_error){pendingCropBounds=null;renderCrop(currentState);}});
     cropBox.addEventListener("pointercancel",()=>{if(!cropDrag)return;cropDrag=null;renderCrop(currentState);});
-    $("idCard").addEventListener("dblclick",async(event)=>{
-      if(event.target===cropBox||!currentState?.crop_size)return;
-      const area=imageContentRect(),x=Math.round((event.clientX-area.card.left-area.left)/area.scale),y=Math.round((event.clientY-area.card.top-area.top)/area.scale);
-      const [width,height]=currentState.crop_size;const left=Math.max(0,Math.min(currentState.image_width-width,x-Math.round(width/2)));const top=Math.max(0,Math.min(currentState.image_height-height,y-Math.round(height/2)));
-      await action("set_crop",{bounds:[left,top,left+width,top+height]});
-    });
     refresh();
   </script>
 </body>

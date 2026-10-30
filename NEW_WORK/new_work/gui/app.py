@@ -31,7 +31,6 @@ from new_work.carrier.kt import default_kt_image_directory, save_kt_submission
 from new_work.image.face_crop import (
     id_portrait_bounds,
     id_portrait_fallback_bounds,
-    id_portrait_size,
 )
 from new_work.windows_lifecycle import (
     create_tray_icon,
@@ -2520,36 +2519,16 @@ class NewWorkApp:
         ):
             return
         point = self._preview_point_to_source(event)
-        if point is None or self._source_image is None:
+        bounds = self._id_crop_preview_bounds
+        if point is None or self._source_image is None or bounds is None:
             return
         x, y = point
-        bounds = self._id_crop_preview_bounds
-        if bounds is not None:
-            left, top, right, bottom = bounds
-            if left <= x < right and top <= y < bottom:
-                mode = "move"
-                original = bounds
-            else:
-                mode = "place"
-                original = bounds
-        else:
-            mode = "place"
-            crop_width, crop_height = id_portrait_size(
-                self._id_type_detection.code, self._source_image.size
-            )
-            crop_width = min(crop_width, self._source_image.width)
-            crop_height = min(crop_height, self._source_image.height)
-            original = (0, 0, crop_width, crop_height)
+        left, top, right, bottom = bounds
+        if not (left <= x < right and top <= y < bottom):
+            return
         self._id_crop_drag = {
-            "mode": mode, "start": point, "original": original,
+            "start": point, "original": bounds,
         }
-        if mode == "place":
-            _, _, width, height = original
-            left = min(max(x - width // 2, 0), self._source_image.width - width)
-            top = min(max(y - height // 2, 0), self._source_image.height - height)
-            self._id_crop_preview_bounds = (left, top, left + width, top + height)
-            self._draw_crop_overlay()
-            self._update_id_crop_value()
         self.image_label.configure(cursor="fleur")
 
     def _crop_pointer_move(self, event) -> None:
@@ -2558,20 +2537,12 @@ class NewWorkApp:
         if drag is None or point is None or self._source_image is None:
             return
         x, y = point
-        mode = drag["mode"]
-        if mode == "move":
-            left, top, right, bottom = drag["original"]
-            start_x, start_y = drag["start"]
-            width, height = right - left, bottom - top
-            new_left = min(max(left + x - start_x, 0), self._source_image.width - width)
-            new_top = min(max(top + y - start_y, 0), self._source_image.height - height)
-            bounds = (new_left, new_top, new_left + width, new_top + height)
-        else:
-            _, _, right, bottom = drag["original"]
-            width, height = right, bottom
-            left = min(max(x - width // 2, 0), self._source_image.width - width)
-            top = min(max(y - height // 2, 0), self._source_image.height - height)
-            bounds = (left, top, left + width, top + height)
+        left, top, right, bottom = drag["original"]
+        start_x, start_y = drag["start"]
+        width, height = right - left, bottom - top
+        new_left = min(max(left + x - start_x, 0), self._source_image.width - width)
+        new_top = min(max(top + y - start_y, 0), self._source_image.height - height)
+        bounds = (new_left, new_top, new_left + width, new_top + height)
         self._id_crop_preview_bounds = bounds
         self._draw_crop_overlay()
 
@@ -3549,7 +3520,7 @@ class NewWorkApp:
             self.portal_var.get() == "KT"
             or self._id_type_detection.code in SK_ID_CROP_CODES
         ) and self._id_type_detection.code:
-            detection_status += " · 사진에서 클릭해 고정 크롭 영역 지정 가능"
+            detection_status += " · 파란 크롭 영역을 드래그해 이동할 수 있습니다"
         self.review_status.set(f"OCR 완료 · {detection_status}")
         self._refresh_result_table()
         self._try_start_pending_auto_send()
