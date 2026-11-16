@@ -477,6 +477,13 @@ class ReceiverApp:
         dialog.title("Receiver 설정")
         dialog.transient(self.root)
         dialog.grab_set()
+        from new_work.provisioning import station_credentials, station_options
+
+        try:
+            available_stations = station_options()
+        except ValueError as exc:
+            available_stations = []
+            messagebox.showerror("Relay 자동 설정 오류", str(exc), parent=dialog)
         labels = (
             ("relay_url", "Render Relay HTTPS 주소"),
             ("station_id", "접수 자리 ID"),
@@ -487,13 +494,23 @@ class ReceiverApp:
             ("kt_image_directory", "KT 이미지 폴더"),
             ("scanner_ready_path", "가상 스캐너 ready 폴더"),
         )
-        entries: dict[str, ttk.Entry] = {}
+        entries: dict[str, ttk.Entry | ttk.Combobox] = {}
         for row, (key, label) in enumerate(labels):
             ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=5)
-            entry = ttk.Entry(dialog, width=76)
-            if key == "token":
-                entry.configure(show="•")
-            entry.insert(0, str(self.config.get(key, "")))
+            if key == "station_id" and available_stations:
+                entry = ttk.Combobox(
+                    dialog, width=73,
+                    values=[item["station_id"] for item in available_stations],
+                    state="readonly",
+                )
+            else:
+                entry = ttk.Entry(dialog, width=76)
+                if key == "token":
+                    entry.configure(show="•")
+            if isinstance(entry, ttk.Combobox):
+                entry.set(str(self.config.get(key, "")))
+            else:
+                entry.insert(0, str(self.config.get(key, "")))
             entry.grid(row=row, column=1, sticky="ew", padx=6, pady=5)
             entries[key] = entry
             if key not in {"station_id", "token", "relay_url"}:
@@ -506,6 +523,13 @@ class ReceiverApp:
 
         def save() -> None:
             config = {key: entry.get().strip() for key, entry in entries.items()}
+            try:
+                automatic = station_credentials(config["station_id"])
+            except ValueError as exc:
+                messagebox.showerror("Relay 자동 설정 오류", str(exc), parent=dialog)
+                return
+            if automatic:
+                config.update(automatic)
             if any(not value for value in config.values()):
                 messagebox.showwarning("설정 확인", "모든 Receiver 설정을 입력하세요.", parent=dialog)
                 return

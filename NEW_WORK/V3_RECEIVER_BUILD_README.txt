@@ -43,6 +43,12 @@ Windows x64에서 Python 3.12 x64를 설치하고 build_receiver_windows_v3.bat�
 실행하세요. 결과는 dist\new_work_receiver_v3\new_work_receiver_v3.exe입니다.
 이 ZIP은 빌드 소스이며 완성된 Windows EXE는 포함하지 않습니다.
 
+자동 자리 설정을 포함하려면 개인 설정 파일 `relay-provisioning.json`을 NEW_WORK 폴더에
+복사한 뒤 빌드하세요. 저장소/빌드 ZIP에는 비밀 파일을 넣지 않습니다. 빌드된 Receiver
+EXE에는 그 파일에 적힌 모든 자리 토큰이 포함됩니다. 실행 후 **Receiver 설정**에서 이
+PC의 자리를 선택하고 **자리 설정 적용**을 누르면 Relay URL, 자리 ID, 토큰이 저장됩니다.
+각 PC에 이 파일을 손으로 입력하거나 Render 대시보드의 값을 복사할 필요는 없습니다.
+
 macOS에서 Receiver 화면 실행
 ---------------------------
 

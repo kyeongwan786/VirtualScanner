@@ -3,7 +3,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import importlib.metadata
+import json
+import tempfile
 from pathlib import Path
+
+from new_work.provisioning import build_bundle_payload
 
 
 def main() -> int:
@@ -74,7 +78,6 @@ def main() -> int:
         "pymupdf",
         "--collect-all",
         "pypdfium2",
-        "receiver_run.py",
     ]
     command.extend(("--collect-binaries", "paddle"))
     for model_name in (
@@ -87,7 +90,23 @@ def main() -> int:
         command.extend(("--add-data", f"{model_dir};ocr_models/{model_name}"))
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
-    subprocess.run(command, check=True, cwd=root)
+    provisioning = build_bundle_payload(
+        include_station_tokens=True, include_central_token=False,
+    )
+    if provisioning is not None:
+        with tempfile.TemporaryDirectory(prefix="new-work-receiver-config-") as private_dir:
+            profile = Path(private_dir) / "relay-provisioning.json"
+            profile.write_text(
+                json.dumps(provisioning, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            command.extend(("--add-data", f"{profile};new_work/relay-provisioning.json"))
+            command.append("receiver_run.py")
+            subprocess.run(command, check=True, cwd=root)
+    else:
+        print("Relay provisioning file not found; Receiver seat setup will remain manual.")
+        command.append("receiver_run.py")
+        subprocess.run(command, check=True, cwd=root)
     return 0
 
 

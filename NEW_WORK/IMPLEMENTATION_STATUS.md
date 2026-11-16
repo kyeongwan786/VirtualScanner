@@ -42,4 +42,5 @@
 - 소스 빌드 ZIP은 `NEW_WORK-V1-Windows-Build.zip`, `NEW_WORK-V3-Windows-Build.zip`, `NEW_WORK-Receiver-V3-Windows-Build.zip`으로 제공한다.
 - V3 중앙 앱은 새 작업 ZIP에서 JPEG 종료 표시 뒤의 0 패딩만 제거한다. Receiver도 기존 대기 ZIP을 적용하기 전에 같은 패딩을 제거한다. 인코딩된 이미지와 화질은 다시 만들지 않는다.
 - V3 송신기 긴급 중단은 Relay를 잠그고 대기 전송 작업을 지운다. Receiver는 NEW_WORK로 받은 자료와 이 앱이 `ready`에 올린 파일을 지우고 Windows 설치본을 제거한다. 기존 SK/KT 결과·DB, 백업, 설정은 보존한다. 다른 최신 Sender도 로컬 송신 대기자료와 설치본을 지운다. 오프라인 PC는 재연결 또는 다음 실행 때 처리되고, 구버전은 자체 종료·제거되지 않는다. Render 임시 저장소가 재시작되면 Relay 잠금이 사라질 수 있어 실제 배포 전 영속성을 확인해야 한다.
+- Relay 자동 설정은 비밀 `relay-provisioning.json`을 빌드 때만 넣는다. Sender에는 중앙 토큰만, Receiver에는 모든 자리 토큰이 들어간다. Receiver 설정 화면에서 자리를 선택해 URL/ID/토큰을 한 번에 저장한다. 비밀 파일은 Git과 소스 ZIP에서 제외하며, Receiver EXE에서 토큰 추출은 가능하다.
 - Windows EXE 빌드와 실제 대상 PC의 파일/DB 반영은 아직 검증되지 않았다.

@@ -79,6 +79,8 @@ python .\relay_server.py --config .\relay.json --add-station desk-02
    - `KYEONGWAN_RELAY_STATIONS`: 자리 토큰 JSON 배열. 예: `[ {"station_id":"desk-01","token":"자리별_긴_랜덤_토큰"} ]`
 4. `KYEONGWAN_RELAY_DATA_KEY`는 Render가 생성한다. 배포 후 Render가 부여한 `https://<서비스이름>.onrender.com` 주소를 중앙 자리 목록과 VM 설정에 넣는다. 공개 인증서이므로 `ca_cert`는 비워 둔다. 예시는 `stations.render.example.json`, `receiver.render.example.json`에 있다.
 
+NEW_WORK Windows 앱은 Render 설정을 자동으로 바꾸지 않는다. Render 환경 변수는 서비스 관리자가 한 번 설정하고, `NEW_WORK/relay-provisioning.json`과 동일한 주소/토큰을 사용해야 한다. 앱 설정 자동화를 위해 이 개인 파일은 빌드에만 전달하며 저장소에는 올리지 않는다.
+
 무료 서비스는 15분간 요청이 없으면 잠들고 로컬 파일은 재시작 후 보존되지 않는다. Receiver가 10초마다 폴링하면 보통 계속 요청이 들어오지만, VM이 작업을 가져가기 전에 Render 서비스가 재시작하면 대기 작업이 사라질 수 있다. 중앙 원본을 보존하고 재전송할 수 있는 시험에만 사용한다. Render는 HTTPS를 앞단에서 종료하고 앱에는 내부 HTTP로 전달하므로, 릴레이 저장 암호화는 유지되지만 종단간 암호화는 아니다. 서비스와 플랫폼은 처리 중인 문서에 접근할 수 있다.
 
 ### 2. 각 Windows VM에서 Receiver 실행

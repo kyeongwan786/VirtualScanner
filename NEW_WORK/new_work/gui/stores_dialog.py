@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from new_work.provisioning import station_labels
 from new_work.stores import Store, load_stores, save_stores
 
 
@@ -66,11 +67,24 @@ class StoreManagerDialog(tk.Toplevel):
             ("relay_station_id", "Render Relay 자리 ID (Receiver 설정과 동일)",
              existing.relay_station_id if existing else ""),
         )
-        entries: dict[str, ttk.Entry] = {}
+        try:
+            available_stations = station_labels()
+        except ValueError as exc:
+            available_stations = []
+            messagebox.showerror("Relay 자리 설정 오류", str(exc), parent=dialog)
+        entries: dict[str, ttk.Entry | ttk.Combobox] = {}
         for row, (key, label, value) in enumerate(fields):
             ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=6)
-            entry = ttk.Entry(dialog, width=75)
-            entry.insert(0, value)
+            if key == "relay_station_id" and available_stations:
+                entry = ttk.Combobox(
+                    dialog, width=72,
+                    values=[station["station_id"] for station in available_stations],
+                    state="readonly",
+                )
+                entry.set(value)
+            else:
+                entry = ttk.Entry(dialog, width=75)
+                entry.insert(0, value)
             entry.grid(row=row, column=1, sticky="ew", padx=6, pady=6)
             entries[key] = entry
         dialog.columnconfigure(1, weight=1)

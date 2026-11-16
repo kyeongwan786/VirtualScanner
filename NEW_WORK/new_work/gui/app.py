@@ -2050,6 +2050,31 @@ class NewWorkApp:
         StoreManagerDialog(self.root, self._stores_changed)
 
     def _open_relay_settings(self) -> None:
+        try:
+            from new_work.provisioning import central_relay_config
+
+            automatic = central_relay_config()
+        except ValueError as exc:
+            messagebox.showerror("Relay 자동 설정 오류", str(exc), parent=self.root)
+            return
+        if automatic:
+            try:
+                save_relay_config(
+                    automatic["relay_url"], automatic["central_token"],
+                )
+                self.relay_config = load_relay_config()
+                self._relay_config_error = ""
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Relay 설정 오류", str(exc), parent=self.root)
+                return
+            self._refresh_stores()
+            messagebox.showinfo(
+                "Relay 설정",
+                "중앙 송신 주소와 토큰을 자동으로 설정했습니다.",
+                parent=self.root,
+            )
+            return
+
         dialog = tk.Toplevel(self.root)
         dialog.title("Render Relay 설정")
         dialog.transient(self.root)

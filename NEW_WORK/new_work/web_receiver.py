@@ -264,6 +264,7 @@ def _snapshot(
             "station_id", "relay_url", "work_path", "sk_report_path",
             "kt_database_path", "kt_image_directory", "scanner_ready_path",
         )},
+        "provisioned_stations": getattr(app, "_provisioned_stations", []),
         "token_configured": bool(app.config.get("token")),
         "status": app.status.get(),
         "progress": (
@@ -286,9 +287,14 @@ def _backend_process(port: int, token: str) -> None:
 
     from new_work.receiver_gui import ReceiverApp
     from new_work.webview_backend import hide_backend_application
+    from new_work.provisioning import station_options
 
     root = tk.Tk()
     app = ReceiverApp(root)
+    try:
+        app._provisioned_stations = station_options()
+    except ValueError:
+        app._provisioned_stations = []
     hide_backend_application(root)
     app._web_token = token
     # The web UI opens a job only after the operator selects it from the list.
@@ -939,8 +945,18 @@ def _backend_process(port: int, token: str) -> None:
                             "station_id", "relay_url", "work_path", "sk_report_path",
                             "kt_database_path", "kt_image_directory", "scanner_ready_path",
                         )}
+                        try:
+                            from new_work.provisioning import station_credentials
+
+                            automatic = station_credentials(config["station_id"])
+                        except ValueError as exc:
+                            raise ValueError(f"Relay 자동 설정 오류: {exc}") from exc
+                        if automatic:
+                            config.update(automatic)
                         supplied_token = str(data.get("token", "")).strip()
-                        config["token"] = supplied_token or str(app.config.get("token", ""))
+                        config["token"] = automatic["token"] if automatic else (
+                            supplied_token or str(app.config.get("token", ""))
+                        )
                         if any(not value for value in config.values()):
                             raise ValueError("모든 설정을 입력하세요. 저장된 토큰은 비워두면 유지됩니다.")
                         parsed_relay = urllib.parse.urlsplit(config["relay_url"].rstrip("/"))

@@ -46,8 +46,16 @@ Windows x64에서 Python 3.12 x64를 설치한 뒤 이 ZIP을 풀고
 포함하지 않습니다. Windows에서 직접 빌드해야 하며, 이 저장소 갱신 과정에서는
 macOS에서 Windows EXE를 만들거나 검증하지 않았습니다.
 
-수신 PC에는 별도 `NEW_WORK-Receiver-V3-Windows-Build.zip`의 Receiver를 설치하고,
-Relay 주소와 중앙 토큰, 접수 자리별 Render Relay ID를 설정해야 합니다. 설정
-절차와 수신 후 동작은 `RECEIVER_README.md`를 참고하세요.
+송신기의 **Relay 설정** 버튼은 빌드에 포함된 `relay-provisioning.json`에서 Relay 주소와
+중앙 토큰을 자동 저장합니다. 접점 관리의 Relay 자리 ID도 파일에 등록된 자리 목록에서
+선택할 수 있습니다. 자동 설정을 포함해 빌드하려면 비밀 설정 파일을 이 폴더의
+`relay-provisioning.json`으로 복사한 뒤 빌드하세요. 비밀 파일은 소스 ZIP이나 저장소에
+포함하지 않습니다.
+
+수신 PC에는 별도 `NEW_WORK-Receiver-V3-Windows-Build.zip`의 Receiver를 설치합니다.
+`Receiver 설정`에서 자리만 선택하고 **자리 설정 적용**을 누르면 해당 Relay 주소와
+자리 토큰이 저장됩니다. Receiver EXE에는 모든 자리 토큰이 들어가므로 EXE를 가진 사람은
+다른 자리의 토큰도 추출할 수 있습니다. 중앙 Sender EXE에는 중앙 토큰만 넣습니다.
+Render 주소와 작업 흐름은 `RECEIVER_README.md`를 참고하세요.
 
 V1은 별도 OCR 전용 프로그램이며 `NEW_WORK-V1-Windows-Build.zip`에서 빌드합니다.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 try:
     import paddlex
@@ -14,6 +17,8 @@ except ModuleNotFoundError as exc:
         "PaddleX is missing from this Python environment: "
         f"{sys.executable}. Run build_windows.bat to build with .venv-build."
     ) from exc
+
+from new_work.provisioning import build_bundle_payload
 
 
 def main() -> int:
@@ -109,12 +114,28 @@ def main() -> int:
         command.extend(("--add-data", f"{model_dir};ocr_models/{model_name}"))
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
-    command.append(entry_point)
-
+    provisioning = build_bundle_payload(
+        include_station_tokens=False, include_central_token=True,
+    ) \
+        if version in {"v2", "v3"} else None
     print("Including PaddleX dependency metadata:", ", ".join(metadata_to_copy))
     print("Building console diagnostic package." if debug_console else
           "Running PyInstaller onedir package with PaddleOCR runtime dependencies.")
-    subprocess.run(command, check=True)
+    if provisioning is not None:
+        with tempfile.TemporaryDirectory(prefix="new-work-build-config-") as private_dir:
+            profile = Path(private_dir) / "relay-provisioning.json"
+            profile.write_text(
+                json.dumps(provisioning, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            command.extend(("--add-data", f"{profile};new_work/relay-provisioning.json"))
+            command.append(entry_point)
+            subprocess.run(command, check=True)
+    else:
+        print("Relay provisioning file not found; Relay settings will remain manual.")
+        command.append(entry_point)
+        subprocess.run(command, check=True)
+
     return 0
 
 

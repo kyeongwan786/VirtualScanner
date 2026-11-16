@@ -1,0 +1,11 @@
+{
+  "relay_url": "https://your-relay.onrender.com",
+  "central_token": "replace-with-central-token-at-least-32-characters",
+  "stations": [
+    {
+      "label": "접수 자리 1",
+      "station_id": "desk-01",
+      "token": "replace-with-unique-station-token-at-least-32-chars"
+    }
+  ]
+}

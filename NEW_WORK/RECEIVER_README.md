@@ -17,6 +17,21 @@ Render settings must contain:
 
 The Render service is HTTPS. The network transport uses TCP underneath HTTPS; Receiver PCs make outbound polling connections, so they do not need inbound ports or port forwarding. The relay encrypts queued ZIP chunks at rest and removes the archive payload after Receiver acknowledges local receipt. The central app requires the `/health` feature `new-work-zip-v1`; deploy the updated `KyeongwanReceiver/relay_server.py`, then install updated central and Receiver builds before sending. Older Receiver builds do not see ZIP jobs. The existing Render free plan uses temporary storage and is not a durable production queue. Do not send real intake documents through a free test deployment.
 
+## Automatic client settings
+
+To avoid typing the Relay URL and tokens on each PC, prepare one private `relay-provisioning.json`
+with the Render URL, central token, and every station ID/token. The schema is shown in
+`relay-provisioning.example.json`. Keep the private file out of Git and the source ZIPs. For a
+Windows source ZIP build, copy it into the extracted `NEW_WORK` folder before building. The build
+script finds the same file beside `KyeongwanReceiver` when building from a full repository checkout.
+The Render environment variables still need to be configured once by the service administrator and
+must match this file; the desktop app does not change Render dashboard secrets.
+The Sender package embeds only the central token. The Receiver package embeds every station token;
+as selected, any person who obtains that Receiver EXE can extract and use any station token. In
+Receiver settings, choose the PC's station and press **자리 설정 적용**. In the Sender, pressing
+**Relay 설정** loads and saves the central settings automatically. If no private provisioning file
+was supplied, both apps keep the manual settings flow.
+
 ## Configure the central PC
 
 1. Start the NEW_WORK central app and choose **Relay 서버**.
@@ -42,7 +57,7 @@ For a standalone Receiver app without the central OCR dependencies, use the Rece
 .\build_receiver_windows_v3.bat
 ```
 
-The package is also available through `NEW_WORK-Receiver-V3-Windows-Build.zip`. Run `dist\new_work_receiver_v3\new_work_receiver_v3.exe`. In **Receiver 설정**, enter:
+The package is also available through `NEW_WORK-Receiver-V3-Windows-Build.zip`. Run `dist\new_work_receiver_v3\new_work_receiver_v3.exe`. If built with the private provisioning file, in **Receiver 설정** select the matching station and press **자리 설정 적용**. Otherwise enter:
 
 - Render Relay HTTPS address.
 - `station_id` exactly as configured in Render and the central workstation entry.
