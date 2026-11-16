@@ -211,11 +211,20 @@ def _backend_process(port: int, token: str) -> None:
     hide_backend_application(root)
 
     def sync_provisioned_stations() -> None:
-        if not app.relay_config:
-            return
         try:
+            if not app.relay_config:
+                from new_work.provisioning import central_relay_config
+                from new_work.relay_config import load_relay_config, save_relay_config
+
+                automatic = central_relay_config()
+                if not automatic:
+                    return
+                save_relay_config(automatic["relay_url"], automatic["central_token"])
+                app.relay_config = load_relay_config()
+                app._relay_config_error = ""
             from new_work.relay_client import sync_station_provisioning
             sync_station_provisioning(app.relay_config)
+            app.root.after(0, app._refresh_stores)
         except Exception as exc:
             app.root.after(0, lambda error=exc: app.review_status.set(
                 f"접수 자리 자동 설정 동기화 실패: {error}"
