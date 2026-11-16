@@ -225,6 +225,8 @@ def _backend_process(port: int, token: str) -> None:
         "id": "", "portal": "SK", "status": "idle", "error": "", "items": [],
         "expected_count": 0,
     }
+    batch_cancel_event = threading.Event()
+    emergency_state = {"active": False, "status": "", "error": "", "checking": False}
     stop_event = threading.Event()
 
     def batch_summary() -> dict[str, object]:
@@ -416,6 +418,7 @@ def _backend_process(port: int, token: str) -> None:
             portal = str(batch["portal"])
             batch_id = str(batch["id"])
             relay_config = dict(app.relay_config)
+            batch_cancel_event.clear()
         threading.Thread(
             target=_send_batch_worker,
             args=(batch_id, items, pending, store, portal, relay_config),
@@ -429,11 +432,13 @@ def _backend_process(port: int, token: str) -> None:
         relay_config: dict[str, str],
     ) -> None:
         from new_work.gui.app import DeliveryPendingError
-        from new_work.relay_client import send_work_package
+        from new_work.relay_client import TransferCancelledError, send_work_package
         from new_work.job_package import create_work_package
         from new_work.domain import OcrResult
 
         for item in pending:
+            if batch_cancel_event.is_set():
+                break
             with batch_lock:
                 item["send_status"] = "전송 중"
                 item["error"] = ""
@@ -460,7 +465,22 @@ def _backend_process(port: int, token: str) -> None:
                     relay_config, store.relay_station_id, package,
                     progress=lambda message, row=item: _set_batch_item_progress(row, message),
                     wait_for_delivery=False,
+                    cancel_event=batch_cancel_event,
                 )
+                if batch_cancel_event.is_set():
+                    from new_work.relay_client import cancel_work_package
+
+                    cancel_work_package(relay_config, job_id)
+                    raise TransferCancelledError(
+                        f"Relay 작업을 취소했습니다. 작업 ID: {job_id}"
+                    )
+            except TransferCancelledError as exc:
+                with batch_lock:
+                    item["send_status"] = "취소"
+                    item["error"] = str(exc)
+                    batch["status"] = "cancelled"
+                    batch["error"] = str(exc)
+                break
             except DeliveryPendingError as exc:
                 with batch_lock:
                     item["send_status"] = "확인 필요"
@@ -486,11 +506,75 @@ def _backend_process(port: int, token: str) -> None:
             if all(item.get("send_status") == "Relay 등록" for item in all_items):
                 batch["status"] = "complete"
                 batch["error"] = ""
+            elif batch_cancel_event.is_set():
+                batch["status"] = "cancelled"
             elif batch["status"] == "sending":
                 batch["status"] = "partial"
-        app.root.after(0, lambda: app.review_status.set(
-            f"신분증 묶음 전송 상태: {batch_summary()['status']}"
-        ))
+        if not emergency_state["active"]:
+            try:
+                app.root.after(0, lambda: app.review_status.set(
+                    f"신분증 묶음 전송 상태: {batch_summary()['status']}"
+                ))
+            except Exception:
+                pass
+
+    def begin_emergency_stop() -> None:
+        if emergency_state["status"] in {"requesting", "complete", "complete_with_error"}:
+            return
+        emergency_state["active"] = True
+        emergency_state["status"] = "requesting"
+        emergency_state["error"] = ""
+        app._pending_auto_send = None
+        active_transfer = getattr(app, "_transfer_cancel_event", None)
+        if active_transfer is not None:
+            active_transfer.set()
+        batch_cancel_event.set()
+
+        relay_config = dict(app.relay_config) if app.relay_config else None
+        if relay_config is None:
+            emergency_state.update({
+                "active": True, "status": "failed",
+                "error": "Relay 설정을 찾을 수 없습니다. 전체 중단 명령은 보내지 않았습니다.",
+            })
+            return
+
+        def activate_and_exit() -> None:
+            try:
+                from new_work.relay_client import activate_global_emergency
+
+                activate_global_emergency(relay_config)
+            except Exception as exc:
+                emergency_state.update({
+                    "active": True, "status": "failed", "error": str(exc),
+                })
+                return
+            try:
+                from new_work.emergency import (
+                    erase_sender_data,
+                    unregister_new_work_autostart,
+                    write_emergency_lock,
+                )
+
+                write_emergency_lock()
+                erase_sender_data()
+                unregister_new_work_autostart()
+            except Exception as exc:
+                emergency_state.update({
+                    "active": True, "status": "complete_with_error", "error": str(exc),
+                })
+            else:
+                emergency_state.update({"active": True, "status": "complete", "error": ""})
+            stop_event.set()
+            try:
+                root.after(0, root.destroy)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=activate_and_exit,
+            daemon=True,
+            name="new-work-global-emergency",
+        ).start()
 
     def _set_batch_item_progress(item: dict[str, object], message: str) -> None:
         with batch_lock:
@@ -612,12 +696,18 @@ def _backend_process(port: int, token: str) -> None:
             self._reply(404, {"error": "not found"})
 
         def _dispatch(self, action: str, data: dict[str, object]) -> object:
+            if emergency_state["active"] and action != "emergency_stop":
+                raise RuntimeError("긴급 중단 처리 중입니다.")
             result: dict[str, object] = {"done": False, "value": None, "error": None}
             completed = threading.Event()
 
             def run_action() -> None:
                 try:
-                    if action == "set_portal":
+                    if emergency_state["active"] and action != "emergency_stop":
+                        raise RuntimeError("긴급 중단 처리 중입니다.")
+                    if action == "emergency_stop":
+                        begin_emergency_stop()
+                    elif action == "set_portal":
                         portal = str(data.get("portal", ""))
                         if portal not in {"SK", "KT"}:
                             raise ValueError("포탈 값이 올바르지 않습니다.")
@@ -841,6 +931,9 @@ def _backend_process(port: int, token: str) -> None:
             return result["value"]
 
         def _upload(self, raw_query: str) -> None:
+            if emergency_state["active"]:
+                self._reply(503, {"ok": False, "error": "긴급 중단 처리 중입니다."})
+                return
             query = urllib.parse.parse_qs(raw_query)
             kind = query.get("kind", [""])[0]
             filename = Path(query.get("name", [""])[0]).name
@@ -870,6 +963,8 @@ def _backend_process(port: int, token: str) -> None:
                             raise OSError("파일 업로드가 중간에 끊겼습니다.")
                         output.write(chunk)
                         remaining -= len(chunk)
+                if emergency_state["active"]:
+                    raise RuntimeError("긴급 중단 처리 중입니다.")
                 if kind == "identity":
                     if batch_id:
                         self._add_batch_identity(
@@ -1105,9 +1200,34 @@ def _backend_process(port: int, token: str) -> None:
 
     def refresh_state() -> None:
         try:
+            if (app.relay_config and not emergency_state["active"]
+                    and not emergency_state["checking"]):
+                emergency_state["checking"] = True
+
+                def check_global_lock() -> None:
+                    try:
+                        from new_work.relay_client import get_central_emergency_status
+
+                        active = get_central_emergency_status(dict(app.relay_config))
+                    except Exception:
+                        active = False
+                    emergency_state["checking"] = False
+                    if active and not emergency_state["active"]:
+                        try:
+                            root.after(0, begin_emergency_stop)
+                        except Exception:
+                            pass
+
+                threading.Thread(
+                    target=check_global_lock, daemon=True,
+                    name="sender-emergency-poll",
+                ).start()
             current = _snapshot(app)
             current["ready"] = True
             current["batch_count"] = len(batch["items"])
+            current["emergency_status"] = emergency_state["status"]
+            current["emergency_error"] = emergency_state["error"]
+            current["emergency_active"] = emergency_state["active"]
             if batch["status"] in {"sending", "checking"}:
                 current["sending"] = True
             with snapshot_lock:
@@ -1150,6 +1270,37 @@ def _backend_process(port: int, token: str) -> None:
 
 def main() -> None:
     multiprocessing.freeze_support()
+    from new_work.emergency import (
+        erase_sender_data,
+        is_emergency_locked,
+        schedule_windows_package_removal,
+        unregister_new_work_autostart,
+        write_emergency_lock,
+    )
+
+    if is_emergency_locked():
+        unregister_new_work_autostart()
+        schedule_windows_package_removal()
+        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
+    remote_emergency = False
+    try:
+        from new_work.relay_client import get_central_emergency_status
+        from new_work.relay_config import load_relay_config
+
+        app_relay_config = load_relay_config()
+        remote_emergency = bool(
+            app_relay_config and get_central_emergency_status(app_relay_config)
+        )
+    except Exception:
+        remote_emergency = False
+    if remote_emergency:
+        try:
+            write_emergency_lock()
+            erase_sender_data()
+        finally:
+            unregister_new_work_autostart()
+            schedule_windows_package_removal()
+        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
     try:
         import webview
     except ImportError as exc:
@@ -1200,6 +1351,19 @@ def main() -> None:
         min_size=(1120, 760),
         background_color="#f4f7fb",
     )
+
+    def close_window_when_backend_stops() -> None:
+        worker.join()
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=close_window_when_backend_stops,
+        daemon=True,
+        name="new-work-sender-window-monitor",
+    ).start()
     try:
         webview.start(debug=False)
     finally:
@@ -1217,3 +1381,6 @@ def main() -> None:
         if worker.is_alive():
             worker.terminate()
             worker.join(timeout=2)
+        if is_emergency_locked():
+            unregister_new_work_autostart()
+            schedule_windows_package_removal()

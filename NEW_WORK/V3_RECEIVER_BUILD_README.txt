@@ -31,6 +31,14 @@ KT CR.jpg는 기존 코드 크기 규격에 따라 유형 1001은 340×406, 그 
 Receiver는 ready에 올린 복사본만 제거하고 받은 원본 페이지는 보존합니다. TWAIN이
 해당 서류를 읽는 중이면 진행 중인 스캔이 실패할 수 있습니다.
 
+송신기의 **긴급 중단**에서 `전체 폐기`를 확정하면 Relay가 잠기고 대기 작업이 삭제됩니다.
+실행 중인 최신 V3 Receiver는 명령 확인 후 NEW_WORK로 받은 작업자료와 이 Receiver가
+`ready`에 올린 파일을 지우고 Windows 설치 폴더를 제거합니다. 기존 SK/KT 결과,
+데이터베이스, 백업과 설정은 보존합니다. 오프라인 PC는 재연결 또는 다음 실행 때 처리되며,
+이전 Receiver 빌드는 자체 종료·제거 명령을 처리하지 못합니다. Render 로그와 저장소
+소스는 삭제되지 않습니다. Relay 임시 저장소가 초기화되면 잠금이 사라질 수 있으므로
+영속 저장소를 확인해야 합니다.
+
 Windows x64에서 Python 3.12 x64를 설치하고 build_receiver_windows_v3.bat을
 실행하세요. 결과는 dist\new_work_receiver_v3\new_work_receiver_v3.exe입니다.
 이 ZIP은 빌드 소스이며 완성된 Windows EXE는 포함하지 않습니다.

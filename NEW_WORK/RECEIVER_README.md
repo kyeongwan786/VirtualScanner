@@ -58,6 +58,14 @@ Receiving another package adds another folder and keeps existing received folder
 
 ## Receiver screen and local PDF scan queue
 
+송신기의 **긴급 중단**에서 `전체 폐기`를 확정하면 Relay가 잠기고 대기 중인 모든 작업이
+삭제됩니다. 실행 중인 최신 V3 Receiver는 Relay 명령을 확인해 NEW_WORK로 받은 작업자료와
+이 Receiver가 `ready`에 올린 파일, Windows Receiver 설치 폴더를 삭제하고 종료합니다.
+기존 SK/KT 결과와 데이터베이스, 백업, 설정은 보존합니다. 오프라인 PC는 재연결 또는 다음 실행 때 처리됩니다. 이전 버전은
+자체 삭제 명령을 처리하지 않으므로 Receiver를 갱신해야 합니다. Render 운영 로그와
+저장소 원본 코드는 이 기능의 삭제 대상이 아니며, Relay 임시 저장소가 초기화되면 긴급
+잠금이 유지되지 않을 수 있습니다.
+
 The Receiver opens one HTML/CSS dashboard with received folders on the left and the selected folder on the right. It shows the identity preview and identity type only; OCR result fields are omitted because the sender reviewed them. Press **신분증 확인** to apply that folder's reviewed result. The panel then shows **신분증 확인 완료**. SK writes the configured `sk_report.txt` with a timestamped backup. KT updates the configured database and generates `ORG.jpg` and `CR.jpg`, keeping its database and image backups. When a folder has no identity or no PDFs, the page explicitly shows **받은 신분증이 없습니다** or **받은 PDF 서류가 없습니다**.
 
 The Receiver also has an **이 PC에서 직접 접수** tab for busy periods when staff should not walk to the central PC. Choose a JPG/PNG identity and/or one or more PDFs; identity OCR and PDF-to-JPG conversion run locally as soon as each file is added. OCR fields and the fixed-size, identity-type-specific `idCrop` box can be reviewed on that page. Choose SK or KT, then register the prepared material in the same received-folder list. From there, confirm the identity to apply the selected portal result and add each converted document group to the scanner queue independently. Local work does not require Relay settings. The OCR engine and its PP-OCRv5 model weights are included in the Receiver build, so that build is larger and needs the same supported Paddle runtime as the central OCR app.

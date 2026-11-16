@@ -337,6 +337,18 @@ def _backend_process(port: int, token: str) -> None:
                 }
             return local_session
 
+    def local_preparation_busy() -> bool:
+        with local_lock:
+            if not local_session:
+                return False
+            identity = local_session.get("identity") or {}
+            return bool(
+                identity.get("status") == "처리 중"
+                or any(item.get("status") == "변환 중" for item in local_session["documents"])
+            )
+
+    app._emergency_local_busy = local_preparation_busy
+
     def run_local_ocr(draft_id: str, identity_path: Path) -> None:
         nonlocal local_ocr
         try:
@@ -448,6 +460,9 @@ def _backend_process(port: int, token: str) -> None:
         def do_GET(self) -> None:
             parsed = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(parsed.query)
+            if app._emergency_stopping and parsed.path not in {"/api/health"}:
+                self._reply(410, {"error": "Receiver is disabled by an emergency command"})
+                return
             if parsed.path in {"/", "/api/health"} and query.get("token", [""])[0] == token:
                 if parsed.path == "/api/health":
                     self._reply(200, {"ok": True})
@@ -543,6 +558,9 @@ def _backend_process(port: int, token: str) -> None:
                 self._reply(403, {"error": "unauthorized"})
                 return
             parsed = urllib.parse.urlsplit(self.path)
+            if app._emergency_stopping and parsed.path != "/api/shutdown":
+                self._reply(410, {"error": "Receiver is disabled by an emergency command"})
+                return
             if parsed.path == "/api/local-upload":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -982,6 +1000,43 @@ def _backend_process(port: int, token: str) -> None:
 
 def main() -> None:
     multiprocessing.freeze_support()
+    from new_work.emergency import (
+        erase_receiver_data,
+        is_emergency_locked,
+        schedule_windows_package_removal,
+        unregister_new_work_autostart,
+    )
+    from new_work.receiver_gui import default_receiver_config, default_receiver_config_path
+
+    if is_emergency_locked():
+        unregister_new_work_autostart()
+        schedule_windows_package_removal()
+        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
+    config = default_receiver_config()
+    config_path = default_receiver_config_path()
+    try:
+        if config_path.is_file():
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                config.update(saved)
+    except (OSError, json.JSONDecodeError):
+        pass
+    if all(config.get(key) for key in ("relay_url", "station_id", "token")):
+        try:
+            from new_work.relay_client import get_station_emergency_status
+
+            emergency_active = get_station_emergency_status(
+                {"relay_url": config["relay_url"], "token": config["token"]},
+                config["station_id"],
+            )
+        except Exception:
+            emergency_active = False
+        if emergency_active:
+            erase_receiver_data(config)
+            unregister_new_work_autostart()
+            schedule_windows_package_removal()
+            raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
+
     try:
         import webview
     except ImportError as exc:
@@ -1016,7 +1071,7 @@ def main() -> None:
         worker.join(timeout=2)
         raise RuntimeError("Receiver 화면 서버가 제한 시간 안에 준비되지 않았습니다.")
 
-    webview.create_window(
+    window = webview.create_window(
         "접수 자료함",
         f"{origin}/?token={urllib.parse.quote(token)}",
         width=1600,
@@ -1024,6 +1079,19 @@ def main() -> None:
         min_size=(1180, 760),
         background_color="#f6f8fc",
     )
+
+    def close_window_when_backend_stops() -> None:
+        worker.join()
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=close_window_when_backend_stops,
+        daemon=True,
+        name="new-work-receiver-window-monitor",
+    ).start()
     try:
         webview.start(debug=False)
     finally:
@@ -1040,3 +1108,6 @@ def main() -> None:
         if worker.is_alive():
             worker.terminate()
             worker.join(timeout=2)
+        if is_emergency_locked():
+            unregister_new_work_autostart()
+            schedule_windows_package_removal()

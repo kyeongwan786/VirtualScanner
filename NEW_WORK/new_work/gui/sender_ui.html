@@ -41,6 +41,9 @@
     .intake-value { font-size: 13px; font-weight: 700; }
     .header-action { border:1px solid #ffffff35; border-radius:8px; padding:7px 10px; background:#ffffff12; color:#eaf2ff; font-size:11px; font-weight:700; }
     .header-action:hover { background:#ffffff22; }
+    .emergency-button { display:inline-flex;align-items:center;gap:6px;border:1px solid #ffb8b8;border-radius:8px;padding:7px 10px;background:#b42332;color:#fff;font-size:11px;font-weight:750; }
+    .emergency-button:hover { background:#8f1724; }
+    .emergency-button svg { width:15px;height:15px; }
     .portal-switch { display: flex; gap: 3px; padding: 3px; border: 1px solid #ffffff35; border-radius: 10px; background: #102f5a55; }
     .portal-switch button { min-width: 52px; padding: 7px 12px; border: 0; border-radius: 7px; color: #d4e0f0; background: transparent; font-weight: 700; }
     .portal-switch button.active { color: #15345e; background: white; box-shadow: 0 1px 4px #102f5a30; }
@@ -228,6 +231,7 @@
       </div>
       <div class="topbar-spacer"></div>
       <div class="connection"><i class="dot"></i><span id="connectionText">Relay 확인 중</span></div>
+      <button class="emergency-button" id="emergencyStop" title="송신 중단, 미수신 작업 취소, 송신기 종료" aria-label="긴급 중단"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/><path d="M12 5v4m0 3v.1"/></svg>긴급 중단</button>
       <div class="divider"></div>
       <div><div class="intake-label">접수 작업</div><div class="intake-value">새 접수</div></div>
       <button class="header-action" id="resetButton">작업 초기화</button>
@@ -319,6 +323,7 @@
   <script>
     const token = new URLSearchParams(location.search).get("token") || "";
     let currentState = null;
+    let shownEmergencyFailure = "";
     let documentSignature = "";
     let stationSignature = "";
     let cropDrag = null;
@@ -542,6 +547,15 @@
     $("batchDialog").addEventListener("cancel",event=>event.preventDefault());
     $("ocrButton").onclick=()=>action("run_ocr");
     $("sendButton").onclick=()=>action("send");
+    $("emergencyStop").onclick=async()=>{
+      const phrase=prompt("Relay 대기 작업과 송신·수신 중인 NEW_WORK 작업자료 및 이 작업이 스캐너 ready에 올린 파일을 삭제합니다. 각 PC의 최신 송신기와 Receiver 프로그램도 종료·제거됩니다. 기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존합니다. 오프라인 PC는 다시 연결될 때 처리됩니다.\n\n계속하려면 ‘전체 폐기’를 입력하세요.");
+      if(phrase!=="전체 폐기")return;
+      $("emergencyStop").disabled=true;
+      $("emergencyStop").textContent="전체 중단 중…";
+      showNotice("Relay를 잠그고 전체 폐기 명령을 보내는 중…");
+      try{await action("emergency_stop");}
+      catch(_error){$("emergencyStop").disabled=false;$("emergencyStop").textContent="중단 재시도";}
+    };
     $("statusButton").onclick=()=>action("check_status");
     $("resetButton").onclick=()=>action("reset");
     $("rawOcrButton").onclick=()=>action("show_raw_ocr");
@@ -620,7 +634,11 @@
       renderCrop(state);renderDocuments(state);renderStations(state);
       $("pdfSummary").textContent=state.documents.length?`${state.documents.length}개 · ${state.documents.filter((item)=>item.status==="변환 완료").length}개 변환 완료`:"PDF 없음";
       $("sendHint").textContent=state.review_status|| (state.selected_station?`전송 대상: ${state.selected_station}`:"전송 대상을 선택하세요");$("sendHint").style.color="";
-      $("sendButton").textContent=state.sending?"전송 처리 중…":(state.selected_station?`${state.selected_station}로 전송`:"선택한 자리로 전송");$("sendButton").disabled=state.sending;
+      const emergencyPending=Boolean(state.emergency_active);
+      $("sendButton").textContent=state.sending?"전송 처리 중…":(state.selected_station?`${state.selected_station}로 전송`:"선택한 자리로 전송");$("sendButton").disabled=state.sending||emergencyPending;
+      if(state.emergency_status==="requesting"){$("emergencyStop").disabled=true;$("emergencyStop").textContent="전체 중단 중…";$("sendButton").disabled=true;}
+      else if(state.emergency_status==="failed"){$("emergencyStop").disabled=false;$("emergencyStop").textContent="중단 재시도";$("sendButton").disabled=true;if(state.emergency_error&&shownEmergencyFailure!==state.emergency_error){shownEmergencyFailure=state.emergency_error;showNotice(`전체 중단 실패 · ${state.emergency_error}`,true);}}
+      else if(state.emergency_status==="complete_with_error"){$("emergencyStop").disabled=true;$("emergencyStop").textContent="중단 완료";$("sendButton").disabled=true;}
       $("statusButton").hidden=!state.awaiting_confirmation;
     }
     async function refresh(){try{render(await request("/api/state"));}catch(_error){}setTimeout(refresh,550);}

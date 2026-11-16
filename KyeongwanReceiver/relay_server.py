@@ -264,6 +264,7 @@ class RelayHTTPServer(ThreadingHTTPServer):
         self.cipher = Fernet(key)
         self.data_dir = Path(config["data_dir"]).expanduser().resolve()
         self.jobs_dir = self.data_dir / "jobs"
+        self.emergency_path = self.data_dir / "emergency-stop.json"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -271,6 +272,33 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except OSError:
             pass
         self.lock = threading.RLock()
+
+    def emergency_active(self) -> bool:
+        try:
+            value = json.loads(self.emergency_path.read_text(encoding="utf-8"))
+            return isinstance(value, dict) and value.get("active") is True
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    def activate_emergency(self) -> int:
+        with self.lock:
+            if self.emergency_active():
+                return 0
+            _atomic_write(self.emergency_path, _json_bytes({
+                "active": True,
+                "activated_at": datetime.now(timezone.utc).isoformat(),
+            }))
+            removed = 0
+            for item in list(self.jobs_dir.iterdir()):
+                try:
+                    if item.is_symlink() or not item.is_dir():
+                        item.unlink(missing_ok=True)
+                    else:
+                        shutil.rmtree(item)
+                    removed += 1
+                except OSError:
+                    logging.exception("Could not purge relay job during emergency stop: %s", item.name)
+            return removed
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -358,8 +386,24 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self._reply(403, {"error": "source IP is not allowed"})
                 return
             self._reply(200, {"status": "ready", "features": [
-                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1"
-            ]})
+                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
+                "emergency-lock-v1",
+            ], "emergency_active": self.server.emergency_active()})
+            return
+        if path == "/v1/emergency":
+            if not self._authorize_central():
+                return
+            self._reply(200, {"active": self.server.emergency_active()})
+            return
+        match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/emergency", path)
+        if match:
+            station_id = match.group(1)
+            if not self._authorize_station(station_id):
+                return
+            self._reply(200, {"active": self.server.emergency_active()})
+            return
+        if self.server.emergency_active():
+            self._reply(410, {"error": "relay permanently disabled by emergency command"})
             return
         match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,64})/status", path)
         if match:
@@ -425,6 +469,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not self._authorize_station(station_id):
                 return
             with self.server.lock:
+                if self.server.emergency_active():
+                    self._reply(410, {"error": "relay permanently disabled by emergency command"})
+                    return
                 job = self._job_dir(job_id)
                 metadata = self._metadata(job)
                 number = int(page_text)
@@ -448,6 +495,19 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if path == "/v1/emergency":
+            if not self._authorize_central():
+                return
+            try:
+                removed = self.server.activate_emergency()
+            except OSError as exc:
+                self._reply(500, {"error": f"could not persist emergency lock: {exc}"})
+                return
+            self._reply(200, {"active": True, "removed_jobs": removed})
+            return
+        if self.server.emergency_active():
+            self._reply(410, {"error": "relay permanently disabled by emergency command"})
+            return
         if path == "/v1/jobs":
             if not self._authorize_central():
                 return
@@ -508,6 +568,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 metadata.update({"archive_size": archive_size})
             with self.server.lock:
+                if self.server.emergency_active():
+                    self._reply(410, {"error": "relay permanently disabled by emergency command"})
+                    return
                 job = self._job_dir(job_id)
                 try:
                     job.mkdir(mode=0o700)
@@ -529,6 +592,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             job_id = match.group(1)
             with self.server.lock:
+                if self.server.emergency_active():
+                    self._reply(410, {"error": "relay permanently disabled by emergency command"})
+                    return
                 job = self._job_dir(job_id)
                 metadata = self._metadata(job)
                 if not metadata:
@@ -593,6 +659,9 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         if not self._authorize_central():
             return
+        if self.server.emergency_active():
+            self._reply(410, {"error": "relay permanently disabled by emergency command"})
+            return
         match = PAGE_RE.fullmatch(urlsplit(self.path).path)
         if not match:
             self._reply(404, {"error": "not found"})
@@ -610,6 +679,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": "invalid page or chunk"})
             return
         with self.server.lock:
+            if self.server.emergency_active():
+                self._reply(410, {"error": "relay permanently disabled by emergency command"})
+                return
             job = self._job_dir(job_id)
             metadata = self._metadata(job)
             if not metadata or metadata.get("status") != "uploading" or number > metadata.get("page_count", 0):
@@ -650,6 +722,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         if not self._authorize_central():
+            return
+        if self.server.emergency_active():
+            self._reply(410, {"error": "relay permanently disabled by emergency command"})
             return
         match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,64})/cancel", urlsplit(self.path).path)
         if not match:

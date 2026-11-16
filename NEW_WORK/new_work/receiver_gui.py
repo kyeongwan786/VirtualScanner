@@ -22,10 +22,15 @@ from PIL import Image, ImageTk
 
 from new_work.carrier.kt import default_kt_database_path, default_kt_image_directory, save_kt_submission
 from new_work.domain import OcrResult
+from new_work.emergency import erase_receiver_data, unregister_new_work_autostart
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection
 from new_work.ocr.result_writer import default_result_path, write_ocr_result
 from new_work.pdf_render import default_job_directory
-from new_work.relay_client import acknowledge_work_package, receive_work_package
+from new_work.relay_client import (
+    acknowledge_work_package,
+    get_station_emergency_status,
+    receive_work_package,
+)
 
 
 def default_receiver_config_path() -> Path:
@@ -185,6 +190,8 @@ class ReceiverApp:
         self._preview_dialogs: set[DocumentPreviewDialog] = set()
         self._clearing_received = False
         self._cancel_receive = Event()
+        self._emergency_checking = False
+        self._emergency_stopping = False
         self._pending_received_reset: tuple[Path, Path | None, int, int, int] | None = None
         self._build()
         self._load_queue_state()
@@ -193,6 +200,7 @@ class ReceiverApp:
             self.status.set("Receiver 설정 필요 · Relay 주소, 자리 ID, 자리 토큰을 지정하세요")
         self._refresh_queue()
         self.root.after(1000, self._poll_inbox)
+        self.root.after(1200, self._poll_remote_emergency)
 
     def _build(self) -> None:
         style = ttk.Style(self.root)
@@ -618,6 +626,8 @@ class ReceiverApp:
         )
 
     def _poll_inbox(self) -> None:
+        if self._emergency_stopping:
+            return
         self._sync_active_scan()
         configured = all(self.config.get(key) for key in ("relay_url", "station_id", "token"))
         if (configured and not self._processing and not self._clearing_received
@@ -626,6 +636,56 @@ class ReceiverApp:
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
         self.root.after(2000, self._poll_inbox)
+
+    def _poll_remote_emergency(self) -> None:
+        if (not self._emergency_stopping and not self._emergency_checking
+                and all(self.config.get(key) for key in ("relay_url", "station_id", "token"))):
+            self._emergency_checking = True
+
+            def check() -> None:
+                active = False
+                try:
+                    active = get_station_emergency_status(
+                        {"relay_url": self.config["relay_url"], "token": self.config["token"]},
+                        self.config["station_id"],
+                    )
+                except Exception:
+                    pass
+                try:
+                    self.root.after(0, self._remote_emergency_checked, active)
+                except tk.TclError:
+                    pass
+
+            Thread(target=check, daemon=True, name="receiver-emergency-poll").start()
+        if not self._emergency_stopping:
+            self.root.after(2000, self._poll_remote_emergency)
+
+    def _remote_emergency_checked(self, active: bool) -> None:
+        self._emergency_checking = False
+        if active:
+            self._begin_remote_emergency()
+
+    def _begin_remote_emergency(self) -> None:
+        if self._emergency_stopping:
+            return
+        self._emergency_stopping = True
+        self._clearing_received = True
+        self._cancel_receive.set()
+        self._finish_remote_emergency_when_idle()
+
+    def _finish_remote_emergency_when_idle(self) -> None:
+        local_busy = getattr(self, "_emergency_local_busy", lambda: False)()
+        if self._processing or self._correction_busy or local_busy:
+            self.root.after(250, self._finish_remote_emergency_when_idle)
+            return
+        try:
+            erase_receiver_data(self.config)
+            unregister_new_work_autostart()
+        finally:
+            try:
+                self.root.destroy()
+            except tk.TclError:
+                pass
 
     def _receive_relay_work(self) -> None:
         new_job_id: str | None = None
@@ -881,6 +941,9 @@ class ReceiverApp:
         new_job_id: str | None = None,
     ) -> None:
         self._processing = False
+        if self._emergency_stopping:
+            self._finish_remote_emergency_when_idle()
+            return
         self.receive_progress_frame.grid_remove()
         self.receive_progress_bar.configure(value=0)
         if self._pending_received_reset is not None:

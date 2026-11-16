@@ -962,6 +962,7 @@ class NewWorkApp:
         self._transfer_cancel_event: Event | None = None
         self._reset_requested = False
         self._selected_store_index = -1
+        self._emergency_polling = False
         self._store_card_frames: list[tuple[int | None, RoundedActionButton]] = []
         try:
             self.stores = load_stores()
@@ -981,6 +982,55 @@ class NewWorkApp:
         root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
         if isinstance(self.ocr, PaddleOcrAdapter):
             self.root.after_idle(self._begin_ocr_warmup)
+        if self.version == "v1":
+            self.root.after(1200, self._poll_remote_emergency)
+
+    def _poll_remote_emergency(self) -> None:
+        if self.version != "v1" or self._emergency_polling:
+            return
+        self._emergency_polling = True
+
+        def check() -> None:
+            active = False
+            config = None
+            try:
+                import json
+
+                from new_work.receiver_gui import default_receiver_config_path
+                from new_work.relay_client import get_station_emergency_status
+
+                config = json.loads(default_receiver_config_path().read_text(encoding="utf-8"))
+                if isinstance(config, dict) and all(
+                    config.get(key) for key in ("relay_url", "station_id", "token")
+                ):
+                    active = get_station_emergency_status(
+                        {"relay_url": config["relay_url"], "token": config["token"]},
+                        config["station_id"],
+                    )
+            except Exception:
+                pass
+            try:
+                self.root.after(0, self._remote_emergency_checked, active, config)
+            except tk.TclError:
+                pass
+
+        Thread(target=check, daemon=True, name="v1-emergency-poll").start()
+        self.root.after(2000, self._poll_remote_emergency)
+
+    def _remote_emergency_checked(self, active: bool, config: dict | None) -> None:
+        self._emergency_polling = False
+        if not active or config is None:
+            return
+        from new_work.emergency import (
+            erase_receiver_data,
+            schedule_windows_package_removal,
+            unregister_new_work_autostart,
+        )
+
+        erase_receiver_data(config)
+        unregister_new_work_autostart()
+        schedule_windows_package_removal()
+        self.root.destroy()
 
     def _handle_window_close(self) -> None:
         if sys.platform != "win32":
@@ -4161,6 +4211,45 @@ class NewWorkApp:
         )
 
 def main(version: str = "v2") -> None:
+    from new_work.emergency import (
+        erase_receiver_data,
+        is_emergency_locked,
+        schedule_windows_package_removal,
+        unregister_new_work_autostart,
+    )
+
+    if is_emergency_locked():
+        unregister_new_work_autostart()
+        schedule_windows_package_removal()
+        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
+    if version == "v1":
+        try:
+            import json
+
+            from new_work.receiver_gui import default_receiver_config_path
+            from new_work.relay_client import get_station_emergency_status
+
+            config_path = default_receiver_config_path()
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            if (isinstance(config, dict)
+                    and all(config.get(key) for key in ("relay_url", "station_id", "token"))
+                    and get_station_emergency_status(
+                        {"relay_url": config["relay_url"], "token": config["token"]},
+                        config["station_id"],
+                    )):
+                try:
+                    erase_receiver_data(config)
+                finally:
+                    unregister_new_work_autostart()
+                    schedule_windows_package_removal()
+                raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
+        except SystemExit:
+            raise
+        except Exception:
+            if is_emergency_locked():
+                unregister_new_work_autostart()
+                schedule_windows_package_removal()
+                raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
     if version == "v2":
         from new_work.gui.web_sender import main as web_sender_main
 

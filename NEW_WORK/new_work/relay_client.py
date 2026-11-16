@@ -71,13 +71,14 @@ class TransferCancelledError(TransferError):
 def _request(url: str, token: str, *, method: str = "GET",
              body: bytes | None = None, content_type: str | None = None,
              response_limit: int = 64 * 1024,
-             on_download_chunk: Callable[[int], None] | None = None) -> tuple[int, dict | bytes]:
+             on_download_chunk: Callable[[int], None] | None = None,
+             timeout: float = 60) -> tuple[int, dict | bytes]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if content_type:
         headers["Content-Type"] = content_type
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if on_download_chunk is None:
                 data = response.read(response_limit + 1)
                 if len(data) > response_limit:
@@ -381,6 +382,45 @@ def get_work_package_status(relay_config: dict[str, str], job_id: str) -> str:
     if status not in {"uploading", "queued", "delivered", "cancelled"}:
         raise TransferError("Relay가 알 수 없는 작업 상태를 돌려줬습니다.")
     return status
+
+
+def activate_global_emergency(relay_config: dict[str, str]) -> dict:
+    """Permanently lock the Relay and purge queued payloads."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, health = _request(f"{relay_url}/health", relay_config["central_token"])
+    if (not isinstance(health, dict)
+            or "emergency-lock-v1" not in health.get("features", [])):
+        raise TransferError("Relay가 전체 긴급 중단을 지원하지 않습니다. Relay 서버를 먼저 갱신하세요.")
+    _, result = _request(
+        f"{relay_url}/v1/emergency", relay_config["central_token"],
+        method="POST", body=b"", content_type="application/json",
+    )
+    if not isinstance(result, dict) or result.get("active") is not True:
+        raise TransferError("Relay가 긴급 중단 상태를 확인해주지 않았습니다.")
+    return result
+
+
+def get_station_emergency_status(
+    relay_config: dict[str, str], station_id: str,
+) -> bool:
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/stations/{quote(station_id, safe='')}/emergency",
+        relay_config["token"], timeout=4,
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("active"), bool):
+        raise TransferError("Relay 긴급 중단 응답이 올바르지 않습니다.")
+    return result["active"]
+
+
+def get_central_emergency_status(relay_config: dict[str, str]) -> bool:
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/emergency", relay_config["central_token"], timeout=4,
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("active"), bool):
+        raise TransferError("Relay 긴급 중단 응답이 올바르지 않습니다.")
+    return result["active"]
 
 
 def cancel_work_package(relay_config: dict[str, str], job_id: str) -> str:
