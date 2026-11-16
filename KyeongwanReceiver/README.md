@@ -76,10 +76,10 @@ python .\relay_server.py --config .\relay.json --add-station desk-02
 
 3. Render Dashboard에서 **New → Blueprint**로 저장소의 `render.yaml`을 선택한다. Blueprint가 요청하면 다음 비밀 값을 입력한다.
    - `KYEONGWAN_RELAY_CENTRAL_TOKEN`: `relay-provisioning.json`의 `central_token`
-   - `KYEONGWAN_RELAY_STATIONS`: 자리 토큰 JSON 배열. 예: `[ {"station_id":"desk-01","token":"자리별_긴_랜덤_토큰"} ]`
+   - `KYEONGWAN_RELAY_STATIONS`: 최초 부팅용 자리 토큰 JSON 배열. 기존 desk-01 항목을 입력한다. 중앙 송신기가 실행되면 나머지 전체 자리를 인증된 `/v1/stations/provision` 경로로 자동 동기화한다.
 4. `KYEONGWAN_RELAY_DATA_KEY`는 Render가 생성한다. 배포 후 Render가 부여한 `https://<서비스이름>.onrender.com` 주소를 중앙 자리 목록과 VM 설정에 넣는다. 공개 인증서이므로 `ca_cert`는 비워 둔다. 예시는 `stations.render.example.json`, `receiver.render.example.json`에 있다.
 
-NEW_WORK Windows 앱은 Render 설정을 자동으로 바꾸지 않는다. Render 환경 변수는 서비스 관리자가 한 번 설정하고, `NEW_WORK/relay-provisioning.json`과 동일한 주소/토큰을 사용해야 한다. 앱 설정 자동화를 위해 이 개인 파일은 빌드에만 전달하며 저장소에는 올리지 않는다.
+중앙 송신기의 Relay 설정 저장 또는 실행 시 `relay-provisioning.json`의 자리 ID와 토큰을 중앙 토큰 인증으로 Relay에 동기화한다. Render 대시보드에는 중앙 토큰과 최초 부팅용 desk-01만 입력하면 된다. Render 무료 플랜의 `/tmp` 저장소는 재시작 시 초기화되므로 송신기를 실행해 자리를 다시 동기화해야 하며, 중앙 송신기 실행 전에는 desk-01 외의 Receiver 인증이 복원되지 않는다. 개인 프로비저닝 파일은 Windows 빌드에만 전달하고 저장소에 올리지 않는다.
 
 무료 서비스는 15분간 요청이 없으면 잠들고 로컬 파일은 재시작 후 보존되지 않는다. Receiver가 10초마다 폴링하면 보통 계속 요청이 들어오지만, VM이 작업을 가져가기 전에 Render 서비스가 재시작하면 대기 작업이 사라질 수 있다. 중앙 원본을 보존하고 재전송할 수 있는 시험에만 사용한다. Render는 HTTPS를 앞단에서 종료하고 앱에는 내부 HTTP로 전달하므로, 릴레이 저장 암호화는 유지되지만 종단간 암호화는 아니다. 서비스와 플랫폼은 처리 중인 문서에 접근할 수 있다.
 

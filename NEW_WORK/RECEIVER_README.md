@@ -26,8 +26,10 @@ Windows source ZIP build, copy it into the extracted `NEW_WORK` folder before bu
 script finds the same file beside `KyeongwanReceiver` when building from a full repository checkout.
 The Render environment variables still need to be configured once by the service administrator and
 must match this file; the desktop app does not change Render dashboard secrets.
-The Sender package embeds only the central token. The Receiver package embeds every station token;
-as selected, any person who obtains that Receiver EXE can extract and use any station token. In
+The Sender package embeds the central token and every station token so it can provision all seats
+automatically. The Receiver package embeds every station token so an operator can select the local
+seat and save settings without entering secrets. Anyone who obtains either package may extract
+these embedded credentials. In
 Receiver settings, choose the PC's station and press **자리 설정 적용**. In the Sender, pressing
 **Relay 설정** loads and saves the central settings automatically. If no private provisioning file
 was supplied, both apps keep the manual settings flow.

@@ -384,6 +384,32 @@ def get_work_package_status(relay_config: dict[str, str], job_id: str) -> str:
     return status
 
 
+def sync_station_provisioning(relay_config: dict[str, str]) -> int:
+    """Register embedded Receiver credentials with Relay using central auth."""
+    from new_work.provisioning import load_provisioning
+
+    provisioning = load_provisioning()
+    if provisioning is None:
+        raise TransferError("빌드에 접수 자리 자동 설정 정보가 없습니다.")
+    stations = [
+        {"station_id": station["station_id"], "token": station["token"]}
+        for station in provisioning["stations"]
+        if station["token"]
+    ]
+    if len(stations) != len(provisioning["stations"]) or not stations:
+        raise TransferError("17개 접수 자리 토큰을 모두 확인할 수 없습니다.")
+    _, response = _request(
+        f"{relay_config['relay_url'].rstrip('/')}/v1/stations/provision",
+        relay_config["central_token"], method="POST",
+        body=json.dumps({"stations": stations}, separators=(",", ":")).encode("utf-8"),
+        content_type="application/json", timeout=20,
+    )
+    count = response.get("configured_stations") if isinstance(response, dict) else None
+    if count != len(stations):
+        raise TransferError("Relay가 전체 접수 자리 설정을 확인하지 못했습니다.")
+    return count
+
+
 def activate_global_emergency(relay_config: dict[str, str]) -> dict:
     """Permanently lock the Relay and purge queued payloads."""
     relay_url = relay_config["relay_url"].rstrip("/")

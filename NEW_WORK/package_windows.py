@@ -115,7 +115,7 @@ def main() -> int:
     for distribution in metadata_to_copy:
         command.extend(("--copy-metadata", distribution))
     provisioning = build_bundle_payload(
-        include_station_tokens=False, include_central_token=True,
+        include_station_tokens=True, include_central_token=True,
     ) \
         if version in {"v2", "v3"} else None
     print("Including PaddleX dependency metadata:", ", ".join(metadata_to_copy))

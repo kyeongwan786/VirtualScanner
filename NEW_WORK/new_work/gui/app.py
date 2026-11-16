@@ -851,7 +851,7 @@ class RoundedProgressBar(tk.Canvas):
                              fill=color, outline="", tags="progress")
             self.create_oval(right - cap * 2, 1, right, height - 1,
                              fill=color, outline="", tags="progress")
-from new_work.stores import Store, load_stores
+from new_work.stores import Store, load_stores, save_stores
 from new_work.gui.stores_dialog import StoreManagerDialog
 from new_work.relay_config import load_relay_config, save_relay_config
 from new_work.relay_client import (
@@ -971,6 +971,19 @@ class NewWorkApp:
             self._store_config_error = str(exc)
         else:
             self._store_config_error = ""
+        known_station_ids = {store.relay_station_id for store in self.stores}
+        additions = [
+            Store.create(name, relay_station_id=f"desk-{slot + 1:02d}")
+            for slot, name in enumerate(RECEIVER_STATION_NAMES)
+            if (not self._store_config_error
+                and f"desk-{slot + 1:02d}" not in known_station_ids)
+        ]
+        if additions:
+            self.stores.extend(additions)
+            try:
+                save_stores(self.stores)
+            except OSError as exc:
+                self._store_config_error = f"17개 접점 기본 설정을 저장하지 못했습니다: {exc}"
         try:
             self.relay_config = load_relay_config()
             self._relay_config_error = ""

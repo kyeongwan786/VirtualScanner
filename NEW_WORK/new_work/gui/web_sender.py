@@ -210,6 +210,22 @@ def _backend_process(port: int, token: str) -> None:
     )
     hide_backend_application(root)
 
+    def sync_provisioned_stations() -> None:
+        if not app.relay_config:
+            return
+        try:
+            from new_work.relay_client import sync_station_provisioning
+            sync_station_provisioning(app.relay_config)
+        except Exception as exc:
+            app.root.after(0, lambda error=exc: app.review_status.set(
+                f"접수 자리 자동 설정 동기화 실패: {error}"
+            ))
+
+    threading.Thread(
+        target=sync_provisioned_stations, daemon=True,
+        name="new-work-station-provisioning",
+    ).start()
+
     snapshot_lock = threading.Lock()
     state: dict[str, object] = {"ready": False}
     upload_root = default_job_directory() / ".sender_web_uploads"
@@ -863,6 +879,10 @@ def _backend_process(port: int, token: str) -> None:
                                 stores.append(validated)
                         save_stores(stores)
                         app._stores_changed(stores)
+                        if app.relay_config:
+                            from new_work.relay_client import sync_station_provisioning
+                            count = sync_station_provisioning(app.relay_config)
+                            result["message"] = f"접점 {len(stores)}곳 저장 및 Relay {count}곳 설정 완료"
                     elif action == "save_relay_settings":
                         from new_work.relay_config import load_relay_config, save_relay_config
 
@@ -873,6 +893,9 @@ def _backend_process(port: int, token: str) -> None:
                         save_relay_config(relay_url, central_token)
                         app.relay_config = load_relay_config()
                         app._relay_config_error = ""
+                        from new_work.relay_client import sync_station_provisioning
+                        count = sync_station_provisioning(app.relay_config)
+                        result["message"] = f"Relay 설정 및 접수 자리 {count}곳 자동 등록 완료"
                         app._refresh_stores()
                     elif action == "check_status":
                         app._check_pending_status()

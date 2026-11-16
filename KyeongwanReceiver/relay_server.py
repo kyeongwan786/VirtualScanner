@@ -265,6 +265,7 @@ class RelayHTTPServer(ThreadingHTTPServer):
         self.data_dir = Path(config["data_dir"]).expanduser().resolve()
         self.jobs_dir = self.data_dir / "jobs"
         self.emergency_path = self.data_dir / "emergency-stop.json"
+        self.station_provisioning_path = self.data_dir / "station-provisioning.json"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -272,6 +273,52 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except OSError:
             pass
         self.lock = threading.RLock()
+        self._load_station_provisioning()
+
+    def _load_station_provisioning(self) -> None:
+        """Restore centrally provisioned station hashes from the service data dir."""
+        try:
+            payload = json.loads(self.station_provisioning_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid persisted station provisioning: {exc}") from exc
+        stations = payload.get("stations") if isinstance(payload, dict) else None
+        if not isinstance(stations, dict):
+            raise ValueError("persisted station provisioning must contain stations")
+        for station_id, station in stations.items():
+            if not JOB_RE.fullmatch(station_id) or not isinstance(station, dict):
+                raise ValueError("persisted station provisioning contains an invalid station")
+            digest = station.get("token_sha256")
+            if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ValueError(f"persisted station {station_id} has an invalid token hash")
+            allowed_ips = station.get("allowed_ips", [])
+            if not isinstance(allowed_ips, list):
+                raise ValueError(f"persisted station {station_id} has invalid allowed_ips")
+            self.config["stations"][station_id] = {
+                "token_sha256": digest,
+                "allowed_ips": allowed_ips,
+            }
+
+    def provision_stations(self, entries: list[dict]) -> int:
+        """Replace provisioned station credentials while retaining configured IP rules."""
+        stations: dict[str, dict[str, object]] = {}
+        for entry in entries:
+            station_id = entry["station_id"]
+            previous = self.config["stations"].get(station_id, {})
+            stations[station_id] = {
+                "token_sha256": hashlib.sha256(entry["token"].encode("utf-8")).hexdigest(),
+                "allowed_ips": previous.get("allowed_ips", []),
+            }
+        with self.lock:
+            _atomic_write(self.station_provisioning_path, _json_bytes({"stations": stations}))
+            try:
+                self.station_provisioning_path.chmod(0o600)
+            except OSError:
+                pass
+            # Keep any Render environment entries that were not part of the app profile.
+            self.config["stations"].update(stations)
+        return len(stations)
 
     def emergency_active(self) -> bool:
         try:
@@ -387,7 +434,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, {"status": "ready", "features": [
                 "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
-                "emergency-lock-v1",
+                "emergency-lock-v1", "station-provisioning-v1",
             ], "emergency_active": self.server.emergency_active()})
             return
         if path == "/v1/emergency":
@@ -495,6 +542,43 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if path == "/v1/stations/provision":
+            if not self._authorize_central():
+                return
+            body = self._body(64 * 1024)
+            if body is None:
+                return
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                entries = payload.get("stations") if isinstance(payload, dict) else None
+                if not isinstance(entries, list) or not entries or len(entries) > 100:
+                    raise ValueError("stations must contain 1 to 100 entries")
+                normalized = []
+                seen_ids, seen_tokens = set(), set()
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        raise ValueError("invalid station entry")
+                    station_id = entry.get("station_id")
+                    token = entry.get("token")
+                    if not isinstance(station_id, str) or not JOB_RE.fullmatch(station_id):
+                        raise ValueError("invalid station ID")
+                    if not isinstance(token, str) or len(token) < 32:
+                        raise ValueError("station tokens must be at least 32 characters")
+                    if station_id in seen_ids or token in seen_tokens:
+                        raise ValueError("station IDs and tokens must be unique")
+                    seen_ids.add(station_id)
+                    seen_tokens.add(token)
+                    normalized.append({"station_id": station_id, "token": token})
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self._reply(400, {"error": str(exc)})
+                return
+            try:
+                count = self.server.provision_stations(normalized)
+            except OSError as exc:
+                self._reply(500, {"error": f"could not persist station provisioning: {exc}"})
+                return
+            self._reply(200, {"configured_stations": count})
+            return
         if path == "/v1/emergency":
             if not self._authorize_central():
                 return
