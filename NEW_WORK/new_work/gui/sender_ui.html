@@ -128,6 +128,8 @@
     .station-head { display:flex;align-items:center;gap:9px;margin-bottom:10px; }
     .station-head h2 { font-size:13px;font-weight:760; }
     .station-count { color:#8391a5;font-size:10px; }
+    .station-connection { max-width:260px;overflow:hidden;color:#75859b;font-size:9px;text-overflow:ellipsis;white-space:nowrap; }
+    .station-connection.error { color:#bd3941; }
     .station-legend { margin-left:auto; display:flex; gap:13px; color:#75859b; font-size:9px; }
     .legend { display:flex;align-items:center;gap:5px;white-space:nowrap; }
     .legend i { width:7px;height:7px;border-radius:50%;background:#aab4c3; }
@@ -298,7 +300,7 @@
       </section>
 
       <section class="station-panel">
-        <div class="station-head"><div class="head-icon" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></div><h2>전송 대상 자리</h2><span class="station-count" id="stationCount">17개 자리</span><div class="station-legend"><span class="legend connected"><i></i>Receiver 온라인</span><span class="legend off"><i></i>Receiver 오프라인 / 설정 필요</span></div><button class="button" id="contactSettings">접점 설정</button><button class="button" id="relaySettings">Relay 설정</button></div>
+        <div class="station-head"><div class="head-icon" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></div><h2>전송 대상 자리</h2><span class="station-count" id="stationCount">17개 자리</span><span class="station-connection" id="receiverStatusMessage">Relay 상태 조회 대기</span><div class="station-legend"><span class="legend connected"><i></i>Receiver 온라인</span><span class="legend off"><i></i>Receiver 오프라인 / 설정 필요</span></div><button class="button" id="refreshReceiverStatus">상태 새로고침</button><button class="button" id="contactSettings">접점 설정</button><button class="button" id="relaySettings">Relay 설정</button></div>
         <div class="stations" id="stations"></div>
       </section>
     </main>
@@ -558,6 +560,7 @@
     $("addStationRow").onclick=()=>stationRow();
     $("saveStations").onclick=async()=>{const stations=[...$("stationSettingsRows").children].map(row=>({store_id:row.dataset.storeId,name:row.children[0].value,relay_station_id:row.children[1].value}));try{const response=await action("save_stations",{stations});$("stationsDialog").close();showNotice(response.result?.message||"접점 설정을 저장했습니다.");}catch(_error){}};
     $("relaySettings").onclick=async()=>{try{const response=await action("settings_relay");const settings=response.result||{};$("relayUrlInput").value=settings.relay_url||"";$("relayTokenInput").value="";$("savedTokenState").textContent=settings.token_configured?"✓ 중앙 송신 토큰 저장됨 · 입력을 비워두면 유지됩니다":"중앙 송신 토큰이 아직 저장되지 않았습니다.";$("savedTokenState").classList.toggle("saved",Boolean(settings.token_configured));$("relayDialog").showModal();}catch(_error){}};
+    $("refreshReceiverStatus").onclick=async()=>{const button=$("refreshReceiverStatus");button.disabled=true;$("receiverStatusMessage").textContent="Relay에 상태 재조회 요청 중…";try{await action("refresh_receiver_status");}catch(_error){button.disabled=false;}};
     $("saveRelay").onclick=async()=>{try{const response=await action("save_relay_settings",{relay_url:$("relayUrlInput").value,central_token:$("relayTokenInput").value});$("relayDialog").close();showNotice(response.result?.message||"Relay 설정을 저장했습니다.");}catch(_error){}};
     document.querySelectorAll("[data-close]").forEach(button=>button.onclick=()=>$(button.dataset.close).close());
     $("clearPdf").onclick=()=>action("clear_pdfs");
@@ -594,11 +597,17 @@
       }
     }
     function renderStations(state){
-      const signature=JSON.stringify([state.stations,state.selected_store_index]);if(signature===stationSignature)return;stationSignature=signature;
+      const signature=JSON.stringify([state.stations,state.selected_store_index,state.station_presence]);if(signature===stationSignature)return;stationSignature=signature;
       const root=$("stations");root.replaceChildren();$("stationCount").textContent=`${state.stations.length}개 자리`;
+      const presence=state.station_presence||{};const statusMessage=$("receiverStatusMessage");
+      statusMessage.classList.toggle("error",Boolean(presence.error&&!presence.checking));
+      statusMessage.textContent=presence.checking?"Relay에 Receiver 상태 조회 중…":presence.available?`Relay 응답 확인 · ${presence.checked_at||"방금"}`:presence.error?`Relay 조회 실패 · ${presence.error}`:"Relay 상태 조회 대기";
+      $("refreshReceiverStatus").disabled=Boolean(presence.checking)||!state.relay_configured;
       state.stations.forEach((station)=>{
         let stateClass="unknown",stateLabel="상태 확인 중";
         if(!station.configured){stateClass="offline";stateLabel="접점 설정 필요";}
+        else if(station.presence_checking){stateLabel="연결 확인 중";}
+        else if(station.presence_error){stateLabel="Relay 조회 실패";}
         else if(station.presence_available){
           if(!station.registered){stateClass="offline";stateLabel="Relay에 자리 미등록";}
           else if(station.online){stateClass="connected";stateLabel="Receiver 온라인";}

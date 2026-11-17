@@ -104,6 +104,8 @@ def _station_rows(app) -> list[dict[str, object]]:
                        if presence_available else None),
             "registered": (store.relay_station_id in presence if presence_available else None),
             "presence_available": presence_available,
+            "presence_error": getattr(app, "_receiver_presence_error", ""),
+            "presence_checking": bool(getattr(app, "_receiver_presence_checking", False)),
             "selected": store_index == getattr(app, "_selected_store_index", -1),
         })
     return rows
@@ -189,6 +191,12 @@ def _snapshot(app) -> dict[str, object]:
         "fields": fields,
         "documents": documents,
         "stations": _station_rows(app),
+        "station_presence": {
+            "available": bool(getattr(app, "_receiver_presence_available", False)),
+            "checking": bool(getattr(app, "_receiver_presence_checking", False)),
+            "error": getattr(app, "_receiver_presence_error", ""),
+            "checked_at": getattr(app, "_receiver_presence_checked_at", ""),
+        },
         "selected_station": selected_name,
         "selected_store_index": getattr(app, "_selected_store_index", -1),
         "sending": bool(
@@ -218,6 +226,9 @@ def _backend_process(port: int, token: str) -> None:
     )
     app._receiver_presence = {}
     app._receiver_presence_available = False
+    app._receiver_presence_checking = False
+    app._receiver_presence_error = ""
+    app._receiver_presence_checked_at = ""
     hide_backend_application(root)
 
     def sync_provisioned_stations() -> None:
@@ -262,7 +273,9 @@ def _backend_process(port: int, token: str) -> None:
     }
     batch_cancel_event = threading.Event()
     emergency_state = {"active": False, "status": "", "error": "", "checking": False}
-    receiver_presence_state = {"checking": False, "last_check": 0.0}
+    receiver_presence_state = {
+        "checking": False, "last_check": 0.0, "refresh_requested": threading.Event(),
+    }
     stop_event = threading.Event()
 
     def batch_summary() -> dict[str, object]:
@@ -907,6 +920,9 @@ def _backend_process(port: int, token: str) -> None:
                         app._refresh_stores()
                     elif action == "check_status":
                         app._check_pending_status()
+                    elif action == "refresh_receiver_status":
+                        receiver_presence_state["refresh_requested"].set()
+                        result["message"] = "Receiver 상태를 Relay에 다시 요청했습니다."
                     elif action == "show_raw_ocr":
                         app._show_raw_ocr()
                     elif action == "set_crop":
@@ -1187,11 +1203,16 @@ def _backend_process(port: int, token: str) -> None:
 
     def refresh_state() -> None:
         try:
+            refresh_presence = receiver_presence_state["refresh_requested"].is_set()
             if (app.relay_config and not emergency_state["active"]
                     and not receiver_presence_state["checking"]
-                    and time.monotonic() - receiver_presence_state["last_check"] >= 5):
+                    and (refresh_presence
+                         or time.monotonic() - receiver_presence_state["last_check"] >= 5)):
                 receiver_presence_state["checking"] = True
                 receiver_presence_state["last_check"] = time.monotonic()
+                receiver_presence_state["refresh_requested"].clear()
+                app._receiver_presence_checking = True
+                app._receiver_presence_error = ""
 
                 def check_receiver_presence() -> None:
                     try:
@@ -1200,9 +1221,14 @@ def _backend_process(port: int, token: str) -> None:
                         presence = get_station_presence(dict(app.relay_config))
                         app._receiver_presence = presence
                         app._receiver_presence_available = True
-                    except Exception:
+                        app._receiver_presence_error = ""
+                        app._receiver_presence_checked_at = time.strftime("%H:%M:%S")
+                    except Exception as exc:
                         app._receiver_presence_available = False
+                        app._receiver_presence_error = str(exc)[:240]
+                        app._receiver_presence_checked_at = time.strftime("%H:%M:%S")
                     finally:
+                        app._receiver_presence_checking = False
                         receiver_presence_state["checking"] = False
 
                 threading.Thread(
