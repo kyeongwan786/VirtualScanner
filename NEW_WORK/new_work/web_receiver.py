@@ -1019,15 +1019,12 @@ def main() -> None:
     from new_work.emergency import (
         erase_receiver_data,
         is_emergency_locked,
+        read_emergency_lock,
         schedule_windows_package_removal,
         unregister_new_work_autostart,
+        write_emergency_lock,
     )
     from new_work.receiver_gui import default_receiver_config, default_receiver_config_path
-
-    if is_emergency_locked():
-        unregister_new_work_autostart()
-        schedule_windows_package_removal()
-        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
     config = default_receiver_config()
     config_path = default_receiver_config_path()
     try:
@@ -1037,20 +1034,60 @@ def main() -> None:
                 config.update(saved)
     except (OSError, json.JSONDecodeError):
         pass
+    if is_emergency_locked():
+        marker = read_emergency_lock()
+        event_id = marker.get("event_id")
+        if (isinstance(event_id, str) and event_id
+                and all(config.get(key) for key in ("relay_url", "station_id", "token"))):
+            try:
+                from new_work.relay_client import report_station_emergency_result
+
+                report_station_emergency_result(
+                    {"relay_url": config["relay_url"], "token": config["token"]},
+                    config["station_id"], event_id,
+                    cleanup_succeeded=marker.get("cleanup_succeeded") is True,
+                    detail=str(marker.get("detail", "local cleanup receipt retried")),
+                )
+            except Exception:
+                pass
+        unregister_new_work_autostart()
+        schedule_windows_package_removal()
+        raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
     if all(config.get(key) for key in ("relay_url", "station_id", "token")):
         try:
-            from new_work.relay_client import get_station_emergency_status
+            from new_work.relay_client import (
+                get_station_emergency_command, report_station_emergency_result,
+            )
 
-            emergency_active = get_station_emergency_status(
+            emergency_command = get_station_emergency_command(
                 {"relay_url": config["relay_url"], "token": config["token"]},
                 config["station_id"],
             )
         except Exception:
-            emergency_active = False
-        if emergency_active:
-            erase_receiver_data(config)
-            unregister_new_work_autostart()
-            schedule_windows_package_removal()
+            emergency_command = {"active": False}
+        if emergency_command.get("active"):
+            event_id = str(emergency_command["event_id"])
+            cleanup_error = ""
+            try:
+                cleanup_errors = erase_receiver_data(config, event_id=event_id)
+                cleanup_error = "; ".join(cleanup_errors)[:500]
+                unregister_new_work_autostart()
+                schedule_windows_package_removal()
+            except Exception as exc:
+                cleanup_error = str(exc)[:500]
+            write_emergency_lock(
+                event_id=event_id, cleanup_succeeded=not cleanup_error,
+                detail=cleanup_error,
+            )
+            try:
+                report_station_emergency_result(
+                    {"relay_url": config["relay_url"], "token": config["token"]},
+                    config["station_id"], event_id,
+                    cleanup_succeeded=not cleanup_error,
+                    detail=cleanup_error or "local cleanup finished; shutdown requested",
+                )
+            except Exception:
+                pass
             raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
 
     try:

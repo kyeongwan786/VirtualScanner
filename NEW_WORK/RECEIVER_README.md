@@ -21,6 +21,10 @@ Render settings must contain:
 
 The Render service is HTTPS. The network transport uses TCP underneath HTTPS; Receiver PCs make outbound polling connections, so they do not need inbound ports or port forwarding. The relay encrypts queued ZIP chunks at rest and removes the archive payload after Receiver acknowledges local receipt. The central app requires the `/health` feature `new-work-zip-v1`; deploy the updated `KyeongwanReceiver/relay_server.py`, then install updated central and Receiver builds before sending. Older Receiver builds do not see ZIP jobs. The existing Render free plan uses temporary storage and is not a durable production queue. Do not send real intake documents through a free test deployment.
 
+Emergency lock delivery also requires durable storage. Attach a Render Persistent Disk mounted at `/var/data` to a paid Web Service and set `KYEONGWAN_RELAY_DATA_DIR=/var/data/kyeongwan-relay`. The checked-in Blueprint remains a free test service and does not create a disk. Without the mounted disk, `/health` reports `emergency_storage_persistent: false` and the Relay refuses a new emergency lock instead of claiming it will survive a restart. Keep the existing Fernet key stable across deploys so queued encrypted data remains readable.
+
+When a Receiver later reconnects, it applies the active emergency command, records cleanup success or errors, and requests shutdown. Offline stations remain `pending`. The receipt reports cleanup and a shutdown request; it cannot prove that the remote operating system actually terminated the process. On the central PC, with the Sender's saved Relay configuration available, inspect the current per-station results with `cd NEW_WORK && python -m new_work.emergency_status`.
+
 ## Automatic client settings
 
 To avoid typing the Relay URL and tokens on each PC, prepare one private `relay-provisioning.json`

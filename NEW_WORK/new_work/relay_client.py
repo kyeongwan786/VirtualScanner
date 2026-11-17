@@ -415,28 +415,93 @@ def activate_global_emergency(relay_config: dict[str, str]) -> dict:
     relay_url = relay_config["relay_url"].rstrip("/")
     _, health = _request(f"{relay_url}/health", relay_config["central_token"])
     if (not isinstance(health, dict)
-            or "emergency-lock-v1" not in health.get("features", [])):
+            or not {"emergency-lock-v1", "emergency-receipts-v1"}.issubset(
+                set(health.get("features", []))
+            )):
         raise TransferError("Relay가 전체 긴급 중단을 지원하지 않습니다. Relay 서버를 먼저 갱신하세요.")
     _, result = _request(
         f"{relay_url}/v1/emergency", relay_config["central_token"],
         method="POST", body=b"", content_type="application/json",
     )
-    if not isinstance(result, dict) or result.get("active") is not True:
+    if (not isinstance(result, dict) or result.get("active") is not True
+            or not isinstance(result.get("event_id"), str)):
         raise TransferError("Relay가 긴급 중단 상태를 확인해주지 않았습니다.")
+    return result
+
+
+def get_emergency_report(relay_config: dict[str, str]) -> dict:
+    """Return the central emergency state and per-station cleanup receipts."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/emergency", relay_config["central_token"], timeout=10,
+    )
+    if (not isinstance(result, dict) or not isinstance(result.get("active"), bool)
+            or not isinstance(result.get("stations"), list)):
+        raise TransferError("Relay 긴급 처리 현황 응답이 올바르지 않습니다.")
+    return result
+
+
+def report_station_emergency_result(
+    relay_config: dict[str, str], station_id: str, event_id: str,
+    *, cleanup_succeeded: bool, detail: str = "",
+) -> dict:
+    """Persist a Receiver cleanup result before it requests process shutdown."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/stations/{quote(station_id, safe='')}/emergency-result",
+        relay_config["token"], method="POST",
+        body=json.dumps({
+            "event_id": event_id,
+            "status": "cleanup_complete" if cleanup_succeeded else "cleanup_failed",
+            "detail": detail[:500],
+        }, separators=(",", ":")).encode("utf-8"),
+        content_type="application/json", timeout=10,
+    )
+    if not isinstance(result, dict) or result.get("recorded") is not True:
+        raise TransferError("Relay가 Receiver 처리 결과를 저장하지 못했습니다.")
+    return result
+
+
+def report_central_emergency_result(
+    relay_config: dict[str, str], event_id: str,
+    *, cleanup_succeeded: bool, detail: str = "",
+) -> dict:
+    """Persist the Sender cleanup result before the Sender requests shutdown."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/emergency-result", relay_config["central_token"],
+        method="POST",
+        body=json.dumps({
+            "event_id": event_id,
+            "status": "cleanup_complete" if cleanup_succeeded else "cleanup_failed",
+            "detail": detail[:500],
+        }, separators=(",", ":")).encode("utf-8"),
+        content_type="application/json", timeout=10,
+    )
+    if not isinstance(result, dict) or result.get("recorded") is not True:
+        raise TransferError("Relay가 송신기 처리 결과를 저장하지 못했습니다.")
     return result
 
 
 def get_station_emergency_status(
     relay_config: dict[str, str], station_id: str,
 ) -> bool:
+    return get_station_emergency_command(relay_config, station_id)["active"]
+
+
+def get_station_emergency_command(
+    relay_config: dict[str, str], station_id: str,
+) -> dict:
+    """Return the current command identity so a Receiver can post its receipt."""
     relay_url = relay_config["relay_url"].rstrip("/")
     _, result = _request(
         f"{relay_url}/v1/stations/{quote(station_id, safe='')}/emergency",
         relay_config["token"], timeout=4,
     )
-    if not isinstance(result, dict) or not isinstance(result.get("active"), bool):
+    if (not isinstance(result, dict) or not isinstance(result.get("active"), bool)
+            or (result["active"] and not isinstance(result.get("event_id"), str))):
         raise TransferError("Relay 긴급 중단 응답이 올바르지 않습니다.")
-    return result["active"]
+    return result
 
 
 def get_central_emergency_status(relay_config: dict[str, str]) -> bool:

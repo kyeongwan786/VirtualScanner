@@ -553,14 +553,17 @@ def _backend_process(port: int, token: str) -> None:
 
         def activate_and_exit() -> None:
             try:
-                from new_work.relay_client import activate_global_emergency
+                from new_work.relay_client import (
+                    activate_global_emergency, report_central_emergency_result,
+                )
 
-                activate_global_emergency(relay_config)
+                command = activate_global_emergency(relay_config)
             except Exception as exc:
                 emergency_state.update({
                     "active": True, "status": "failed", "error": str(exc),
                 })
                 return
+            cleanup_error = ""
             try:
                 from new_work.emergency import (
                     erase_sender_data,
@@ -568,15 +571,28 @@ def _backend_process(port: int, token: str) -> None:
                     write_emergency_lock,
                 )
 
-                write_emergency_lock()
-                erase_sender_data()
+                cleanup_errors = erase_sender_data()
+                cleanup_error = "; ".join(cleanup_errors)[:500]
                 unregister_new_work_autostart()
             except Exception as exc:
-                emergency_state.update({
-                    "active": True, "status": "complete_with_error", "error": str(exc),
-                })
-            else:
-                emergency_state.update({"active": True, "status": "complete", "error": ""})
+                cleanup_error = str(exc)[:500]
+            write_emergency_lock(
+                event_id=command["event_id"], cleanup_succeeded=not cleanup_error,
+                detail=cleanup_error,
+            )
+            try:
+                report_central_emergency_result(
+                    relay_config, command["event_id"],
+                    cleanup_succeeded=not cleanup_error,
+                    detail=cleanup_error or "local cleanup finished; shutdown requested",
+                )
+            except Exception as exc:
+                cleanup_error = cleanup_error or f"result receipt pending: {exc}"[:500]
+            emergency_state.update({
+                "active": True,
+                "status": "complete_with_error" if cleanup_error else "complete",
+                "error": cleanup_error,
+            })
             stop_event.set()
             try:
                 root.after(0, root.destroy)
@@ -1230,33 +1246,66 @@ def main() -> None:
     from new_work.emergency import (
         erase_sender_data,
         is_emergency_locked,
+        read_emergency_lock,
         schedule_windows_package_removal,
         unregister_new_work_autostart,
         write_emergency_lock,
     )
 
     if is_emergency_locked():
+        marker = read_emergency_lock()
+        if isinstance(marker.get("event_id"), str) and marker["event_id"]:
+            try:
+                from new_work.relay_client import report_central_emergency_result
+                from new_work.relay_config import load_relay_config
+
+                relay_config = load_relay_config()
+                if relay_config:
+                    report_central_emergency_result(
+                        relay_config, marker["event_id"],
+                        cleanup_succeeded=marker.get("cleanup_succeeded") is True,
+                        detail=str(marker.get("detail", "local cleanup receipt retried")),
+                    )
+            except Exception:
+                pass
         unregister_new_work_autostart()
         schedule_windows_package_removal()
         raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
-    remote_emergency = False
+    emergency_command = {"active": False}
     try:
-        from new_work.relay_client import get_central_emergency_status
+        from new_work.relay_client import (
+            get_emergency_report, report_central_emergency_result,
+        )
         from new_work.relay_config import load_relay_config
 
         app_relay_config = load_relay_config()
-        remote_emergency = bool(
-            app_relay_config and get_central_emergency_status(app_relay_config)
-        )
+        if app_relay_config:
+            emergency_command = get_emergency_report(app_relay_config)
     except Exception:
-        remote_emergency = False
-    if remote_emergency:
+        app_relay_config = None
+    if emergency_command.get("active"):
+        event_id = str(emergency_command["event_id"])
+        cleanup_error = ""
         try:
-            write_emergency_lock()
-            erase_sender_data()
-        finally:
+            cleanup_errors = erase_sender_data()
+            cleanup_error = "; ".join(cleanup_errors)[:500]
             unregister_new_work_autostart()
             schedule_windows_package_removal()
+        except Exception as exc:
+            cleanup_error = str(exc)[:500]
+        write_emergency_lock(
+            event_id=event_id, cleanup_succeeded=not cleanup_error,
+            detail=cleanup_error,
+        )
+        if app_relay_config:
+            try:
+                report_central_emergency_result(
+                    app_relay_config, event_id,
+                    cleanup_succeeded=not cleanup_error,
+                    detail=cleanup_error or "local cleanup finished; shutdown requested",
+                )
+            except Exception:
+                pass
         raise SystemExit("This NEW_WORK installation was disabled by an emergency command.")
     try:
         import webview

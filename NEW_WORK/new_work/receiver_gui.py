@@ -22,13 +22,16 @@ from PIL import Image, ImageTk
 
 from new_work.carrier.kt import default_kt_database_path, default_kt_image_directory, save_kt_submission
 from new_work.domain import OcrResult
-from new_work.emergency import erase_receiver_data, unregister_new_work_autostart
+from new_work.emergency import (
+    erase_receiver_data, unregister_new_work_autostart, write_emergency_lock,
+)
 from new_work.ocr.id_types import ID_TYPES, IdTypeDetection
 from new_work.ocr.result_writer import default_result_path, write_ocr_result
 from new_work.pdf_render import default_job_directory
 from new_work.relay_client import (
     acknowledge_work_package,
-    get_station_emergency_status,
+    get_station_emergency_command,
+    report_station_emergency_result,
     receive_work_package,
 )
 
@@ -192,6 +195,7 @@ class ReceiverApp:
         self._cancel_receive = Event()
         self._emergency_checking = False
         self._emergency_stopping = False
+        self._emergency_event_id = ""
         self._pending_received_reset: tuple[Path, Path | None, int, int, int] | None = None
         self._build()
         self._load_queue_state()
@@ -667,16 +671,16 @@ class ReceiverApp:
             self._emergency_checking = True
 
             def check() -> None:
-                active = False
+                command = {"active": False}
                 try:
-                    active = get_station_emergency_status(
+                    command = get_station_emergency_command(
                         {"relay_url": self.config["relay_url"], "token": self.config["token"]},
                         self.config["station_id"],
                     )
                 except Exception:
                     pass
                 try:
-                    self.root.after(0, self._remote_emergency_checked, active)
+                    self.root.after(0, self._remote_emergency_checked, command)
                 except tk.TclError:
                     pass
 
@@ -684,9 +688,10 @@ class ReceiverApp:
         if not self._emergency_stopping:
             self.root.after(2000, self._poll_remote_emergency)
 
-    def _remote_emergency_checked(self, active: bool) -> None:
+    def _remote_emergency_checked(self, command: dict) -> None:
         self._emergency_checking = False
-        if active:
+        if command.get("active"):
+            self._emergency_event_id = str(command.get("event_id", ""))
             self._begin_remote_emergency()
 
     def _begin_remote_emergency(self) -> None:
@@ -702,14 +707,35 @@ class ReceiverApp:
         if self._processing or self._correction_busy or local_busy:
             self.root.after(250, self._finish_remote_emergency_when_idle)
             return
+        cleanup_error = ""
         try:
-            erase_receiver_data(self.config)
+            cleanup_errors = erase_receiver_data(
+                self.config, event_id=self._emergency_event_id or None,
+            )
+            cleanup_error = "; ".join(cleanup_errors)[:500]
             unregister_new_work_autostart()
-        finally:
+        except Exception as exc:
+            cleanup_error = str(exc)[:500]
+        if self._emergency_event_id:
+            write_emergency_lock(
+                event_id=self._emergency_event_id,
+                cleanup_succeeded=not cleanup_error,
+                detail=cleanup_error,
+            )
             try:
-                self.root.destroy()
-            except tk.TclError:
+                report_station_emergency_result(
+                    {"relay_url": self.config["relay_url"], "token": self.config["token"]},
+                    self.config["station_id"], self._emergency_event_id,
+                    cleanup_succeeded=not cleanup_error,
+                    detail=cleanup_error or "local cleanup finished; shutdown requested",
+                )
+            except Exception:
+                # Retain the receipt locally so the next startup can retry it.
                 pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _receive_relay_work(self) -> None:
         new_job_id: str | None = None

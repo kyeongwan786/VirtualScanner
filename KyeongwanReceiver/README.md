@@ -66,6 +66,8 @@ python .\relay_server.py --config .\relay.json --add-station desk-02
 
 저장소 루트의 `render.yaml`은 무료 Render Web Service 시험 구성을 정의한다. Render 앞단이 공개 HTTPS를 종료하고 앱을 `PORT` 환경 변수의 `0.0.0.0` 포트로 연결한다. Render 실행 모드는 중앙 토큰과 자리별 토큰을 검증하며, VPN별 출구 주소가 달라질 수 있어 IP allow-list를 사용하지 않는다. Web Service는 인터넷에 공개되므로 이 설정은 임의 시험 문서 전용이다.
 
+Render 무료 서비스의 파일은 재시작/재배포 사이에 보존되지 않는다. 긴급 잠금과 자리별 결과를 영속 저장하려면 유료 Web Service에 `/var/data` Persistent Disk를 연결하고 `KYEONGWAN_RELAY_DATA_DIR=/var/data/kyeongwan-relay`를 사용해야 한다. 현재 Blueprint는 무료 시험 설정이며 디스크를 생성하지 않는다. Relay는 디스크가 실제로 마운트되지 않은 Render에서 긴급 명령을 거부하고 `/health`의 `emergency_storage_persistent`를 `false`로 표시한다.
+
 1. Render에 연결할 Git 브랜치에 PDF/JPG, 개인 키, 토큰이 포함되지 않았는지 먼저 확인한다.
 2. 로컬에서 토큰을 만든다. 기존 `relay-provisioning.json`이 있으면 거기 발급된 값을 사용한다.
 
@@ -164,11 +166,10 @@ V3 Sender의 **긴급 중단**에서 `전체 폐기`를 확정하면 Relay의 `e
 조회해 로컬 NEW_WORK 송수신 자료와 해당 Receiver가 `ready`에 올린 파일, 설치 폴더를
 정리합니다. 기존 SK/KT 결과·DB, 백업과 설정은 보존합니다. 오프라인 단말은 다음 연결
 또는 실행 때 처리되고, 이전 버전은 자기 설치본을 제거하지 않습니다. Relay 프로세스와 Render 로그,
-소스 저장소는 제거하지 않습니다. Relay `data_dir`가 재시작 시 보존되지 않는 임시
-저장소라면 잠금이 사라질 수 있으므로, 실제 운영 전에 지속 저장소를 확인해야 합니다.
+소스 저장소는 제거하지 않습니다. 송신기와 각 Receiver는 로컬 정리 성공/오류와 종료 요청을 Relay에 기록합니다. `cleanup_complete`는 정리 함수 완료를 뜻하며, Relay는 원격 프로세스가 실제로 종료했는지 확인하지 않습니다. 오프라인 자리는 `pending`으로 남고 다시 연결하면 명령을 조회합니다. 결과는 중앙 PC의 저장된 Relay 설정을 사용해 `cd NEW_WORK && python -m new_work.emergency_status`로 확인할 수 있습니다. Render 영속 디스크가 없으면 긴급 명령 자체를 거부합니다.
 
 일반 릴레이 모드는 HTTPS, 중앙/자리별 별도 bearer token, 출발지 IP/CIDR 허용 목록, 암호화된 페이지 저장을 구현한다. Render 시험 모드는 Render 앞단에서 HTTPS가 종료되므로 앱 내부 TLS와 IP allow-list를 사용하지 않고 긴 무작위 중앙/자리별 bearer token으로 인증한다. 모든 클라이언트 설정에는 해당 토큰이 필요하므로 계정 접근을 제한하고 토큰을 로그/스크린샷/저장소에 올리지 않는다. 두 모드 모두 종단간 암호화가 아니며 릴레이 프로세스는 처리 중 문서를 복호화한다. Render 무료 모드의 임시 저장소는 내구성 있는 큐가 아니므로 실제 접수 서류나 재전송을 보장해야 하는 업무에 사용하지 않는다.
 
-Render Blueprint와 실행 모드는 저장소에 준비했지만 실제 Render 계정에 연결하거나 배포하지 않았고, 공개 서비스 URL도 아직 없다. 무료 Render 배포는 임시 파일시스템을 사용하며 네트워크/IP allow-list 없이 bearer token에 의존한다. Windows 빌드와 Render 공개 배포는 아직 검증되지 않았다. 구형 Receiver는 HTTP 직접 접속을 계속 제공하므로 릴레이로 전환하기 전에는 민감한 실제 문서에 사용하지 않는다.
+Render Blueprint와 실행 모드는 저장소에 준비했지만 실제 Render 계정에 연결하거나 배포하지 않았고, 공개 서비스 URL도 아직 없다. 무료 Render 배포는 임시 파일시스템을 사용하며 네트워크/IP allow-list 없이 bearer token에 의존한다. 긴급 명령의 지속성을 위해 유료 Persistent Disk가 필요하다. Windows 빌드와 Render 공개 배포는 아직 검증되지 않았다. 구형 Receiver는 HTTP 직접 접속을 계속 제공하므로 릴레이로 전환하기 전에는 민감한 실제 문서에 사용하지 않는다.
 
 TWAIN Source의 Acquire/이미지 반환 코드와 Receiver 대기열 연결은 작성되어 있다. 중앙 GUI에는 진행 중인 전송을 취소하는 기능이 있으며, 이미 도착한 부분 데이터는 삭제하지 않고 Receiver의 `cancelled` 폴더에 보존한다. 다만 Windows 빌드, Source 설치 후 목록 표시, 업무페이지에서 선택 및 실제 이미지 스캔은 아직 검증되지 않았다. 중앙 GUI의 Windows EXE 배포와 Receiver 자동 시작도 남아 있다. 코드가 준비된 것과 접수 PC에서 동작이 확인된 것은 구분한다.

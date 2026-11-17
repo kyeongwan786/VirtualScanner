@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -58,6 +59,14 @@ def _atomic_write(path: Path, content: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -162,7 +171,7 @@ def load_render_config() -> tuple[dict, bytes]:
     except (UnicodeEncodeError, ValueError) as error:
         raise ValueError("KYEONGWAN_RELAY_DATA_KEY must be a valid Fernet key") from error
 
-    data_dir = Path(os.environ.get("KYEONGWAN_RELAY_DATA_DIR", "/tmp/kyeongwan-relay"))
+    data_dir = Path(os.environ.get("KYEONGWAN_RELAY_DATA_DIR", "/var/data/kyeongwan-relay"))
     config = {
         "host": "0.0.0.0",
         "port": port,
@@ -274,6 +283,30 @@ class RelayHTTPServer(ThreadingHTTPServer):
             pass
         self.lock = threading.RLock()
         self._load_station_provisioning()
+        self._migrate_emergency_state()
+
+    def _migrate_emergency_state(self) -> None:
+        """Preserve legacy locks and add fields required for station receipts."""
+        try:
+            event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid persisted emergency state: {exc}") from exc
+        if not isinstance(event, dict) or event.get("active") is not True:
+            return
+        changed = False
+        if not isinstance(event.get("event_id"), str) or not event["event_id"]:
+            event["event_id"] = uuid4().hex
+            changed = True
+        if not isinstance(event.get("activated_at"), str):
+            event["activated_at"] = datetime.now(timezone.utc).isoformat()
+            changed = True
+        if not isinstance(event.get("results"), dict):
+            event["results"] = {}
+            changed = True
+        if changed:
+            _atomic_write(self.emergency_path, _json_bytes(event))
 
     def _load_station_provisioning(self) -> None:
         """Restore centrally provisioned station hashes from the service data dir."""
@@ -327,13 +360,100 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except (OSError, json.JSONDecodeError):
             return False
 
+    def emergency_storage_persistent(self) -> bool:
+        """Render emergency state is durable only when its persistent disk is mounted."""
+        if not self.config.get("render_mode"):
+            return True
+        try:
+            data_dir = self.data_dir.resolve()
+            mount_points = []
+            for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
+                fields = line.split()
+                if len(fields) >= 2:
+                    mount = Path(fields[1].replace("\\040", " ")).resolve()
+                    if mount == Path("/var/data"):
+                        mount_points.append(mount)
+            return any(data_dir == mount or mount in data_dir.parents for mount in mount_points)
+        except OSError:
+            return False
+
+    def emergency_report(self) -> dict:
+        try:
+            event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
+        if not isinstance(event, dict):
+            event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
+        results = event.get("results") if isinstance(event.get("results"), dict) else {}
+        sender_result = event.get("sender_result")
+        if not isinstance(sender_result, dict):
+            sender_result = {}
+        stations = []
+        for station_id in sorted(self.config["stations"]):
+            result = results.get(station_id)
+            stations.append({
+                "station_id": station_id,
+                "status": result.get("status", "pending") if isinstance(result, dict) else "pending",
+                "cleanup_at": result.get("cleanup_at") if isinstance(result, dict) else None,
+                "shutdown": result.get("shutdown", "not_confirmed") if isinstance(result, dict) else "not_confirmed",
+                "detail": result.get("detail", "") if isinstance(result, dict) else "",
+            })
+        return {
+            "active": event.get("active") is True,
+            "event_id": event.get("event_id"),
+            "activated_at": event.get("activated_at"),
+            "storage_persistent": self.emergency_storage_persistent(),
+            "sender": {
+                "status": sender_result.get("status", "pending"),
+                "cleanup_at": sender_result.get("cleanup_at"),
+                "shutdown": sender_result.get("shutdown", "not_confirmed"),
+                "detail": sender_result.get("detail", ""),
+            },
+            "stations": stations,
+        }
+
+    def record_emergency_result(self, payload: dict, *, station_id: str | None = None) -> dict:
+        with self.lock:
+            try:
+                event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("no active emergency command") from exc
+            if (not isinstance(event, dict) or event.get("active") is not True
+                    or payload.get("event_id") != event.get("event_id")):
+                raise ValueError("emergency event does not match")
+            status = payload.get("status")
+            if not isinstance(status, str) or status not in {"cleanup_complete", "cleanup_failed"}:
+                raise ValueError("invalid emergency result status")
+            result = {
+                "status": status,
+                "cleanup_at": datetime.now(timezone.utc).isoformat(),
+                "shutdown": "requested",
+                "detail": payload.get("detail", "")[:500],
+            }
+            if station_id is None:
+                event["sender_result"] = result
+            else:
+                results = event.get("results")
+                if not isinstance(results, dict):
+                    results = {}
+                    event["results"] = results
+                results[station_id] = result
+            _atomic_write(self.emergency_path, _json_bytes(event))
+            return result
+
     def activate_emergency(self) -> int:
         with self.lock:
             if self.emergency_active():
                 return 0
+            if not self.emergency_storage_persistent():
+                raise OSError("Render persistent disk is not mounted at /var/data")
+            event_id = uuid4().hex
             _atomic_write(self.emergency_path, _json_bytes({
                 "active": True,
+                "event_id": event_id,
                 "activated_at": datetime.now(timezone.utc).isoformat(),
+                "results": {},
+                "sender_result": {},
             }))
             removed = 0
             for item in list(self.jobs_dir.iterdir()):
@@ -434,20 +554,25 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, {"status": "ready", "features": [
                 "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
-                "emergency-lock-v1", "station-provisioning-v1",
-            ], "emergency_active": self.server.emergency_active()})
+                "emergency-lock-v1", "emergency-receipts-v1", "station-provisioning-v1",
+            ], "emergency_active": self.server.emergency_active(),
+                "emergency_storage_persistent": self.server.emergency_storage_persistent()})
             return
         if path == "/v1/emergency":
             if not self._authorize_central():
                 return
-            self._reply(200, {"active": self.server.emergency_active()})
+            self._reply(200, self.server.emergency_report())
             return
         match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/emergency", path)
         if match:
             station_id = match.group(1)
             if not self._authorize_station(station_id):
                 return
-            self._reply(200, {"active": self.server.emergency_active()})
+            report = self.server.emergency_report()
+            self._reply(200, {
+                "active": report["active"], "event_id": report["event_id"],
+                "activated_at": report["activated_at"],
+            })
             return
         if self.server.emergency_active():
             self._reply(410, {"error": "relay permanently disabled by emergency command"})
@@ -579,15 +704,64 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, {"configured_stations": count})
             return
+        if path == "/v1/emergency-result":
+            if not self._authorize_central():
+                return
+            body = self._body(16 * 1024)
+            if body is None:
+                return
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("body must be an object")
+                detail = payload.get("detail", "")
+                if not isinstance(detail, str):
+                    raise ValueError("detail must be text")
+                payload["detail"] = detail
+                result = self.server.record_emergency_result(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self._reply(400, {"error": str(exc)})
+                return
+            except OSError as exc:
+                self._reply(500, {"error": f"could not persist emergency result: {exc}"})
+                return
+            self._reply(200, {"recorded": True, **result})
+            return
+        match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/emergency-result", path)
+        if match:
+            station_id = match.group(1)
+            if not self._authorize_station(station_id):
+                return
+            body = self._body(16 * 1024)
+            if body is None:
+                return
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("body must be an object")
+                detail = payload.get("detail", "")
+                if not isinstance(detail, str):
+                    raise ValueError("detail must be text")
+                payload["detail"] = detail
+                result = self.server.record_emergency_result(payload, station_id=station_id)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self._reply(400, {"error": str(exc)})
+                return
+            except OSError as exc:
+                self._reply(500, {"error": f"could not persist emergency result: {exc}"})
+                return
+            self._reply(200, {"recorded": True, **result})
+            return
         if path == "/v1/emergency":
             if not self._authorize_central():
                 return
             try:
                 removed = self.server.activate_emergency()
             except OSError as exc:
-                self._reply(500, {"error": f"could not persist emergency lock: {exc}"})
+                status = 503 if "persistent disk" in str(exc) else 500
+                self._reply(status, {"error": f"could not persist emergency lock: {exc}"})
                 return
-            self._reply(200, {"active": True, "removed_jobs": removed})
+            self._reply(200, {**self.server.emergency_report(), "removed_jobs": removed})
             return
         if self.server.emergency_active():
             self._reply(410, {"error": "relay permanently disabled by emergency command"})

@@ -15,3 +15,5 @@ services:
         sync: false
       - key: KYEONGWAN_RELAY_DATA_KEY
         generateValue: true
+      - key: KYEONGWAN_RELAY_DATA_DIR
+        value: /var/data/kyeongwan-relay

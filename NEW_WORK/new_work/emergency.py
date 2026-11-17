@@ -21,36 +21,55 @@ def is_emergency_locked() -> bool:
     return emergency_marker_path().is_file()
 
 
-def write_emergency_lock() -> None:
+def read_emergency_lock() -> dict:
+    try:
+        value = json.loads(emergency_marker_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {"disabled": True}
+    except (OSError, json.JSONDecodeError):
+        return {"disabled": True}
+
+
+def write_emergency_lock(*, event_id: str | None = None,
+                         cleanup_succeeded: bool | None = None,
+                         detail: str = "") -> None:
     marker = emergency_marker_path()
     marker.parent.mkdir(parents=True, exist_ok=True)
+    value = {"disabled": True}
+    if event_id:
+        value.update({
+            "event_id": event_id,
+            "cleanup_succeeded": cleanup_succeeded is True,
+            "detail": detail[:500],
+        })
     marker.write_text(
-        json.dumps({"disabled": True}, ensure_ascii=False) + "\n",
+        json.dumps(value, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
 
-def _remove_file(path: Path) -> None:
+def _remove_file(path: Path) -> str | None:
     try:
         if path.is_symlink() or path.is_file():
             path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        return None
+    except OSError as exc:
+        return f"{path.name}: {exc}"
 
 
-def _remove_project_directory(path: Path) -> None:
+def _remove_project_directory(path: Path) -> str | None:
     try:
         if path.is_symlink():
-            return
+            return None
         if path.is_dir():
             import shutil
 
             shutil.rmtree(path)
-    except OSError:
-        pass
+        return None
+    except OSError as exc:
+        return f"{path.name}: {exc}"
 
 
-def erase_sender_data() -> None:
+def erase_sender_data() -> list[str]:
     """Remove sender-side staged transfer payloads, preserving configuration."""
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
@@ -59,16 +78,23 @@ def erase_sender_data() -> None:
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     app_data = base / "NEW_WORK"
-    _remove_project_directory(app_data / "jobs")
+    errors = []
+    error = _remove_project_directory(app_data / "jobs")
+    if error:
+        errors.append(error)
     override = os.environ.get("NEW_WORK_DATA_DIR")
     if override:
         override_dir = Path(override).expanduser()
-        _remove_project_directory(override_dir / "jobs")
+        error = _remove_project_directory(override_dir / "jobs")
+        if error:
+            errors.append(error)
+    return errors
 
 
-def erase_receiver_data(config: dict[str, str]) -> None:
+def erase_receiver_data(config: dict[str, str], *, event_id: str | None = None) -> list[str]:
     """Remove transferred packages and their staged scans, preserving business data."""
-    write_emergency_lock()
+    write_emergency_lock(event_id=event_id)
+    errors: list[str] = []
     work_value = str(config.get("work_path", "")).strip()
     work_root = Path(work_value).expanduser() if work_value else None
     ready_ids: set[str] = set()
@@ -76,6 +102,8 @@ def erase_receiver_data(config: dict[str, str]) -> None:
         state_path = work_root / "receiver-state.json"
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                errors.append("receiver-state.json: unexpected format")
             ready_jobs = state.get("ready_jobs", []) if isinstance(state, dict) else []
             if isinstance(ready_jobs, list):
                 ready_ids.update(
@@ -91,11 +119,17 @@ def erase_receiver_data(config: dict[str, str]) -> None:
                     and active["scanner_job_id"].isascii()
                     and active["scanner_job_id"].replace("_", "").replace("-", "").isalnum()):
                 ready_ids.add(active["scanner_job_id"])
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             pass
-        _remove_project_directory(work_root / "jobs")
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"receiver-state.json: {exc}")
+        error = _remove_project_directory(work_root / "jobs")
+        if error:
+            errors.append(error)
         for name in ("receiver-state.json", "receiver-corrections.json"):
-            _remove_file(work_root / name)
+            error = _remove_file(work_root / name)
+            if error:
+                errors.append(error)
 
     ready_value = str(config.get("scanner_ready_path", "")).strip()
     ready = Path(ready_value).expanduser() if ready_value else None
@@ -105,9 +139,12 @@ def erase_receiver_data(config: dict[str, str]) -> None:
             for scanner_job_id in ready_ids:
                 if scanner_job_id in {".", ".."}:
                     continue
-                _remove_project_directory(ready / scanner_job_id)
-        except OSError:
-            pass
+                error = _remove_project_directory(ready / scanner_job_id)
+                if error:
+                    errors.append(error)
+        except OSError as exc:
+            errors.append(f"ready: {exc}")
+    return errors
 
 
 def unregister_new_work_autostart() -> None:
