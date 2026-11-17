@@ -45,7 +45,7 @@
     .emergency-button:hover { background:#8f1724;box-shadow:0 0 0 4px #fecaca55; }
     .emergency-button:focus-visible { outline:3px solid #fecaca;outline-offset:2px; }
     .emergency-button:disabled { cursor:wait;opacity:.8; }
-    .emergency-button svg { width:23px;height:23px; }
+    .emergency-button img { width:31px;height:31px;display:block;object-fit:contain;border-radius:9px;background:#fff; }
     .emergency-dialog { width:min(560px,calc(100vw - 32px));max-width:none;padding:0;border:1px solid #fca5a5;border-radius:18px;background:#fff;box-shadow:0 24px 90px #450a0a66;color:#172b4d; }
     .emergency-dialog::backdrop { background:#101828b8;backdrop-filter:blur(3px); }
     .emergency-content { padding:26px 28px 22px; }
@@ -237,7 +237,7 @@
       </div>
       <div class="topbar-spacer"></div>
       <div class="connection"><i class="dot"></i><span id="connectionText">Relay 확인 중</span></div>
-      <button class="emergency-button" id="emergencyStop" title="긴급 중단 및 전체 폐기" aria-label="긴급 중단 및 전체 폐기"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M9 18.2V15a7 7 0 0 1 14 0v3.2l3 4.4H6l3-4.4Z" fill="currentColor"/><path d="M7 25h18M13 28h6M16 2v3M4.9 7.1 7 9.2M27.1 7.1 25 9.2M2 15h3M27 15h3" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg></button>
+      <button class="emergency-button" id="emergencyStop" title="긴급 중단 및 전체 폐기" aria-label="긴급 중단 및 전체 폐기"><img src="data:image/png;base64,__EMERGENCY_SIREN_DATA__" alt=""></button>
       <div class="divider"></div>
       <div><div class="intake-label">접수 작업</div><div class="intake-value">새 접수</div></div>
       <button class="header-action" id="resetButton">작업 초기화</button>

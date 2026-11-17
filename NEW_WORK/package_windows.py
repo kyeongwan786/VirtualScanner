@@ -97,6 +97,9 @@ def main() -> int:
             "--add-data",
             os.path.join(os.path.dirname(__file__), "new_work", "gui", "sender_ui.html")
             + ";new_work/gui",
+            "--add-data",
+            os.path.join(os.path.dirname(__file__), "new_work", "gui", "assets", "emergency-siren.png")
+            + ";new_work/gui/assets",
         ))
     model_root = os.path.join(os.path.dirname(__file__), "ocr_models")
     required_models = (

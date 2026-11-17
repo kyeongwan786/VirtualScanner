@@ -25,6 +25,7 @@ from new_work.pdf_render import default_job_directory
 
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 _HTML_PATH = Path(__file__).with_name("sender_ui.html")
+_SIREN_ICON_PATH = Path(__file__).with_name("assets") / "emergency-siren.png"
 
 
 def _available_port() -> int:
@@ -672,7 +673,10 @@ def _backend_process(port: int, token: str) -> None:
             query = urllib.parse.parse_qs(parsed.query)
             if parsed.path == "/" and query.get("token", [""])[0] == token:
                 try:
-                    self._reply(200, _HTML_PATH.read_bytes(), "text/html; charset=utf-8")
+                    html = _HTML_PATH.read_bytes()
+                    siren_data = base64.b64encode(_SIREN_ICON_PATH.read_bytes())
+                    html = html.replace(b"__EMERGENCY_SIREN_DATA__", siren_data)
+                    self._reply(200, html, "text/html; charset=utf-8")
                 except OSError as exc:
                     self._reply(500, {"error": str(exc)})
                 return
