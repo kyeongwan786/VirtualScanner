@@ -326,7 +326,7 @@
         <li>연결된 최신 Receiver의 NEW_WORK 수신 자료와 이 앱이 스캐너 ready에 등록한 파일을 삭제하고 프로그램을 종료합니다. Windows 설치본은 자동 제거 대상이며, 오프라인 PC는 다시 연결될 때 명령을 받습니다.</li>
         <li>송신기 작업 자료를 지우고 송신기를 종료합니다. Windows 설치본은 자동 제거 대상입니다. macOS에서 소스로 실행한 폴더는 자동 삭제되지 않습니다.</li>
       </ul>
-      <p class="emergency-preserve">기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존됩니다. Relay의 임시 저장소가 초기화되면 잠금 상태가 유지되지 않을 수 있습니다.</p>
+      <p class="emergency-preserve">기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존됩니다. 긴급 잠금은 Relay의 Neon DB 연결을 확인한 뒤 기록됩니다.</p>
       <div class="emergency-actions"><button class="emergency-cancel" id="emergencyCancel">취소</button><button class="emergency-confirm" id="emergencyConfirm">긴급 중단 실행</button></div>
     </div>
   </dialog>

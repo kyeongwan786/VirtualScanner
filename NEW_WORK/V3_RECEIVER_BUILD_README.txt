@@ -36,8 +36,9 @@ Receiver는 ready에 올린 복사본만 제거하고 받은 원본 페이지는
 `ready`에 올린 파일을 지우고 Windows 설치 폴더를 제거합니다. 기존 SK/KT 결과,
 데이터베이스, 백업과 설정은 보존합니다. 오프라인 PC는 재연결 또는 다음 실행 때 처리되며,
 이전 Receiver 빌드는 자체 종료·제거 명령을 처리하지 못합니다. Render 로그와 저장소
-소스는 삭제되지 않습니다. Relay 임시 저장소가 초기화되면 잠금이 사라질 수 있으므로
-영속 저장소를 확인해야 합니다.
+소스는 삭제되지 않습니다. Relay 잠금과 정리 결과는 Neon `DATABASE_URL`에 저장되며,
+Render `/health`에서 `emergency_storage_persistent: true`인지 확인하세요. 대기 전송 파일은
+Render 임시 저장소에 있어 재시작 시 사라질 수 있습니다.
 
 Windows x64에서 Python 3.12 x64를 설치하고 build_receiver_windows_v3.bat을
 실행하세요. 결과는 dist\new_work_receiver_v3\new_work_receiver_v3.exe입니다.

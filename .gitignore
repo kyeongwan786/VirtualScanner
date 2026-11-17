@@ -6,6 +6,12 @@ __pycache__/
 .venv-*/
 .pytest_cache/
 
+# Neon project context and local credentials
+/.neon
+/.env
+/.env.*
+!/.env.example
+
 # User-supplied reference material and local data
 /idscanner/
 *.db
@@ -39,3 +45,4 @@ NEW_WORK_OCR/result.txt
 /NEW_WORK/relay-provisioning.json
 
 /NEW_WORK-Windows-Build.zip
+node_modules/

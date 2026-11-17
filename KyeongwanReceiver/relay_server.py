@@ -76,6 +76,53 @@ def _json_bytes(value: dict) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+class NeonStateStore:
+    """Small durable state store for emergency locks and station credentials."""
+
+    def __init__(self, dsn: str):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError("install psycopg to use Neon DATABASE_URL") from exc
+        self._psycopg = psycopg
+        self._dsn = dsn
+        self._execute(
+            "CREATE TABLE IF NOT EXISTS kyeongwan_relay_state ("
+            "state_key TEXT PRIMARY KEY, state_value JSONB NOT NULL, "
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+
+    def _execute(self, query: str, params: tuple = (), *, fetch: bool = False):
+        try:
+            with self._psycopg.connect(self._dsn, connect_timeout=8) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    return cur.fetchone() if fetch else None
+        except Exception:
+            # Do not leak connection strings or credentials into application logs.
+            raise OSError("Neon state database is unavailable") from None
+
+    def get(self, key: str) -> dict | None:
+        row = self._execute(
+            "SELECT state_value FROM kyeongwan_relay_state WHERE state_key = %s",
+            (key,), fetch=True,
+        )
+        return row[0] if row else None
+
+    def set(self, key: str, value: dict) -> None:
+        self._execute(
+            "INSERT INTO kyeongwan_relay_state (state_key, state_value, updated_at) "
+            "VALUES (%s, %s::jsonb, now()) "
+            "ON CONFLICT (state_key) DO UPDATE SET "
+            "state_value = EXCLUDED.state_value, updated_at = now()",
+            (key, json.dumps(value, ensure_ascii=False)),
+        )
+
+    def ready(self) -> bool:
+        self._execute("SELECT 1", fetch=True)
+        return True
+
+
 def load_config(path: Path) -> dict:
     config_dir = path.expanduser().resolve().parent
     config = json.loads(path.read_text(encoding="utf-8"))
@@ -171,7 +218,9 @@ def load_render_config() -> tuple[dict, bytes]:
     except (UnicodeEncodeError, ValueError) as error:
         raise ValueError("KYEONGWAN_RELAY_DATA_KEY must be a valid Fernet key") from error
 
-    data_dir = Path(os.environ.get("KYEONGWAN_RELAY_DATA_DIR", "/var/data/kyeongwan-relay"))
+    # Render's free filesystem is ephemeral. Job payloads still use this local
+    # directory, while safety state is persisted separately in Neon Postgres.
+    data_dir = Path(os.environ.get("KYEONGWAN_RELAY_DATA_DIR", "/tmp/kyeongwan-relay"))
     config = {
         "host": "0.0.0.0",
         "port": port,
@@ -184,6 +233,7 @@ def load_render_config() -> tuple[dict, bytes]:
         "stations": stations,
         "enforce_ip_allowlist": False,
         "render_mode": True,
+        "database_url": os.environ.get("DATABASE_URL", "").strip(),
     }
     return config, key
 
@@ -275,6 +325,8 @@ class RelayHTTPServer(ThreadingHTTPServer):
         self.jobs_dir = self.data_dir / "jobs"
         self.emergency_path = self.data_dir / "emergency-stop.json"
         self.station_provisioning_path = self.data_dir / "station-provisioning.json"
+        database_url = config.get("database_url", "")
+        self.state_store = NeonStateStore(database_url) if database_url else None
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -288,14 +340,34 @@ class RelayHTTPServer(ThreadingHTTPServer):
         self._load_station_provisioning()
         self._migrate_emergency_state()
 
+    def _read_state(self, key: str, path: Path) -> dict | None:
+        if self.state_store:
+            value = self.state_store.get(key)
+            if value is not None:
+                if not isinstance(value, dict):
+                    raise ValueError(f"invalid persisted {key} state")
+                return value
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid persisted {key} state: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"invalid persisted {key} state")
+        return value
+
+    def _write_state(self, key: str, path: Path, value: dict) -> None:
+        if self.state_store:
+            self.state_store.set(key, value)
+        else:
+            _atomic_write(path, _json_bytes(value))
+
     def _migrate_emergency_state(self) -> None:
         """Preserve legacy locks and add fields required for station receipts."""
-        try:
-            event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        event = self._read_state("emergency", self.emergency_path)
+        if event is None:
             return
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"invalid persisted emergency state: {exc}") from exc
         if not isinstance(event, dict) or event.get("active") is not True:
             return
         changed = False
@@ -309,16 +381,13 @@ class RelayHTTPServer(ThreadingHTTPServer):
             event["results"] = {}
             changed = True
         if changed:
-            _atomic_write(self.emergency_path, _json_bytes(event))
+            self._write_state("emergency", self.emergency_path, event)
 
     def _load_station_provisioning(self) -> None:
         """Restore centrally provisioned station hashes from the service data dir."""
-        try:
-            payload = json.loads(self.station_provisioning_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        payload = self._read_state("stations", self.station_provisioning_path)
+        if payload is None:
             return
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"invalid persisted station provisioning: {exc}") from exc
         stations = payload.get("stations") if isinstance(payload, dict) else None
         if not isinstance(stations, dict):
             raise ValueError("persisted station provisioning must contain stations")
@@ -347,24 +416,32 @@ class RelayHTTPServer(ThreadingHTTPServer):
                 "allowed_ips": previous.get("allowed_ips", []),
             }
         with self.lock:
-            _atomic_write(self.station_provisioning_path, _json_bytes({"stations": stations}))
-            try:
-                self.station_provisioning_path.chmod(0o600)
-            except OSError:
-                pass
+            self._write_state("stations", self.station_provisioning_path, {"stations": stations})
+            if not self.state_store:
+                try:
+                    self.station_provisioning_path.chmod(0o600)
+                except OSError:
+                    pass
             # Keep any Render environment entries that were not part of the app profile.
             self.config["stations"].update(stations)
         return len(stations)
 
     def emergency_active(self) -> bool:
         try:
-            value = json.loads(self.emergency_path.read_text(encoding="utf-8"))
+            value = self._read_state("emergency", self.emergency_path)
             return isinstance(value, dict) and value.get("active") is True
-        except (OSError, json.JSONDecodeError):
-            return False
+        except (OSError, ValueError):
+            # Fail closed if the durable lock store cannot be read.
+            logging.exception("Could not read emergency state")
+            return True
 
     def emergency_storage_persistent(self) -> bool:
-        """Render emergency state is durable only when its persistent disk is mounted."""
+        """Report whether emergency state has a currently reachable durable store."""
+        if self.state_store:
+            try:
+                return self.state_store.ready()
+            except OSError:
+                return False
         if not self.config.get("render_mode"):
             return True
         try:
@@ -382,8 +459,11 @@ class RelayHTTPServer(ThreadingHTTPServer):
 
     def emergency_report(self) -> dict:
         try:
-            event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            event = self._read_state("emergency", self.emergency_path)
+        except (OSError, ValueError):
+            logging.exception("Could not read emergency report state")
+            event = {"active": True, "event_id": None, "activated_at": None, "results": {}}
+        if event is None:
             event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
         if not isinstance(event, dict):
             event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
@@ -417,10 +497,7 @@ class RelayHTTPServer(ThreadingHTTPServer):
 
     def record_emergency_result(self, payload: dict, *, station_id: str | None = None) -> dict:
         with self.lock:
-            try:
-                event = json.loads(self.emergency_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("no active emergency command") from exc
+            event = self._read_state("emergency", self.emergency_path)
             if (not isinstance(event, dict) or event.get("active") is not True
                     or payload.get("event_id") != event.get("event_id")):
                 raise ValueError("emergency event does not match")
@@ -441,23 +518,23 @@ class RelayHTTPServer(ThreadingHTTPServer):
                     results = {}
                     event["results"] = results
                 results[station_id] = result
-            _atomic_write(self.emergency_path, _json_bytes(event))
+            self._write_state("emergency", self.emergency_path, event)
             return result
 
     def activate_emergency(self) -> int:
         with self.lock:
+            if not self.emergency_storage_persistent():
+                raise OSError("durable emergency state storage is unavailable")
             if self.emergency_active():
                 return 0
-            if not self.emergency_storage_persistent():
-                raise OSError("Render persistent disk is not mounted at /var/data")
             event_id = uuid4().hex
-            _atomic_write(self.emergency_path, _json_bytes({
+            self._write_state("emergency", self.emergency_path, {
                 "active": True,
                 "event_id": event_id,
                 "activated_at": datetime.now(timezone.utc).isoformat(),
                 "results": {},
                 "sender_result": {},
-            }))
+            })
             removed = 0
             for item in list(self.jobs_dir.iterdir()):
                 try:
@@ -780,7 +857,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             try:
                 removed = self.server.activate_emergency()
             except OSError as exc:
-                status = 503 if "persistent disk" in str(exc) else 500
+                status = 503 if "durable emergency state storage" in str(exc) else 500
                 self._reply(status, {"error": f"could not persist emergency lock: {exc}"})
                 return
             self._reply(200, {**self.server.emergency_report(), "removed_jobs": removed})
