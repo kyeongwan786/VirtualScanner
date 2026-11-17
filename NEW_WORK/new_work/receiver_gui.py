@@ -995,6 +995,10 @@ class ReceiverApp:
             self._finish_remote_emergency_when_idle()
             return
         self.receive_progress_frame.grid_remove()
+        # The web Receiver snapshot reads this StringVar while the next inbox
+        # poll is running. Clear the previous job's text so an empty 2-second
+        # poll cannot flash a stale "transfer complete" progress line.
+        self.receive_progress_label.set("")
         self.receive_progress_bar.configure(value=0)
         if self._pending_received_reset is not None:
             self._finish_received_reset()
