@@ -265,6 +265,7 @@ def _snapshot(
             "kt_database_path", "kt_image_directory", "scanner_ready_path",
         )},
         "provisioned_stations": getattr(app, "_provisioned_stations", []),
+        "provisioned_relay_url": getattr(app, "_provisioned_relay_url", ""),
         "token_configured": bool(app.config.get("token")),
         "status": app.status.get(),
         "progress": (
@@ -287,14 +288,19 @@ def _backend_process(port: int, token: str) -> None:
 
     from new_work.receiver_gui import ReceiverApp
     from new_work.webview_backend import hide_backend_application
-    from new_work.provisioning import station_options
+    from new_work.provisioning import load_provisioning, station_options
 
     root = tk.Tk()
     app = ReceiverApp(root)
     try:
+        provisioning = load_provisioning()
         app._provisioned_stations = station_options()
+        app._provisioned_relay_url = (
+            str(provisioning["relay_url"]) if provisioning else ""
+        )
     except ValueError:
         app._provisioned_stations = []
+        app._provisioned_relay_url = ""
     hide_backend_application(root)
     app._web_token = token
     # The web UI opens a job only after the operator selects it from the list.
