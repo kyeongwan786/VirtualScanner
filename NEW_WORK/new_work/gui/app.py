@@ -1989,7 +1989,7 @@ class NewWorkApp:
                     else store.name
                 )
                 self._store_display_names[store.store_id] = display_name
-                detail = "전송 설정 완료" if store.relay_station_id else "접점 설정 필요"
+                detail = "Receiver 연결 상태 미확인" if store.relay_station_id else "접점 설정 필요"
                 button = RoundedActionButton(
                     self.receiver_cards_frame,
                     text=f"{display_name}\n{detail}",

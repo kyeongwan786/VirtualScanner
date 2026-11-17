@@ -113,8 +113,8 @@
     .station-count { color:#8391a5;font-size:10px; }
     .station-legend { margin-left:auto; display:flex; gap:13px; color:#75859b; font-size:9px; }
     .legend { display:flex;align-items:center;gap:5px;white-space:nowrap; }
-    .legend i { width:7px;height:7px;border-radius:50%;background:#28aa6b; }
-    .legend.wait i { background:#f0a21b; }
+    .legend i { width:7px;height:7px;border-radius:50%;background:#aab4c3; }
+    .legend.wait i { background:#aab4c3; }
     .legend.off i { background:#d24b52; }
     .stations { min-height:0; flex:1; display:grid; grid-template-columns:repeat(9,minmax(0,1fr)); grid-auto-rows:minmax(48px,1fr); gap:7px; overflow:auto; padding:2px; }
     .station { min-width:0; display:flex;flex-direction:column;justify-content:center;gap:5px;padding:7px 9px;border:1px solid #e4eaf3;border-radius:9px;background:#fff;text-align:left;transition:.15s ease; }
@@ -122,9 +122,9 @@
     .station.selected { border:1.5px solid #2778ed;background:#edf5ff;box-shadow:0 0 0 2px #2778ed12; }
     .station-name { overflow:hidden;color:#233e64;font-size:10px;font-weight:750;text-overflow:ellipsis;white-space:nowrap; }
     .station-state { display:flex;align-items:center;gap:5px;color:#8593a7;font-size:9px; }
-    .station-state i { width:6px;height:6px;flex:none;border-radius:50%;background:#29a96b; }
+    .station-state i { width:6px;height:6px;flex:none;border-radius:50%;background:#aab4c3; }
     .station.offline .station-state i { background:#d24b52; }
-    .station.queued .station-state i { background:#f0a21b; }
+    .station.connected .station-state i { background:#29a96b; }
     .station.selected .station-state { color:#3970bf; }
     .footer { display:flex;align-items:center;gap:14px;padding:8px 22px;border-top:1px solid #dbe5f1;background:#fff;box-shadow:0 -5px 20px #233e6408; }
     .summary-title { font-size:11px;font-weight:750;white-space:nowrap; }
@@ -280,7 +280,7 @@
       </section>
 
       <section class="station-panel">
-        <div class="station-head"><div class="head-icon" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></div><h2>전송 대상 자리</h2><span class="station-count" id="stationCount">17개 자리</span><div class="station-legend"><span class="legend"><i></i>전송 설정 완료</span><span class="legend off"><i></i>접점 설정 필요</span></div><button class="button" id="contactSettings">접점 설정</button><button class="button" id="relaySettings">Relay 설정</button></div>
+        <div class="station-head"><div class="head-icon" style="width:30px;height:30px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></div><h2>전송 대상 자리</h2><span class="station-count" id="stationCount">17개 자리</span><div class="station-legend"><span class="legend wait"><i></i>Receiver 연결 상태 미확인</span><span class="legend off"><i></i>접점 설정 필요</span></div><button class="button" id="contactSettings">접점 설정</button><button class="button" id="relaySettings">Relay 설정</button></div>
         <div class="stations" id="stations"></div>
       </section>
     </main>
@@ -561,10 +561,10 @@
       const signature=JSON.stringify([state.stations,state.selected_store_index]);if(signature===stationSignature)return;stationSignature=signature;
       const root=$("stations");root.replaceChildren();$("stationCount").textContent=`${state.stations.length}개 자리`;
       state.stations.forEach((station)=>{
-        const card=document.createElement("button");card.className=`station ${station.selected?"selected":""} ${station.configured?"":"offline"}`;
+        const card=document.createElement("button");card.className=`station ${station.selected?"selected":""} ${station.configured?"unknown":"offline"}`;
         const name=document.createElement("span");name.className="station-name";name.textContent=station.name;
         card.title=station.name;
-        const status=document.createElement("span");status.className="station-state";status.innerHTML=`<i></i><span>${station.configured?"전송 설정 완료":"접점 설정 필요"}</span>`;
+        const status=document.createElement("span");status.className="station-state";status.innerHTML=`<i></i><span>${station.configured?"Receiver 연결 상태 미확인":"접점 설정 필요"}</span>`;
         card.append(name,status);if(station.store_id)card.onclick=()=>action("select_station",{store_id:station.store_id});else card.disabled=true;root.append(card);
       });
     }

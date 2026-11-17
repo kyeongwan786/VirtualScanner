@@ -7,6 +7,8 @@ NEW_WORK central and Receiver use the existing `KyeongwanReceiver` HTTPS relay. 
 
 The sender keeps the two input roles separate from file format. The identity area accepts JPG/JPEG/PNG or PDF and normalizes the selected identity image to JPG before identity OCR. For an identity PDF, only its first page is used as the identity image; remaining pages are not added to the document queue. Add documents separately in the document area. The document area accepts PDF/JPG/JPEG/PNG; PDFs become one scanner JPG per page and image files become one scanner JPG page each. These normalized pages use the same Receiver and TWAIN queue contract.
 
+The sender pre-populates its 17 destination rows with Relay station IDs. A populated ID means a job can be routed to that station; it does not mean a Receiver is installed or online. The current station cards do not query Receiver connectivity and therefore show **Receiver 연결 상태 미확인**.
+
 ## Relay service
 
 The deployed Render service is `https://kyeongwan-relay-test.onrender.com`. Its `/health` endpoint reports the relay features. The service uses HTTPS (TCP underneath); central and Receiver PCs make outbound connections, so no inbound port forwarding is needed.
