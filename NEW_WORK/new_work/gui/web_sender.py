@@ -928,25 +928,27 @@ def _backend_process(port: int, token: str) -> None:
                             app._id_crop_preview_is_fallback = False
                             app._id_crop_drag = None
                             app._update_id_crop_value()
-                    elif action in {"web_identity", "web_pdf"}:
+                    elif action in {"web_identity", "web_pdf", "web_document"}:
+                        from new_work.pdf_render import IMAGE_SUFFIXES
+
                         path = Path(str(data.get("path", "")))
                         if not path.is_file():
                             raise FileNotFoundError("업로드한 파일을 찾지 못했습니다.")
                         if action == "web_identity":
-                            if path.suffix.casefold() not in {".jpg", ".jpeg", ".png"}:
-                                raise ValueError("JPG 또는 PNG 신분증 이미지를 선택하세요.")
+                            if path.suffix.casefold() not in IMAGE_SUFFIXES | {".pdf"}:
+                                raise ValueError("JPG, JPEG, PNG 또는 PDF 신분증 파일을 선택하세요.")
                             previous_result = getattr(getattr(app, "draft", None), "result", None)
                             app._load_new_identity(path)
                             current_result = getattr(getattr(app, "draft", None), "result", None)
                             if current_result is None or current_result is previous_result:
                                 raise ValueError("신분증 이미지를 불러오지 못했습니다.")
                             return
-                        if path.suffix.casefold() != ".pdf":
-                            raise ValueError("PDF 파일을 선택하세요.")
+                        if path.suffix.casefold() not in IMAGE_SUFFIXES | {".pdf"}:
+                            raise ValueError("서류는 PDF, JPG, JPEG 또는 PNG 파일을 선택하세요.")
                         previous_count = len(app._document_jobs)
                         app._queue_pdf_paths([path])
                         if len(app._document_jobs) == previous_count:
-                            raise ValueError("PDF를 변환 목록에 추가하지 못했습니다.")
+                            raise ValueError("서류를 변환 목록에 추가하지 못했습니다.")
                     else:
                         raise ValueError("알 수 없는 화면 동작입니다.")
                 except Exception as exc:
@@ -977,7 +979,11 @@ def _backend_process(port: int, token: str) -> None:
                 self._reply(400, {"ok": False, "error": "신분증 순서 값이 올바르지 않습니다."})
                 return
             length = int(self.headers.get("Content-Length", "0"))
-            allowed = {"identity": {".jpg", ".jpeg", ".png"}, "pdf": {".pdf"}}
+            from new_work.pdf_render import IMAGE_SUFFIXES
+
+            document_kinds = {"document", "pdf"}
+            allowed = {"identity": IMAGE_SUFFIXES | {".pdf"}}
+            allowed.update({kind: IMAGE_SUFFIXES | {".pdf"} for kind in document_kinds})
             if kind not in allowed or Path(filename).suffix.casefold() not in allowed[kind]:
                 self._reply(400, {"ok": False, "error": "파일 형식을 확인하세요."})
                 return
@@ -1011,8 +1017,8 @@ def _backend_process(port: int, token: str) -> None:
                         self._add_batch_pdf(batch_id, item_id, safe_name, temporary)
                         self._reply(200, {"ok": True, "name": safe_name})
                         return
-                    self._dispatch("web_pdf", {"path": str(temporary)})
-                    temporary_uploads[str(temporary)] = "pdf"
+                    self._dispatch("web_document", {"path": str(temporary)})
+                    temporary_uploads[str(temporary)] = "document"
                 self._reply(200, {"ok": True, "name": safe_name})
             except Exception as exc:
                 temporary.unlink(missing_ok=True)
@@ -1021,7 +1027,7 @@ def _backend_process(port: int, token: str) -> None:
         def _add_batch_pdf(
             self, requested_batch_id: str, item_id: str, filename: str, temporary: Path,
         ) -> None:
-            from new_work.pdf_render import render_pdf_to_jpegs
+            from new_work.pdf_render import render_document_to_jpegs
 
             if not item_id:
                 raise ValueError("PDF를 연결할 신분증을 선택하세요.")
@@ -1043,7 +1049,7 @@ def _backend_process(port: int, token: str) -> None:
                     if Path(document["source"]).is_file()
                 )
                 if previous_bytes + temporary.stat().st_size > 512 * 1024 * 1024:
-                    raise ValueError("신분증과 PDF 묶음이 512 MiB 제한을 초과합니다.")
+                    raise ValueError("신분증과 서류 묶음이 512 MiB 제한을 초과합니다.")
                 document_key = str(uuid4())
                 item_dir = Path(item["path"]).parent.parent
                 docs_root = item_dir / "documents"
@@ -1054,11 +1060,11 @@ def _backend_process(port: int, token: str) -> None:
                 ).strip(" .")[:100] or "document"
                 document_dir = docs_root / document_key
                 document_dir.mkdir(parents=True, exist_ok=False)
-                source = document_dir / f"{safe_stem}.pdf"
+                source = document_dir / f"{safe_stem}{Path(filename).suffix.casefold()}"
                 output = document_dir / "pages"
                 temporary.replace(source)
             try:
-                pages = render_pdf_to_jpegs(source, output)
+                pages = render_document_to_jpegs(source, output)
             except Exception:
                 shutil.rmtree(source.parent, ignore_errors=True)
                 raise
@@ -1081,6 +1087,7 @@ def _backend_process(port: int, token: str) -> None:
                 ID_TYPE_LABEL_TO_CODE,
             )
             from PIL import ImageOps
+            from new_work.pdf_render import render_pdf_to_jpegs
 
             with batch_lock:
                 if requested_batch_id != batch["id"] or batch["status"] != "reviewing":
@@ -1114,10 +1121,37 @@ def _backend_process(port: int, token: str) -> None:
                 }
                 batch["items"].append(item)
             try:
-                with Image.open(temporary) as opened:
+                identity_source = temporary
+                converted_directory = batch_dir / "identity_pdf_pages"
+                extra_identity_pages = ()
+                if temporary.suffix.casefold() == ".pdf":
+                    identity_pages = render_pdf_to_jpegs(temporary, converted_directory)
+                    identity_source = identity_pages[0]
+                    extra_identity_pages = identity_pages[1:]
+                with Image.open(identity_source) as opened:
                     staged = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = staged.size
                     staged.save(destination, format="JPEG", quality=95, optimize=True)
+                if extra_identity_pages:
+                    document_key = str(uuid4())
+                    document_dir = batch_dir / "documents" / document_key
+                    document_dir.mkdir(parents=True, exist_ok=False)
+                    safe_stem = "".join(
+                        char if char.isalnum() or char in " ._-" else "_"
+                        for char in Path(filename).stem
+                    ).strip(" .")[:100] or "identity"
+                    source_copy = document_dir / f"{safe_stem}.pdf"
+                    shutil.copy2(temporary, source_copy)
+                    output = document_dir / "pages"
+                    output.mkdir()
+                    for page_index, source_page in enumerate(extra_identity_pages, start=1):
+                        shutil.copy2(source_page, output / f"{page_index:03d}.jpg")
+                    item["documents"].append({
+                        "key": document_key, "source": source_copy, "output": output,
+                        "name": source_copy.name, "status": "변환 완료",
+                        "page_count": len(extra_identity_pages),
+                    })
+                    item["defer"] = True
                 temporary.unlink(missing_ok=True)
             except Exception as exc:
                 shutil.rmtree(batch_dir, ignore_errors=True)
@@ -1275,7 +1309,7 @@ def _backend_process(port: int, token: str) -> None:
                     and item.get("status") not in {"변환 완료", "변환 실패"}
                     for item in app._document_jobs
                 )
-                if kind == "pdf" and not active:
+                if kind in {"pdf", "document"} and not active:
                     source.unlink(missing_ok=True)
                     temporary_uploads.pop(path, None)
         except Exception:

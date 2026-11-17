@@ -43,7 +43,7 @@ def create_work_package(
     if not station_id:
         raise ValueError("대상 접수 PC가 지정되지 않았습니다.")
     if any(job.get("status") != "변환 완료" for job in document_jobs):
-        raise ValueError("모든 서류 PDF 변환이 끝난 뒤 전송할 수 있습니다.")
+        raise ValueError("모든 서류 파일 준비가 끝난 뒤 전송할 수 있습니다.")
     if result is None and not document_jobs:
         raise ValueError("신분증 또는 PDF 서류가 하나 이상 있어야 합니다.")
 
@@ -55,8 +55,8 @@ def create_work_package(
     package_root.mkdir(parents=True, exist_ok=False)
     identity_relative: str | None = None
     if result is not None:
-        identity_name = result.image_path.suffix.lower()
-        identity_path = package_root / "identity" / f"identity{identity_name}"
+        # OCR accepts PNG as an input, but the relay page contract is JPEG-only.
+        identity_path = package_root / "identity" / "identity.jpg"
         identity_path.parent.mkdir(parents=True, exist_ok=True)
         identity_path.write_bytes(_jpeg_payload(result.image_path))
         identity_relative = identity_path.relative_to(package_root).as_posix()

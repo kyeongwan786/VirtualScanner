@@ -128,7 +128,7 @@ def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, 
             raise TransferError("PDF 페이지 목록 형식이 올바르지 않습니다.")
         numbers = []
         if not document["pages"]:
-            raise TransferError("PDF 변환 페이지가 비어 있습니다.")
+            raise TransferError("서류 변환 페이지가 비어 있습니다.")
         for relative in document["pages"]:
             if not isinstance(relative, str):
                 raise TransferError("PDF 페이지 경로 형식이 올바르지 않습니다.")

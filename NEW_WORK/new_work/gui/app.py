@@ -37,7 +37,10 @@ from new_work.windows_lifecycle import (
     register_current_user_autostart,
     unregister_current_user_autostart,
 )
-from new_work.pdf_render import default_job_directory, render_pdf_to_jpegs
+from new_work.pdf_render import (
+    IMAGE_SUFFIXES, default_job_directory, render_document_to_jpegs,
+    render_pdf_to_jpegs,
+)
 from new_work.job_package import create_work_package
 
 
@@ -1384,12 +1387,12 @@ class NewWorkApp:
         id_drop_shell.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         id_drop.columnconfigure(1, weight=1)
         self.ocr_button = RoundedActionButton(
-            id_drop, text="신분증 이미지 선택", command=self.import_and_ocr,
+            id_drop, text="신분증 파일 선택", command=self.import_and_ocr,
             style="Primary.TButton", icon="folder",
         )
         self.ocr_button.grid(row=0, column=0, sticky="ns", padx=(0, 9))
         ttk.Label(
-            id_drop, text="신분증 이미지 드래그 앤 드롭\n(JPG, JPEG, PNG)",
+            id_drop, text="신분증 JPG/JPEG/PNG 또는 PDF 드래그 앤 드롭\n(PDF는 첫 페이지를 OCR에 사용)",
             anchor="center", justify="center", style="DropZoneMuted.TLabel",
         ).grid(row=0, column=1, sticky="ew")
         self.ocr_run_button = RoundedActionButton(
@@ -1552,12 +1555,12 @@ class NewWorkApp:
         pdf_heading.columnconfigure(1, weight=1)
         pdf_icon = self._make_v2_icon_tile(pdf_heading, "document", size=40)
         pdf_icon.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 10))
-        ttk.Label(pdf_heading, text="서류 PDF → JPG 변환", style="PanelTitle.TLabel").grid(
+        ttk.Label(pdf_heading, text="서류 파일 → JPG 변환", style="PanelTitle.TLabel").grid(
             row=0, column=1, sticky="sw"
         )
         ttk.Label(
             pdf_heading,
-            text="PDF를 추가하면 페이지 이미지로 변환합니다. 여러 파일을 함께 넣을 수 있습니다.",
+            text="PDF는 페이지별로, JPG/JPEG/PNG는 한 장씩 스캐너 이미지로 준비합니다.",
             style="PanelMuted.TLabel",
         ).grid(row=1, column=1, sticky="nw", pady=(1, 0))
         self.pdf_status_badge = RoundedStatusBadge(
@@ -1569,12 +1572,12 @@ class NewWorkApp:
         pdf_drop_shell.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         pdf_drop.columnconfigure(1, weight=1)
         self.pdf_button = RoundedActionButton(
-            pdf_drop, text="PDF 추가", command=self.add_pdf_documents,
+            pdf_drop, text="서류 추가", command=self.add_pdf_documents,
             style="Primary.TButton", icon="folder",
         )
         self.pdf_button.grid(row=0, column=0, sticky="ns", padx=(0, 9))
         ttk.Label(
-            pdf_drop, text="PDF를 여기에 드래그 앤 드롭\n(PDF 파일 여러 개 선택 가능)",
+            pdf_drop, text="PDF 또는 JPG/JPEG/PNG를 여기에 드래그 앤 드롭",
             anchor="center", justify="center", style="DropZoneMuted.TLabel",
         ).grid(row=0, column=1, sticky="ew")
         document_list_header = ttk.Frame(documents, style="PanelContent.TFrame")
@@ -1642,7 +1645,7 @@ class NewWorkApp:
         pdf_lightning.grid(row=0, column=0, sticky="w", padx=(0, 7))
         pdf_lightning.create_polygon(10, 1, 3, 12, 8, 12, 6, 20, 15, 8, 10, 8,
                                      fill="#1769E8", outline="#1769E8")
-        self.pdf_footer_var = tk.StringVar(value="PDF 추가 즉시 변환을 시작합니다.")
+        self.pdf_footer_var = tk.StringVar(value="서류 파일을 추가하면 스캐너 이미지로 준비합니다.")
         ttk.Label(pdf_footer, textvariable=self.pdf_footer_var,
                   style="PanelNote.TLabel").grid(row=0, column=1, sticky="w")
         self.pdf_elapsed_var = tk.StringVar(value="총 처리 시간 —")
@@ -1698,9 +1701,9 @@ class NewWorkApp:
         footer_shell.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
         footer.columnconfigure(6, weight=1)
         footer.rowconfigure(0, weight=1)
-        self.package_summary = tk.StringVar(value="신분증 없음 · PDF 0건")
+        self.package_summary = tk.StringVar(value="신분증 없음 · 서류 0건")
         self.package_id_var = tk.StringVar(value="신분증 없음")
-        self.package_pdf_var = tk.StringVar(value="PDF 없음")
+        self.package_pdf_var = tk.StringVar(value="서류 없음")
         self.send_target_var = tk.StringVar(value="전송 대상을 선택하세요")
         footer_icon = self._make_v2_icon_tile(
             footer, "document", size=32, background="#EAF2FF",
@@ -1735,7 +1738,7 @@ class NewWorkApp:
             foreground="#D04444",
         )
         pdf_tile.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 9))
-        tk.Label(self.pdf_summary_card, text="서류 PDF", bg="#FFFFFF", fg="#7084A4",
+        tk.Label(self.pdf_summary_card, text="서류", bg="#FFFFFF", fg="#7084A4",
                  font=("Segoe UI", 8, "bold")).grid(row=0, column=1, sticky="w")
         tk.Label(self.pdf_summary_card, textvariable=self.package_pdf_var, bg="#FFFFFF",
                  fg="#162D55", font=("Segoe UI", 9, "bold")).grid(
@@ -1748,7 +1751,7 @@ class NewWorkApp:
             attach_mode, text="첨부 방식  (선택 가능)", style="Muted.TLabel",
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
-            attach_mode, text="신분증만 / PDF만 / 함께 전송 가능",
+            attach_mode, text="신분증만 / 서류만 / 함께 전송 가능",
             bg="#E6F0FF", fg="#1769E8", padx=9, pady=4,
             font=("Segoe UI", 8, "bold"),
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
@@ -1763,7 +1766,7 @@ class NewWorkApp:
         )
         self.save_button.grid(row=0, column=0, sticky="ew")
         ttk.Label(
-            footer_actions, text="OCR · PDF 변환 후 선택한 자리로 전송합니다.",
+            footer_actions, text="OCR · 서류 이미지 준비 후 선택한 자리로 전송합니다.",
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="n", pady=(3, 0))
         footer_actions.columnconfigure(0, weight=1)
@@ -2796,10 +2799,10 @@ class NewWorkApp:
         except tk.TclError:
             dropped_paths = ()
         paths = tuple(Path(item) for item in dropped_paths)
-        if len(paths) != 1 or paths[0].suffix.casefold() not in {".jpg", ".jpeg", ".png"}:
+        if len(paths) != 1 or paths[0].suffix.casefold() not in IMAGE_SUFFIXES | {".pdf"}:
             messagebox.showinfo(
-                "신분증 이미지",
-                "신분증 OCR 영역에는 JPG 또는 PNG 이미지 한 장을 놓아 주세요.",
+                "신분증 파일",
+                "신분증 영역에는 JPG, JPEG, PNG 또는 PDF 한 개를 놓아 주세요.",
                 parent=self.root,
             )
             return COPY
@@ -2812,10 +2815,10 @@ class NewWorkApp:
         except tk.TclError:
             dropped_paths = ()
         paths = tuple(Path(item) for item in dropped_paths)
-        if not paths or any(path.suffix.casefold() != ".pdf" for path in paths):
+        if not paths or any(path.suffix.casefold() not in IMAGE_SUFFIXES | {".pdf"} for path in paths):
             messagebox.showinfo(
-                "서류 PDF",
-                "서류 영역에는 PDF 파일만 놓아 주세요.",
+                "서류 파일",
+                "서류 영역에는 PDF, JPG, JPEG 또는 PNG 파일을 놓아 주세요.",
                 parent=self.root,
             )
             return COPY
@@ -2824,16 +2827,16 @@ class NewWorkApp:
 
     def import_and_ocr(self) -> None:
         selected = filedialog.askopenfilename(
-            title="신분증 이미지 선택",
-            filetypes=(("신분증 이미지", "*.jpg *.jpeg *.png"), ("모든 파일", "*.*")),
+            title="신분증 파일 선택",
+            filetypes=(("신분증 파일", "*.jpg *.jpeg *.png *.pdf"), ("모든 파일", "*.*")),
         )
         if selected:
             self._load_new_identity(Path(selected))
 
     def add_pdf_documents(self) -> None:
         selected = filedialog.askopenfilenames(
-            title="서류 PDF 추가",
-            filetypes=(("PDF 문서", "*.pdf"), ("모든 파일", "*.*")),
+            title="서류 파일 추가",
+            filetypes=(("서류 파일", "*.pdf *.jpg *.jpeg *.png"), ("모든 파일", "*.*")),
         )
         if selected:
             self._queue_pdf_paths([Path(item) for item in selected])
@@ -2853,9 +2856,21 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
-        # If PDFs were added first, attach the ID image to that same job.
+        display_name = path.name
+        # If documents were added first, attach the ID image to that same job.
         reuse_job = self.draft is None and self._document_job_id is not None
         job_id = self._document_job_id if reuse_job else str(uuid4())
+        extra_identity_pages: tuple[Path, ...] = ()
+        original_identity_pdf = path if path.suffix.casefold() == ".pdf" else None
+        if path.suffix.casefold() == ".pdf":
+            rendered_identity = default_job_directory() / job_id / "identity_pdf_pages"
+            try:
+                identity_pages = render_pdf_to_jpegs(path, rendered_identity)
+            except Exception as exc:
+                messagebox.showerror("신분증 PDF 변환 실패", str(exc), parent=self.root)
+                return
+            path = identity_pages[0]
+            extra_identity_pages = identity_pages[1:]
         if not self._load_image(path, job_id=job_id):
             return
         self._job_sent = False
@@ -2870,28 +2885,48 @@ class NewWorkApp:
         if not reuse_job:
             self._document_jobs.clear()
             self._refresh_document_table()
+        if self.version == "v2" and extra_identity_pages and original_identity_pdf is not None:
+            documents_root = default_job_directory() / job_id / "documents"
+            key = str(uuid4())
+            output_directory = documents_root / f"{key}_{original_identity_pdf.stem}_extra_pages"
+            try:
+                output_directory.mkdir(parents=True, exist_ok=False)
+                for page_index, source_page in enumerate(extra_identity_pages, start=1):
+                    shutil.copy2(source_page, output_directory / f"{page_index:03d}.jpg")
+            except OSError as exc:
+                shutil.rmtree(output_directory, ignore_errors=True)
+                messagebox.showerror("신분증 PDF 추가 페이지 준비 실패", str(exc), parent=self.root)
+            else:
+                self._document_jobs.append({
+                    "key": key, "source": original_identity_pdf, "output": output_directory,
+                    "status": "변환 완료", "pages": f"추가 {len(extra_identity_pages)}페이지",
+                    "page_count": len(extra_identity_pages), "started_at": perf_counter(),
+                    "elapsed_seconds": 0.0,
+                })
+        if original_identity_pdf is not None and hasattr(self, "id_image_name"):
+            self.id_image_name.set(display_name)
         self._refresh_package_summary()
-        # Begin OCR immediately; adding PDFs remains available while it runs.
+        # Begin OCR immediately; adding documents remains available while it runs.
         self.run_ocr()
 
     def _queue_pdf_paths(self, paths: list[Path]) -> None:
         if self._pending_auto_send is not None:
             messagebox.showinfo(
                 "자동 전송 예약 중",
-                "전송 예약 이후에는 PDF를 추가할 수 없습니다. 기존 예약을 완료하거나 초기화하세요.",
+                "전송 예약 이후에는 서류를 추가할 수 없습니다. 기존 예약을 완료하거나 초기화하세요.",
                 parent=self.root,
             )
             return
         if self._transfer_cancel_event is not None or self._pending_confirmation is not None:
             messagebox.showinfo(
                 "전송 처리 중",
-                "Receiver 수신 확인이 끝난 뒤 새 PDF를 추가할 수 있습니다.",
+                "Receiver 수신 확인이 끝난 뒤 새 서류를 추가할 수 있습니다.",
                 parent=self.root,
             )
             return
         if self._job_sent:
             messagebox.showinfo(
-                "새 작업 필요", "전송을 마친 작업은 초기화 중입니다. 잠시 후 PDF를 추가하세요.",
+                "새 작업 필요", "전송을 마친 작업은 초기화 중입니다. 잠시 후 서류를 추가하세요.",
                 parent=self.root,
             )
             return
@@ -2905,7 +2940,7 @@ class NewWorkApp:
             jobs_root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             messagebox.showerror(
-                "PDF 작업 폴더 오류", f"변환 폴더를 만들지 못했습니다: {exc}",
+                "서류 작업 폴더 오류", f"변환 폴더를 만들지 못했습니다: {exc}",
                 parent=self.root,
             )
             return
@@ -2934,7 +2969,7 @@ class NewWorkApp:
         self, key: str, source: Path, output_directory: Path
     ) -> None:
         try:
-            pages = render_pdf_to_jpegs(source, output_directory)
+            pages = render_document_to_jpegs(source, output_directory)
         except Exception as exc:
             self.root.after(0, self._pdf_conversion_failed, key, str(exc))
             return
@@ -2960,7 +2995,7 @@ class NewWorkApp:
         item["pages"] = error
         self._refresh_document_table()
         if self._pending_auto_send is not None:
-            self._cancel_pending_auto_send(f"PDF 변환 실패 · {item['source'].name}: {error}")
+            self._cancel_pending_auto_send(f"서류 변환 실패 · {item['source'].name}: {error}")
 
     def _refresh_document_table(self) -> None:
         if not hasattr(self, "document_rows"):
@@ -3057,13 +3092,13 @@ class NewWorkApp:
             self.pdf_status_var.set(label)
             self.pdf_status_badge.configure(bg=background, fg=foreground)
             if not total:
-                self.pdf_footer_var.set("PDF 추가 즉시 변환이 자동으로 시작됩니다.")
+                self.pdf_footer_var.set("서류 추가 즉시 스캔 이미지 준비를 시작합니다.")
                 self.pdf_elapsed_var.set("총 처리 시간 —")
             elif converting:
-                self.pdf_footer_var.set("PDF 페이지 이미지를 변환하고 있습니다…")
+                self.pdf_footer_var.set("서류 파일을 스캔 이미지로 준비하고 있습니다…")
                 self.pdf_elapsed_var.set(f"변환 중 ({done}/{total})")
             else:
-                self.pdf_footer_var.set("PDF 추가 즉시 변환이 완료되었습니다.")
+                self.pdf_footer_var.set("서류 스캔 이미지 준비가 완료되었습니다.")
                 elapsed = max(
                     float(item.get("elapsed_seconds", 0.0)) for item in self._document_jobs
                 )
@@ -3091,11 +3126,11 @@ class NewWorkApp:
         empty.configure(width=340, height=124)
         icon.pack(pady=(3, 8))
         tk.Label(
-            empty, text="추가한 PDF가 없습니다", bg="#FFFFFF", fg="#18315D",
+            empty, text="추가한 서류가 없습니다", bg="#FFFFFF", fg="#18315D",
             font=("Segoe UI", 11, "bold"),
         ).pack()
         tk.Label(
-            empty, text="PDF를 선택하거나 위쪽 영역에 끌어 놓으세요",
+            empty, text="PDF, JPG, JPEG 또는 PNG를 선택하거나 위쪽 영역에 놓으세요",
             bg="#FFFFFF", fg="#8293AE", font=("Segoe UI", 9),
         ).pack(pady=(4, 0))
         self._pdf_empty_state_widget = empty
@@ -3115,7 +3150,7 @@ class NewWorkApp:
     def _remove_pdf_item(self, key: str) -> None:
         if self._pending_auto_send is not None or self._transfer_cancel_event is not None:
             messagebox.showinfo(
-                "PDF 처리 중", "자동 전송 또는 전송 중에는 PDF를 제거할 수 없습니다.",
+                "서류 처리 중", "자동 전송 또는 전송 중에는 서류를 제거할 수 없습니다.",
                 parent=self.root,
             )
             return
@@ -3124,7 +3159,7 @@ class NewWorkApp:
             return
         if item["status"] == "변환 중":
             messagebox.showinfo(
-                "PDF 변환 중", "변환이 끝난 뒤 이 PDF를 목록에서 제거할 수 있습니다.",
+                "서류 변환 중", "변환이 끝난 뒤 이 서류를 목록에서 제거할 수 있습니다.",
                 parent=self.root,
             )
             return
@@ -3140,20 +3175,20 @@ class NewWorkApp:
             return
         if self._pending_auto_send is not None or self._transfer_cancel_event is not None:
             messagebox.showinfo(
-                "PDF 처리 중", "전송 예약 또는 전송이 끝난 뒤 목록을 비워 주세요.",
+                "서류 처리 중", "전송 예약 또는 전송이 끝난 뒤 목록을 비워 주세요.",
                 parent=self.root,
             )
             return
         if any(item["status"] == "변환 중" for item in self._document_jobs):
             messagebox.showinfo(
-                "PDF 변환 중", "변환 중인 PDF가 끝난 뒤 목록을 비워 주세요.",
+                "서류 변환 중", "변환 중인 서류가 끝난 뒤 목록을 비워 주세요.",
                 parent=self.root,
             )
             return
         if not messagebox.askyesno(
-            "PDF 목록 비우기",
-            "변환 목록과 이 프로그램이 만든 PDF 페이지 이미지를 삭제할까요?\n"
-            "원본 PDF 파일은 삭제하지 않습니다.",
+            "서류 목록 비우기",
+            "변환 목록과 이 프로그램이 만든 스캔용 JPG 페이지를 삭제할까요?\n"
+            "원본 PDF/JPG/PNG 파일은 삭제하지 않습니다.",
             parent=self.root,
         ):
             return
@@ -3173,7 +3208,7 @@ class NewWorkApp:
         converting = sum(item["status"] == "변환 중" for item in self._document_jobs)
         failed = sum(item["status"] == "변환 실패" for item in self._document_jobs)
         pages = sum(int(item.get("page_count", 0)) for item in self._document_jobs)
-        pdf_text = f"PDF {pdf_total}건"
+        pdf_text = f"서류 {pdf_total}건"
         if pages:
             pdf_text += f" · {pages}페이지"
         if converting:
@@ -3195,7 +3230,7 @@ class NewWorkApp:
                     detail += f" · 실패 {failed}"
                 self.package_pdf_var.set(detail)
             else:
-                self.package_pdf_var.set("PDF 없음")
+                self.package_pdf_var.set("서류 없음")
     def run_ocr(self) -> None:
         if self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")

@@ -249,10 +249,10 @@
             <span class="badge" id="ocrBadge">OCR 준비 완료</span>
           </div>
           <div class="dropzone" id="idDrop">
-            <button class="button primary" onclick="document.getElementById('idInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span id="idButtonText">신분증 이미지 선택</span></button>
-            <div class="drop-copy"><strong>신분증 JPG를 여기에 놓으세요</strong>JPG · JPEG · PNG · 여러 장이면 묶음 검토</div>
+            <button class="button primary" onclick="document.getElementById('idInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span id="idButtonText">신분증 파일 선택</span></button>
+            <div class="drop-copy"><strong>신분증 파일을 여기에 놓으세요</strong>JPG · JPEG · PNG · PDF(첫 페이지 OCR) · 여러 장 묶음 검토</div>
             <button class="button soft" id="ocrButton">OCR 다시 실행</button>
-            <input id="idInput" type="file" accept="image/jpeg,image/png" multiple hidden>
+            <input id="idInput" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf" multiple hidden>
           </div>
           <div class="workspace-content">
             <section class="subpanel">
@@ -276,17 +276,17 @@
         <article class="panel">
           <div class="panel-head">
             <div class="head-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg></div>
-            <div class="head-copy"><h2 class="panel-title">서류 PDF → JPG 변환</h2><p class="panel-desc">PDF를 추가하면 페이지별 이미지로 준비합니다.</p></div>
+            <div class="head-copy"><h2 class="panel-title">서류 파일 → 스캔 이미지</h2><p class="panel-desc">PDF는 페이지별로, JPG/JPEG/PNG는 한 장씩 준비합니다.</p></div>
             <span class="badge" id="pdfBadge">변환 대기</span>
           </div>
           <div class="dropzone" id="pdfDrop">
-            <button class="button primary" onclick="document.getElementById('pdfInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg>PDF 추가</button>
-            <div class="drop-copy"><strong>PDF 파일을 여기에 끌어다 놓으세요</strong>여러 PDF를 한 번에 추가할 수 있습니다</div>
-            <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+            <button class="button primary" onclick="document.getElementById('pdfInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg>서류 추가</button>
+            <div class="drop-copy"><strong>서류 파일을 여기에 끌어다 놓으세요</strong>PDF · JPG · JPEG · PNG 여러 파일 가능</div>
+            <input id="pdfInput" type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple hidden>
           </div>
-          <div class="subhead" style="margin:13px 0 0"><h3 id="pdfCount">변환 목록 (0건)</h3><button class="button" id="clearPdf">목록 비우기</button></div>
-          <div class="pdf-list" id="pdfList"><div class="pdf-empty" id="pdfEmpty">추가한 PDF가 없습니다</div></div>
-          <p class="panel-note">전송을 누르면 OCR과 PDF 변환이 끝난 자료부터 선택한 자리로 전송합니다.</p>
+          <div class="subhead" style="margin:13px 0 0"><h3 id="pdfCount">서류 목록 (0건)</h3><button class="button" id="clearPdf">목록 비우기</button></div>
+          <div class="pdf-list" id="pdfList"><div class="pdf-empty" id="pdfEmpty">추가한 서류가 없습니다</div></div>
+          <p class="panel-note">신분증 PDF는 첫 페이지를 OCR에 쓰고, 나머지 페이지는 스캔 서류로 함께 전송합니다.</p>
         </article>
       </section>
 
@@ -299,8 +299,8 @@
     <footer class="footer">
       <div class="summary-title">전송할 내용</div>
       <div class="summary-card"><div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M5 17c.5-2 1.7-3 4-3s3.5 1 4 3"/></svg></div><div><div class="summary-label">신분증</div><div class="summary-value" id="idSummary">신분증 없음</div></div></div>
-      <div class="summary-card"><div class="summary-icon pdf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 14h7M9 17h5"/></svg></div><div><div class="summary-label">서류 PDF</div><div class="summary-value" id="pdfSummary">PDF 없음</div></div></div>
-      <div class="send-hint" id="sendHint">신분증만, PDF만 또는 함께 보낼 수 있습니다.</div>
+      <div class="summary-card"><div class="summary-icon pdf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 14h7M9 17h5"/></svg></div><div><div class="summary-label">서류</div><div class="summary-value" id="pdfSummary">서류 없음</div></div></div>
+      <div class="send-hint" id="sendHint">신분증만, 서류만 또는 함께 보낼 수 있습니다.</div>
       <button class="status-button" id="statusButton" hidden>전송 상태 확인</button>
       <button class="send-button" id="sendButton">선택한 자리로 전송</button>
     </footer>
@@ -309,12 +309,12 @@
   <dialog class="settings-dialog" id="relayDialog"><h2 class="settings-title">Relay 설정</h2><p class="settings-desc">Render Relay 주소와 중앙 송신 토큰을 설정합니다.</p><div class="settings-form"><label>Relay HTTPS 주소<input id="relayUrlInput" placeholder="https://example.onrender.com"></label><label>중앙 송신 토큰<input id="relayTokenInput" type="password" autocomplete="new-password" placeholder="새 토큰 입력 시 교체"></label><div class="saved-token-state" id="savedTokenState" role="status"></div><p class="settings-desc token-help">토큰은 보안상 다시 표시하지 않습니다. 새 토큰을 입력하면 교체되고, 비워 두면 현재 저장된 토큰을 유지합니다.</p></div><div class="settings-actions"><button class="button" data-close="relayDialog">닫기</button><button class="button primary" id="saveRelay">Relay 설정 저장</button></div></dialog>
   <dialog class="batch-dialog" id="batchDialog">
     <div class="batch-shell">
-      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50장을 선택할 수 있습니다. 업로드는 4장씩, OCR은 2장씩 동시에 처리하고 끝난 결과부터 표시합니다. PDF를 붙인 신분증은 나머지 신분증 뒤에 함께 등록되며 메인 PDF 목록은 별도 전송용입니다.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
+      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50개를 선택할 수 있습니다. JPG/JPEG/PNG/PDF를 섞어 올릴 수 있으며 PDF는 첫 페이지를 OCR에 쓰고 나머지는 스캔 페이지로 보냅니다.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
       <div class="batch-work">
         <nav class="batch-list" id="batchList"></nav>
         <section class="batch-editor" id="batchEditor">
-          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다.</div></div>
-          <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">PDF와 함께 뒤에 전송</label><span class="batch-file-picker"><button class="button" id="batchPdfAdd" type="button">PDF 붙이기</button><input id="batchPdfInput" class="batch-file-input" type="file" accept="application/pdf,.pdf" multiple></span><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
+          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다. 신분증 PDF는 첫 페이지를 OCR에 사용합니다.</div></div>
+          <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">서류와 함께 뒤에 전송</label><span class="batch-file-picker"><button class="button" id="batchPdfAdd" type="button">서류 붙이기</button><input id="batchPdfInput" class="batch-file-input" type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple></span><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
         </section>
       </div>
       <footer class="batch-foot"><div class="batch-error" id="batchError"></div><button class="button" id="batchCancel">묶음 취소</button><button class="button" id="batchPrevious">이전</button><button class="button" id="batchNext">확인 · 다음</button><button class="button primary" id="batchFinish">모두 저장하고 전송</button></footer>
@@ -355,16 +355,16 @@
     }
     async function upload(file, kind) {
       if(!file)return;
-      const allowed=kind==="identity"?/\.(jpe?g|png)$/i:/\.pdf$/i;
-      if(!allowed.test(file.name)){showNotice(kind==="identity"?"JPG 또는 PNG 신분증을 선택하세요.":"PDF 파일을 선택하세요.",true);return;}
+      const allowed=/\.(jpe?g|png|pdf)$/i;
+      if(!allowed.test(file.name)){showNotice(kind==="identity"?"신분증은 JPG, JPEG, PNG 또는 PDF 파일을 선택하세요.":"서류는 PDF, JPG, JPEG 또는 PNG 파일을 선택하세요.",true);return;}
       document.body.classList.add("busy"); showNotice(`${file.name} 등록 중…`);
-      const query=new URLSearchParams({kind,name:file.name});
+      const query=new URLSearchParams({kind:kind==="identity"?"identity":"document",name:file.name});
       try{await request(`/api/upload?${query}`,{method:"POST",body:file});showNotice(`${file.name} 등록 완료 · 처리를 시작했습니다.`);}
       catch(error){showNotice(error.message,true);}
       finally{document.body.classList.remove("busy");}
     }
     $("idInput").addEventListener("change",(event)=>{const files=[...event.target.files];event.target.value="";uploadIdentityFiles(files);});
-    $("pdfInput").addEventListener("change",async(event)=>{for(const file of [...event.target.files])await upload(file,"pdf");event.target.value="";});
+    $("pdfInput").addEventListener("change",async(event)=>{for(const file of [...event.target.files])await upload(file,"document");event.target.value="";});
     function bindDrop(target,kind){
       target.addEventListener("dragenter",(event)=>{event.preventDefault();target.classList.add("drop-active");});
       target.addEventListener("dragover",(event)=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect="copy";});
@@ -375,29 +375,29 @@
     bindDrop(document.querySelector(".workspaces > .panel:first-child"),"identity");
     bindDrop(document.querySelector(".workspaces > .panel:last-child"),"pdf");
     async function uploadIdentityFiles(files){
-      const images=files.filter(file=>/\.(jpe?g|png)$/i.test(file.name));
-      if(images.length!==files.length){showNotice("신분증은 JPG, JPEG, PNG만 등록할 수 있습니다.",true);return;}
-      if(images.length===1){await upload(images[0],"identity");return;}
-      if(images.length<2)return;
-      if(images.length>50){showNotice("한 번에 신분증을 최대 50장까지 검토할 수 있습니다.",true);return;}
+      const identities=files.filter(file=>/\.(jpe?g|png|pdf)$/i.test(file.name));
+      if(identities.length!==files.length){showNotice("신분증은 JPG, JPEG, PNG 또는 PDF 파일을 선택하세요.",true);return;}
+      if(identities.length===1){await upload(identities[0],"identity");return;}
+      if(identities.length<2)return;
+      if(identities.length>50){showNotice("한 번에 신분증을 최대 50개까지 검토할 수 있습니다.",true);return;}
       if(currentState?.identity_name||currentState?.sending){showNotice("현재 작업을 마치거나 초기화한 뒤 신분증 묶음을 시작하세요.",true);return;}
       try{
-        const started=await action("batch_start",{count:images.length});
+        const started=await action("batch_start",{count:identities.length});
         const batchId=started.result?.batch_id;if(!batchId)throw new Error("신분증 묶음을 시작하지 못했습니다.");
-        batchUploading=true;batchState={id:batchId,status:"reviewing",expected_count:images.length,items:[]};batchItem=null;batchIndex=0;
+        batchUploading=true;batchState={id:batchId,status:"reviewing",expected_count:identities.length,items:[]};batchItem=null;batchIndex=0;
         $("batchDialog").showModal();$("batchEditor").hidden=false;$("batchError").textContent="";$("batchCancel").disabled=false;
         refreshBatch(true);
-        const uploads=new Array(images.length);let nextUpload=0;
-        await Promise.all(Array.from({length:Math.min(4,images.length)},async()=>{
-          while(nextUpload<images.length){const index=nextUpload++;const file=images[index];const query=new URLSearchParams({kind:"identity",name:file.name,batch_id:batchId,index:String(index)});
+        const uploads=new Array(identities.length);let nextUpload=0;
+        await Promise.all(Array.from({length:Math.min(4,identities.length)},async()=>{
+          while(nextUpload<identities.length){const index=nextUpload++;const file=identities[index];const query=new URLSearchParams({kind:"identity",name:file.name,batch_id:batchId,index:String(index)});
             try{uploads[index]={status:"fulfilled",value:await request(`/api/upload?${query}`,{method:"POST",body:file})};}
             catch(reason){uploads[index]={status:"rejected",reason};}
           }
         }));
         batchUploading=false;await refreshBatch(false);
-        const failed=uploads.map((result,index)=>result.status==="rejected"?images[index].name:null).filter(Boolean);
+        const failed=uploads.map((result,index)=>result.status==="rejected"?identities[index].name:null).filter(Boolean);
         if(failed.length){$("batchError").textContent=`업로드 실패: ${failed.join(", ")} · 묶음을 취소하고 다시 등록하세요.`;}
-        else showNotice(`${images.length}장 업로드 완료 · OCR 결과가 나오는 순서대로 바로 표시합니다.`);
+        else showNotice(`${identities.length}개 업로드 완료 · OCR 결과가 나오는 순서대로 바로 표시합니다.`);
         updateBatchControls();
       }catch(error){
         batchUploading=false;$("batchProgress").textContent="등록 처리 중단";$("batchError").textContent=error.message;
@@ -432,7 +432,7 @@
         const copy=document.createElement("span");copy.className="batch-row-copy";
         const name=document.createElement("span");name.className="batch-row-name";name.textContent=item.name;
         const status=document.createElement("span");status.className="batch-row-status";
-        status.textContent=item.ocr_status!=="완료"?(item.ocr_status==="실패"?"OCR 실패":`OCR ${item.ocr_status}`):(item.send_status==="대기"?(item.defer?`뒤에 전송 · PDF ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status);
+        status.textContent=item.ocr_status!=="완료"?(item.ocr_status==="실패"?"OCR 실패":`OCR ${item.ocr_status}`):(item.send_status==="대기"?(item.defer?`뒤에 전송 · 서류 ${item.document_count||0}건`:(item.reviewed?"검토 완료":"검토 전")):item.send_status);
         copy.append(name,status);row.append(number,copy);row.disabled=batchState.status==="sending"||batchState.status==="checking";
         row.onclick=async()=>{
           const previousIndex=batchIndex;const previousId=batchSelectionId||batchItem?.id||batchState.items[previousIndex]?.id;
@@ -483,17 +483,17 @@
     function renderBatchPdfs(documents){
       const root=$("batchPdfList");root.replaceChildren();
       for(const entry of documents){const row=document.createElement("div");row.className="batch-pdf-row";const name=document.createElement("span");name.className="batch-pdf-name";name.textContent=entry.name;const meta=document.createElement("span");meta.className="batch-pdf-meta";meta.textContent=`${entry.page_count}페이지`;
-        const remove=document.createElement("button");remove.className="batch-pdf-remove";remove.type="button";remove.textContent="×";remove.title="이 신분증에서 PDF 분리";remove.onclick=async()=>{if(!confirm(`${entry.name}을(를) 이 신분증에서 뺄까요? 원본 PDF는 삭제하지 않습니다.`))return;await action("batch_remove_pdf",{item_id:batchItem.id,document_key:entry.key});await refreshBatch(false);await loadBatchItem(batchItem.id);};row.append(name,meta,remove);root.append(row);}
+        const remove=document.createElement("button");remove.className="batch-pdf-remove";remove.type="button";remove.textContent="×";remove.title="이 신분증에서 서류 분리";remove.onclick=async()=>{if(!confirm(`${entry.name}을(를) 이 신분증에서 뺄까요? 원본 파일은 삭제하지 않습니다.`))return;await action("batch_remove_pdf",{item_id:batchItem.id,document_key:entry.key});await refreshBatch(false);await loadBatchItem(batchItem.id);};row.append(name,meta,remove);root.append(row);}
     }
     $("batchPdfInput").addEventListener("change",event=>{const files=[...event.target.files];event.target.value="";uploadBatchPdfs(files);});
     $("batchPdfTools").addEventListener("dragover",event=>{event.preventDefault();event.currentTarget.classList.add("drop-active");});
     $("batchPdfTools").addEventListener("dragleave",event=>{if(!event.relatedTarget||!event.currentTarget.contains(event.relatedTarget))event.currentTarget.classList.remove("drop-active");});
     $("batchPdfTools").addEventListener("drop",event=>{event.preventDefault();event.stopPropagation();event.currentTarget.classList.remove("drop-active");uploadBatchPdfs([...event.dataTransfer.files]);});
     async function uploadBatchPdfs(files){
-      if(!batchItem||!files.length)return;if(files.some(file=>! /\.pdf$/i.test(file.name))){$("batchError").textContent="신분증 묶음에는 PDF 파일만 붙일 수 있습니다.";return;}
-      if(!$("batchDefer").checked){$("batchError").textContent="먼저 ‘PDF와 함께 뒤에 전송’을 선택하세요.";return;}
+      if(!batchItem||!files.length)return;if(files.some(file=>! /\.(pdf|jpe?g|png)$/i.test(file.name))){$("batchError").textContent="서류는 PDF, JPG, JPEG 또는 PNG 파일을 선택하세요.";return;}
+      if(!$("batchDefer").checked){$("batchError").textContent="먼저 ‘서류와 함께 뒤에 전송’을 선택하세요.";return;}
       if(!await saveBatchItem())return;batchPdfUploading=true;updateBatchControls();
-      try{for(let index=0;index<files.length;index++){const file=files[index];$("batchProgress").textContent=`PDF 변환 ${index+1}/${files.length} · ${file.name}`;const query=new URLSearchParams({kind:"pdf",name:file.name,batch_id:batchState.id,item_id:batchItem.id});await request(`/api/upload?${query}`,{method:"POST",body:file});}
+      try{for(let index=0;index<files.length;index++){const file=files[index];$("batchProgress").textContent=`서류 준비 ${index+1}/${files.length} · ${file.name}`;const query=new URLSearchParams({kind:"document",name:file.name,batch_id:batchState.id,item_id:batchItem.id});await request(`/api/upload?${query}`,{method:"POST",body:file});}
         await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();$("batchError").textContent="";
       }catch(error){$("batchError").textContent=error.message;await refreshBatch(false);await loadBatchItem(batchItem.id);renderBatchList();}
       finally{batchPdfUploading=false;updateBatchControls();}
@@ -523,7 +523,7 @@
       const items=batchState?.items||[];const sending=["sending","checking"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchPdfUploading||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const reviewedCount=items.filter(item=>item.reviewed).length;const otherItemsReviewed=items.every(item=>item.reviewed||item.id===batchItem?.id);
       const expected=batchState?.expected_count||items.length;const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const ocrFailed=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
       const deliveryCount=items.filter(item=>item.send_status==="Relay 등록").length;
-      $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchState?.status==="checking"?"Relay 전송 상태 확인 중…":sending?`Relay 등록 ${deliveryCount}/${expected}건 · 처리 중`:batchPdfUploading?"PDF를 페이지 이미지로 변환 중…":batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
+      $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchState?.status==="checking"?"Relay 전송 상태 확인 중…":sending?`Relay 등록 ${deliveryCount}/${expected}건 · 처리 중`:batchPdfUploading?"서류 스캔 이미지 준비 중…":batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${ocrFailed?` · 실패 ${ocrFailed}`:""} · 검토 ${reviewedCount}/${expected}`;
       $("batchPrevious").disabled=batchIndex<=0||sending||batchPdfUploading;$("batchNext").disabled=batchIndex>=items.length-1||sending||batchPdfUploading;
       $("batchCancel").disabled=sending||batchUploading||items.some(item=>["업로드 중","대기 중","인식 중"].includes(item.ocr_status)||item.send_status!=="대기");
       $("batchFinish").disabled=sending||batchUploading||batchPdfUploading||items.length<2||!ocrReady||!otherItemsReviewed;
@@ -585,9 +585,9 @@
     }
     function renderDocuments(state){
       const signature=JSON.stringify(state.documents);if(signature===documentSignature)return;documentSignature=signature;
-      const root=$("pdfList");root.replaceChildren();$("pdfCount").textContent=`변환 목록 (${state.documents.length}건)`;
+      const root=$("pdfList");root.replaceChildren();$("pdfCount").textContent=`서류 목록 (${state.documents.length}건)`;
       $("pdfBadge").textContent=state.documents.length?`${state.documents.length}건 처리 중/완료`:"변환 대기";
-      if(!state.documents.length){root.innerHTML='<div class="pdf-empty">추가한 PDF가 없습니다</div>';return;}
+      if(!state.documents.length){root.innerHTML='<div class="pdf-empty">추가한 서류가 없습니다</div>';return;}
       const head=document.createElement("div");head.className="list-head";head.innerHTML="<span>파일명</span><span>페이지</span><span>상태</span><span></span>";root.append(head);
       for(const item of state.documents){
         const row=document.createElement("div");row.className="pdf-row";
@@ -626,13 +626,13 @@
       document.querySelectorAll(".portal-switch button").forEach((button)=>button.classList.toggle("active",button.dataset.portal===state.portal));
       $("connectionText").textContent=state.relay_configured?"Relay 설정됨":"Relay 설정 필요";
       $("ocrBadge").textContent=state.ocr_status;$("idFileName").textContent=state.identity_name||"선택된 신분증 없음";
-      $("idButtonText").textContent=state.identity_name?"다른 신분증 선택":"신분증 이미지 선택";$("idSummary").textContent=state.identity_name||"신분증 없음";
+      $("idButtonText").textContent=state.identity_name?"다른 신분증 선택":"신분증 파일 선택";$("idSummary").textContent=state.identity_name||"신분증 없음";
       $("idSize").textContent=state.image_width?`${state.image_width} × ${state.image_height}`:"사진 선택 전";
       if(state.identity_image){$("idEmpty").style.display="none";$("idCard").classList.add("visible");const source=`data:image/jpeg;base64,${state.identity_image}`;if($("identityImage").src!==source)$("identityImage").src=source;}
       else{$("idEmpty").style.display="grid";$("idCard").classList.remove("visible");$("identityImage").removeAttribute("src");}
       renderFields(state);
       renderCrop(state);renderDocuments(state);renderStations(state);
-      $("pdfSummary").textContent=state.documents.length?`${state.documents.length}개 · ${state.documents.filter((item)=>item.status==="변환 완료").length}개 변환 완료`:"PDF 없음";
+      $("pdfSummary").textContent=state.documents.length?`${state.documents.length}개 · ${state.documents.filter((item)=>item.status==="변환 완료").length}개 준비 완료`:"서류 없음";
       $("sendHint").textContent=state.review_status|| (state.selected_station?`전송 대상: ${state.selected_station}`:"전송 대상을 선택하세요");$("sendHint").style.color="";
       const emergencyPending=Boolean(state.emergency_active);
       $("sendButton").textContent=state.sending?"전송 처리 중…":(state.selected_station?`${state.selected_station}로 전송`:"선택한 자리로 전송");$("sendButton").disabled=state.sending||emergencyPending;

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from PIL import Image
+from PIL import ImageOps
 
 
 DEFAULT_DPI = 100
 JPEG_QUALITY = 85
 MAX_PDF_PAGES = 100
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def default_job_directory() -> Path:
@@ -93,3 +96,48 @@ def render_pdf_to_jpegs(
         if pdfium_document is not None:
             pdfium_document.close()
         document.close()
+
+
+def render_image_to_jpegs(
+    source: Path,
+    output_directory: Path,
+    *,
+    quality: int = JPEG_QUALITY,
+) -> tuple[Path, ...]:
+    """Normalize a JPG/PNG document into one scanner-ready JPEG page."""
+    source = Path(source).expanduser().resolve(strict=True)
+    if not source.is_file() or source.suffix.casefold() not in IMAGE_SUFFIXES:
+        raise ValueError("서류 이미지는 JPG, JPEG 또는 PNG 파일이어야 합니다.")
+    if not 60 <= quality <= 100:
+        raise ValueError("JPG 품질 값이 범위를 벗어났습니다.")
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=False)
+    target = output_directory / "001.jpg"
+    temporary = output_directory / ".001.jpg.partial"
+    try:
+        with Image.open(source) as opened:
+            opened.load()
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        image.save(temporary, format="JPEG", quality=quality, optimize=False)
+        if temporary.stat().st_size == 0:
+            raise ValueError(f"이미지 페이지 변환 결과가 비었습니다: {source.name}")
+        os.replace(temporary, target)
+        return (target,)
+    except Exception:
+        shutil.rmtree(output_directory, ignore_errors=True)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def render_document_to_jpegs(
+    source: Path,
+    output_directory: Path,
+) -> tuple[Path, ...]:
+    """Render a PDF's pages or normalize a JPG/PNG into scanner-ready pages."""
+    suffix = Path(source).suffix.casefold()
+    if suffix == ".pdf":
+        return render_pdf_to_jpegs(source, output_directory)
+    if suffix in IMAGE_SUFFIXES:
+        return render_image_to_jpegs(source, output_directory)
+    raise ValueError("서류는 PDF, JPG, JPEG 또는 PNG 파일을 선택하세요.")
