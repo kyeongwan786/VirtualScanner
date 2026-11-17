@@ -601,14 +601,15 @@
       const signature=JSON.stringify([state.stations,state.selected_store_index,state.station_presence]);if(signature===stationSignature)return;stationSignature=signature;
       const root=$("stations");root.replaceChildren();$("stationCount").textContent=`${state.stations.length}개 자리`;
       const presence=state.station_presence||{};const statusMessage=$("receiverStatusMessage");
-      statusMessage.classList.toggle("error",Boolean(presence.error&&!presence.checking));
-      statusMessage.textContent=presence.checking?"Relay에 Receiver 상태 조회 중…":presence.available?`Relay 응답 확인 · ${presence.checked_at||"방금"}`:presence.error?`Relay 조회 실패 · ${presence.error}`:"Relay 상태 조회 대기";
+      const presenceRouteMissing=Boolean(presence.error?.includes("Relay HTTP 404")&&presence.error.includes("not found"));
+      statusMessage.classList.toggle("error",Boolean(presence.error&&!presence.checking&&!presenceRouteMissing));
+      statusMessage.textContent=presence.checking?"Relay에 Receiver 상태 조회 중…":presence.available?`Relay 응답 확인 · ${presence.checked_at||"방금"}`:presenceRouteMissing?"Relay 상태조회 API 미배포 · Render 재배포 필요 (자료 전송과 별도)":presence.error?`Relay 조회 실패 · ${presence.error}`:"Relay 상태 조회 대기";
       $("refreshReceiverStatus").disabled=Boolean(presence.checking)||!state.relay_configured;
       state.stations.forEach((station)=>{
         let stateClass="unknown",stateLabel="상태 확인 중";
         if(!station.configured){stateClass="offline";stateLabel="접점 설정 필요";}
         else if(station.presence_checking){stateLabel="연결 확인 중";}
-        else if(station.presence_error){stateLabel="Relay 조회 실패";}
+        else if(station.presence_error){stateLabel=station.presence_error.includes("Relay HTTP 404")?"상태 조회 불가":"Relay 조회 실패";}
         else if(station.presence_available){
           if(!station.registered){stateClass="offline";stateLabel="Relay에 자리 미등록";}
           else if(station.online){stateClass="connected";stateLabel="Receiver 온라인";}

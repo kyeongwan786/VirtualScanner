@@ -277,6 +277,7 @@ def _backend_process(port: int, token: str) -> None:
     emergency_state = {"active": False, "status": "", "error": "", "checking": False}
     receiver_presence_state = {
         "checking": False, "last_check": 0.0, "refresh_requested": threading.Event(),
+        "unsupported": False,
     }
     stop_event = threading.Event()
 
@@ -974,6 +975,8 @@ def _backend_process(port: int, token: str) -> None:
                         save_relay_config(relay_url, central_token)
                         app.relay_config = load_relay_config()
                         app._relay_config_error = ""
+                        receiver_presence_state["unsupported"] = False
+                        receiver_presence_state["refresh_requested"].set()
                         from new_work.relay_client import sync_station_provisioning
                         count = sync_station_provisioning(app.relay_config)
                         result["message"] = f"Relay 설정 및 접수 자리 {count}곳 자동 등록 완료"
@@ -981,6 +984,7 @@ def _backend_process(port: int, token: str) -> None:
                     elif action == "check_status":
                         app._check_pending_status()
                     elif action == "refresh_receiver_status":
+                        receiver_presence_state["unsupported"] = False
                         receiver_presence_state["refresh_requested"].set()
                         result["message"] = "Receiver 상태를 Relay에 다시 요청했습니다."
                     elif action == "show_raw_ocr":
@@ -1269,7 +1273,8 @@ def _backend_process(port: int, token: str) -> None:
             if (app.relay_config and not emergency_state["active"]
                     and not receiver_presence_state["checking"]
                     and (refresh_presence
-                         or time.monotonic() - receiver_presence_state["last_check"] >= 5)):
+                         or (not receiver_presence_state["unsupported"]
+                             and time.monotonic() - receiver_presence_state["last_check"] >= 5))):
                 receiver_presence_state["checking"] = True
                 receiver_presence_state["last_check"] = time.monotonic()
                 receiver_presence_state["refresh_requested"].clear()
@@ -1284,10 +1289,13 @@ def _backend_process(port: int, token: str) -> None:
                         app._receiver_presence = presence
                         app._receiver_presence_available = True
                         app._receiver_presence_error = ""
+                        receiver_presence_state["unsupported"] = False
                         app._receiver_presence_checked_at = time.strftime("%H:%M:%S")
                     except Exception as exc:
                         app._receiver_presence_available = False
                         app._receiver_presence_error = str(exc)[:240]
+                        if "Relay HTTP 404" in str(exc) and "not found" in str(exc):
+                            receiver_presence_state["unsupported"] = True
                         app._receiver_presence_checked_at = time.strftime("%H:%M:%S")
                     finally:
                         app._receiver_presence_checking = False
