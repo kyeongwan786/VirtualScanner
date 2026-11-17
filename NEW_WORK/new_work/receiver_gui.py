@@ -670,7 +670,7 @@ class ReceiverApp:
                 and monotonic() >= self._retry_after):
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
-        self.root.after(2000, self._poll_inbox)
+        self.root.after(1000, self._poll_inbox)
 
     def _poll_remote_emergency(self) -> None:
         if (not self._emergency_stopping and not self._emergency_checking

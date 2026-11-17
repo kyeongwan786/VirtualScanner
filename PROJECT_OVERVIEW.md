@@ -46,8 +46,8 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 Receiver의 **받은 자료 초기화**는 로컬 수신 작업 패키지와 신분증/OCR/서류 메모리 참조, 스캔 목록 상태, 설정된 스캐너 `ready` 폴더 안의 작업을 강제 삭제한다. 진행 중인 페이지 요청이 끝난 뒤 정리하며, 적용이 시작된 작업은 적용과 Relay 응답을 마친 뒤 정리한다. 진행 중 스캔은 실패할 수 있다. 이미 적용된 SK/KT 대상 파일과 백업, Relay에 남은 미수신 작업은 유지한다.
 
-Render 릴레이의 최근 배포 화면은 커밋 `69c5cb6`을 Live로 표시했다. V3 Receiver는 GUI가 열린 동안 2초 간격으로 새 작업을 확인하고, 중앙 PC는 1초 간격으로 수신 완료 응답을 확인한다. 릴레이는 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. Receiver 온라인 현황 API는 코드에 추가했지만 Relay 배포와 Sender 재빌드는 아직 필요하다. 실제 업무 자료를 이용한 Windows 종단간 적용은 별도 확인이 필요하다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
-V3 송신기의 전체 긴급 중단은 Relay 잠금과 대기 작업 정리를 요청하고, 송신기와 Receiver는 로컬 자료 정리 뒤 종료를 요청한다. 기존 SK/KT 결과·DB, 백업, 설정은 보존한다. Relay는 명령과 중앙/자리별 정리 결과를 `data_dir`에 저장하며 오프라인 자리는 `pending`으로 표시된다. 영수증은 정리 완료/오류와 종료 요청을 기록하지만 실제 원격 프로세스 종료까지 검증하지 않는다. Render에서 이 명령을 재시작 뒤에도 보존하려면 유료 Persistent Disk를 `/var/data`에 연결해야 하며, 디스크가 확인되지 않으면 Relay가 새 명령을 거부한다. 관리자는 `cd NEW_WORK && python -m new_work.emergency_status`로 현황을 조회한다. 이전 버전 Receiver는 명령을 처리하지 않는다.
+Render 릴레이의 최근 배포 화면은 커밋 `69c5cb6`을 Live로 표시했다. 현재 작업 트리의 V3 Receiver는 GUI가 열린 동안 1초 간격으로 새 작업을 확인하고, 중앙 PC는 0.5초 간격으로 수신 완료 응답을 확인한다. 릴레이는 HTTPS 웹 API이며 TCP 연결 위에서 동작한다. Relay/Receiver/Sender 변경분은 아직 재배포 및 재빌드가 필요하다. 실제 업무 자료를 이용한 Windows 종단간 적용은 별도 확인이 필요하다. 실행 및 설정 절차는 [`NEW_WORK/RECEIVER_README.md`](NEW_WORK/RECEIVER_README.md)에 있다.
+V3 송신기의 전체 긴급 중단은 Relay 잠금과 대기 작업 정리를 요청하고, 송신기와 Receiver는 로컬 정리 뒤 종료를 요청한다. 기존 SK/KT 결과·DB, 백업, 설정은 보존한다. Render Relay는 `DATABASE_URL` Neon PostgreSQL에 잠금·자리 인증 해시·정리 결과를 저장하며 오프라인 자리는 `pending`으로 표시된다. Render `/tmp`의 암호화 대기 파일은 재시작 시 사라질 수 있다. 영수증은 정리 완료/오류와 종료 요청을 기록하지만 실제 원격 프로세스 종료까지 검증하지 않는다. 관리자는 `cd NEW_WORK && python -m new_work.emergency_status`로 현황을 조회한다. 이전 버전 Receiver는 명령을 처리하지 않는다.
 - Windows 자동 Relay 설정은 비밀 `relay-provisioning.json`을 로컬 빌드 시에만 넣어 구현한다. 중앙 Sender 빌드에는 중앙 토큰만, Receiver 빌드에는 전체 자리 토큰이 포함된다. Receiver에서 자리를 골라 설정을 적용하면 해당 URL/ID/토큰이 저장된다. 비밀 파일은 저장소와 빌드 소스 ZIP에서 제외하며, EXE 내부의 자리 토큰은 추출할 수 있다.
 
 ## 지금까지 확인된 중요한 점

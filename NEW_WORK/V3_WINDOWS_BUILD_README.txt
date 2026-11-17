@@ -30,9 +30,11 @@ V3는 중앙 PC에서 쓰는 HTML/CSS 기반 송신기입니다. 신분증 이�
 프로그램을 실행할 때 처리됩니다. 이미 실행 중인 업무페이지나 별도 스캐너는 종료하지
 않습니다. 구버전 앱은 Relay 연결이 차단되지만 자체 종료·제거는 하지 못합니다. Render
 서비스와 Render 로그, 저장소의 소스 코드는 삭제하지 않습니다.
-Relay 잠금은 Relay 데이터 폴더에 기록되므로, 임시 저장소를 쓰는 Render 배포가
-재시작되면 잠금 상태가 사라질 수 있습니다. Windows 설치본에서 프로그램 폴더 자동
-삭제가 지원됩니다. 이 기능을 사용하기 전 Relay와 Sender/Receiver를 모두 갱신하세요.
+Relay 잠금과 처리 결과는 Render의 `DATABASE_URL` Neon DB에 저장됩니다. 대기 전송 파일은
+Render 임시 폴더에 있어 서비스 재시작 시 사라질 수 있습니다. Relay `/health`에서
+`emergency_storage_persistent: true`인지 확인한 뒤 사용하세요. Windows 설치본에서
+프로그램 폴더 자동 정리가 지원됩니다. 이 기능을 사용하기 전 Relay와 Sender/Receiver를
+모두 갱신하세요.
 
 Windows 빌드
 ------------

@@ -326,13 +326,13 @@
         <li>연결된 최신 Receiver의 NEW_WORK 수신 자료와 이 앱이 스캐너 ready에 등록한 파일을 삭제하고 프로그램을 종료합니다. Windows 설치본은 자동 제거 대상이며, 오프라인 PC는 다시 연결될 때 명령을 받습니다.</li>
         <li>송신기 작업 자료를 지우고 송신기를 종료합니다. Windows 설치본은 자동 제거 대상입니다. macOS에서 소스로 실행한 폴더는 자동 삭제되지 않습니다.</li>
       </ul>
-      <p class="emergency-preserve">기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존됩니다. Relay의 임시 저장소가 초기화되면 잠금 상태가 유지되지 않을 수 있습니다.</p>
+      <p class="emergency-preserve">기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존됩니다. 긴급 잠금은 Relay의 Neon DB 연결을 확인한 뒤 기록됩니다.</p>
       <div class="emergency-actions"><button class="emergency-cancel" id="emergencyCancel">취소</button><button class="emergency-confirm" id="emergencyConfirm">긴급 중단 실행</button></div>
     </div>
   </dialog>
   <dialog class="batch-dialog" id="batchDialog">
     <div class="batch-shell">
-      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50개를 선택할 수 있습니다. JPG/JPEG/PNG/PDF를 섞어 올릴 수 있으며 PDF는 첫 페이지를 JPG로 변환해 신분증 OCR에 사용합니다. 업로드 후 전송을 누르면 OCR 완료 뒤 자동 전송됩니다. 종류를 못 찾은 신분증은 먼저 종류를 지정해야 합니다. 서류는 서류 영역에 따로 추가하세요.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
+      <header class="batch-head"><div><div class="batch-title">신분증 묶음 전송</div><div class="batch-subtitle">최대 50개를 한 번에 올릴 수 있습니다. 전체 전송 버튼을 한 번 누르면 업로드된 신분증을 OCR 완료 후 순서대로 모두 전송합니다. 항목을 눌러 OCR 결과를 확인하거나 수정할 수 있고, 서류는 서류 영역에 따로 추가하세요.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
       <div class="batch-work">
         <nav class="batch-list" id="batchList"></nav>
         <section class="batch-editor" id="batchEditor">
@@ -340,7 +340,7 @@
           <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-fields" id="batchFields"></div></div>
         </section>
       </div>
-      <footer class="batch-foot"><div class="batch-error" id="batchError"></div><button class="button" id="batchCancel">묶음 취소</button><button class="button" id="batchPrevious">이전</button><button class="button" id="batchNext">확인 · 다음</button><button class="button primary" id="batchFinish">모두 저장하고 전송</button></footer>
+      <footer class="batch-foot"><div class="batch-error" id="batchError"></div><button class="button" id="batchCancel">묶음 취소</button><button class="button primary" id="batchFinish">전체 신분증 전송</button></footer>
     </div>
   </dialog>
   <script>
@@ -514,26 +514,23 @@
     $("batchCrop").addEventListener("pointermove",event=>{if(!batchCropDrag)return;batchCropDrag.bounds=batchCropAt(event);renderBatchCrop();});
     $("batchCrop").addEventListener("pointerup",event=>{if(!batchCropDrag)return;batchItem.crop_bounds=batchCropAt(event)||batchCropDrag.bounds;batchCropDrag=null;batchCropManual=true;renderBatchCrop();});
     $("batchCrop").addEventListener("pointercancel",()=>{batchCropDrag=null;renderBatchCrop();});
-    async function batchAdvance(){if(!await saveBatchItem())return;const items=batchState?.items||[];if(batchIndex+1<items.length){batchIndex++;await loadBatchItem(items[batchIndex].id);renderBatchList();return;}await batchFinish();}
     function updateBatchControls(){
       const items=batchState?.items||[];const waitingAuto=batchState?.status==="waiting_ocr";const sending=["sending","checking","waiting_ocr"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const expected=batchState?.expected_count||items.length;const uploadComplete=items.length===expected&&!batchUploading;const ocrFailed=items.some(item=>item.ocr_status==="실패");
       const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const failedCount=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
       const deliveryCount=items.filter(item=>item.send_status==="Relay 등록").length;
       $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchState?.status==="checking"?"Relay 전송 상태 확인 중…":waitingAuto?`OCR ${ocrDone}/${expected} 완료 · 완료되면 자동 전송`:batchState?.status==="sending"?`Relay 등록 ${deliveryCount}/${expected}건 · 처리 중`:batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${failedCount?` · 실패 ${failedCount}`:""} · 전송 대기`;
-      $("batchPrevious").disabled=batchIndex<=0||sending;$("batchNext").disabled=batchIndex>=items.length-1||sending;
       $("batchCancel").disabled=batchUploading||(!waitingAuto&&(sending||batchState?.status==="partial"||items.some(item=>["업로드 중","대기 중","인식 중"].includes(item.ocr_status)||item.send_status!=="대기")));
       $("batchCancel").textContent=waitingAuto?"자동 전송 취소":"묶음 취소";
       $("batchFinish").disabled=sending||batchUploading||items.length<2||(!allQueued&&(!uploadComplete||ocrFailed));
-      $("batchFinish").textContent=allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":items.some(item=>item.send_status==="Relay 등록")?"남은 신분증 이어 전송":ocrReady?"모두 전송":"OCR 완료 후 전송";
+      $("batchFinish").textContent=allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":batchState?.status==="partial"?"미등록 항목 재시도":ocrReady?"전체 신분증 전송":"OCR 완료 후 전체 전송";
       $("batchFields").querySelectorAll("input,select").forEach(control=>control.disabled=Boolean(locked));
       if(batchState?.error)$("batchError").textContent=batchState.error;
     }
-    $("batchPrevious").onclick=async()=>{if(!await saveBatchItem())return;batchIndex=Math.max(0,batchIndex-1);await loadBatchItem(batchState.items[batchIndex].id);renderBatchList();};
-    $("batchNext").onclick=batchAdvance;
     async function batchFinish(){
       if(batchState?.items?.every(item=>item.send_status==="Relay 등록")){const count=batchState.items.length;await action("batch_close");$("batchDialog").close();batchState=null;batchItem=null;showNotice(`${count}건 모두 Relay에 등록했습니다.`);return;}
       if(batchState?.items?.some(item=>item.send_status==="확인 필요")){await action("batch_check");return;}
-      if(!await saveBatchItem())return;await action("batch_send");await refreshBatch(false);refreshBatch(true);
+      if(batchItem?.ocr_status==="완료"&&$("batchType")?.value&&$("batchType").value!=="유형 선택…"&&!await saveBatchItem())return;
+      await action("batch_send");await refreshBatch(false);refreshBatch(true);
     }
     $("batchFinish").onclick=async()=>{try{await batchFinish();}catch(error){$("batchError").textContent=error.message;await refreshBatch(false);}};
     $("batchCancel").onclick=async()=>{const waiting=batchState?.status==="waiting_ocr";if(!confirm(waiting?"OCR 완료 후 자동 전송 예약을 취소할까요? 업로드한 묶음은 검토 화면에 남습니다.":"선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다."))return;await action("batch_cancel");if(!waiting){$("batchDialog").close();batchState=null;batchItem=null;}else await refreshBatch(false);};

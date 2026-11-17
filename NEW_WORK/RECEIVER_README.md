@@ -21,7 +21,7 @@ Render settings must contain:
 
 The Render service is HTTPS. The network transport uses TCP underneath HTTPS; Receiver PCs make outbound polling connections, so they do not need inbound ports or port forwarding. The relay encrypts queued ZIP chunks at rest and removes the archive payload after Receiver acknowledges local receipt. The central app requires the `/health` feature `new-work-zip-v1`; deploy the updated `KyeongwanReceiver/relay_server.py`, then install updated central and Receiver builds before sending. Older Receiver builds do not see ZIP jobs. The existing Render free plan uses temporary storage and is not a durable production queue. Do not send real intake documents through a free test deployment.
 
-Emergency lock delivery also requires durable storage. Attach a Render Persistent Disk mounted at `/var/data` to a paid Web Service and set `KYEONGWAN_RELAY_DATA_DIR=/var/data/kyeongwan-relay`. The checked-in Blueprint remains a free test service and does not create a disk. Without the mounted disk, `/health` reports `emergency_storage_persistent: false` and the Relay refuses a new emergency lock instead of claiming it will survive a restart. Keep the existing Fernet key stable across deploys so queued encrypted data remains readable.
+Emergency locks, station provisioning hashes, and cleanup receipts use the `DATABASE_URL` PostgreSQL connection and survive Render restarts. Set `DATABASE_URL` in the Render service environment to the pooled Neon connection string. Encrypted queued job payloads still use Render's temporary `/tmp` storage, so queued transfers can be lost on a restart; use this free setup for controlled tests only until durable payload storage is added. `/health` reports `emergency_storage_persistent: true` only while Neon is reachable. Keep the existing Fernet key stable across deploys so queued encrypted data remains readable.
 
 The Sender's Receiver status cards use authenticated `GET /v1/stations/status` (central token). Each Receiver's existing two-second emergency-command poll updates an in-memory last-seen timestamp; the Sender reports online when the latest poll is within 15 seconds, otherwise offline. A newly provisioned station with no recent poll appears offline. The timestamp is intentionally volatile and resets when Relay restarts. Deploy the Relay with `station-presence-v1` and rebuild/update the Sender to show live status. A 404 means the currently deployed Relay does not have the status route; redeploy the latest Relay code, then retry **상태 새로고침**. This does not prevent uploads through the separate job endpoint. The Receiver's “Relay 설정됨” label confirms saved settings only; the Sender's status card is the live reachability check.
 
@@ -92,8 +92,8 @@ Receiving another package adds another folder and keeps existing received folder
 이 Receiver가 `ready`에 올린 파일, Windows Receiver 설치 폴더를 삭제하고 종료합니다.
 기존 SK/KT 결과와 데이터베이스, 백업, 설정은 보존합니다. 오프라인 PC는 재연결 또는 다음 실행 때 처리됩니다. 이전 버전은
 자체 삭제 명령을 처리하지 않으므로 Receiver를 갱신해야 합니다. Render 운영 로그와
-저장소 원본 코드는 이 기능의 삭제 대상이 아니며, Relay 임시 저장소가 초기화되면 긴급
-잠금이 유지되지 않을 수 있습니다.
+저장소 원본 코드는 이 기능의 삭제 대상이 아닙니다. 긴급 잠금은 Render `DATABASE_URL`
+Neon DB에 저장되며, `/health`의 `emergency_storage_persistent`가 `true`인지 확인하세요.
 
 The Receiver opens one HTML/CSS dashboard with received folders on the left and the selected folder on the right. It shows the identity preview and identity type only; OCR result fields are omitted because the sender reviewed them. Press **신분증 확인** to apply that folder's reviewed result. The panel then shows **신분증 확인 완료**. SK writes the configured `sk_report.txt` with a timestamped backup. KT updates the configured database and generates `ORG.jpg` and `CR.jpg`, keeping its database and image backups. When a folder has no identity or no PDFs, the page explicitly shows **받은 신분증이 없습니다** or **받은 PDF 서류가 없습니다**.
 

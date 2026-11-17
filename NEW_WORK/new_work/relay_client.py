@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import json
 import hashlib
+import http.client
 import os
 import re
 import shutil
+import ssl
 import tempfile
 import time
 import stat
-import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from threading import Event
+from threading import Event, local
 from typing import Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from new_work.transfer import TransferError
 
@@ -22,6 +22,7 @@ from new_work.transfer import TransferError
 MAX_PAGE_BYTES = 40 * 1024 * 1024
 MAX_PAGES = 100
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+_http_state = local()
 
 
 def _trim_jpeg_zero_padding(path: Path) -> None:
@@ -73,37 +74,74 @@ def _request(url: str, token: str, *, method: str = "GET",
              response_limit: int = 64 * 1024,
              on_download_chunk: Callable[[int], None] | None = None,
              timeout: float = 60) -> tuple[int, dict | bytes]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise TransferError("Relay 주소 형식이 올바르지 않습니다.")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    origin = (parsed.scheme, parsed.hostname, port)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if content_type:
         headers["Content-Type"] = content_type
-    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if on_download_chunk is None:
-                data = response.read(response_limit + 1)
-                if len(data) > response_limit:
-                    raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+        connection = getattr(_http_state, "connection", None)
+        if (connection is None or getattr(_http_state, "origin", None) != origin
+                or connection.sock is None):
+            if connection is not None:
+                connection.close()
+            if parsed.scheme == "https":
+                connection = http.client.HTTPSConnection(
+                    parsed.hostname, port, timeout=timeout,
+                    context=ssl.create_default_context(),
+                )
             else:
-                received = bytearray()
-                while True:
-                    block = response.read(min(256 * 1024, response_limit + 1 - len(received)))
-                    if not block:
-                        break
-                    received.extend(block)
-                    on_download_chunk(len(block))
-                    if len(received) > response_limit:
-                        raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
-                data = bytes(received)
-            if response.headers.get_content_type() == "application/json":
-                return response.status, json.loads(data.decode("utf-8")) if data else {}
-            return response.status, data
-    except urllib.error.HTTPError as exc:
-        try:
-            detail = exc.read(64 * 1024).decode("utf-8", errors="replace")
-        except OSError:
-            detail = ""
-        raise TransferError(f"Relay HTTP {exc.code}: {detail or exc.reason}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                connection = http.client.HTTPConnection(
+                    parsed.hostname, port, timeout=timeout,
+                )
+            _http_state.connection = connection
+            _http_state.origin = origin
+        connection.timeout = timeout
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        if on_download_chunk is None:
+            data = response.read(response_limit + 1)
+            if len(data) > response_limit:
+                connection.close()
+                _http_state.connection = None
+                raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+        else:
+            received = bytearray()
+            while True:
+                block = response.read(min(256 * 1024, response_limit + 1 - len(received)))
+                if not block:
+                    break
+                received.extend(block)
+                on_download_chunk(len(block))
+                if len(received) > response_limit:
+                    connection.close()
+                    _http_state.connection = None
+                    raise TransferError("Relay 응답 크기 제한을 초과했습니다.")
+            data = bytes(received)
+        if response.will_close:
+            connection.close()
+            _http_state.connection = None
+        if response.status >= 400:
+            detail = data.decode("utf-8", errors="replace")[:64 * 1024]
+            raise TransferError(
+                f"Relay HTTP {response.status}: {detail or response.reason}"
+            )
+        if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() == "application/json":
+            return response.status, json.loads(data.decode("utf-8")) if data else {}
+        return response.status, data
+    except TransferError:
+        raise
+    except (http.client.HTTPException, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        connection = getattr(_http_state, "connection", None)
+        if connection is not None:
+            connection.close()
+        _http_state.connection = None
         raise TransferError(f"Relay 연결 실패: {exc}") from exc
 
 
@@ -361,9 +399,9 @@ def send_work_package(
             return job_id
         report("Receiver 수신 확인 대기 중…")
         if cancel_event is not None:
-            cancel_event.wait(1)
+            cancel_event.wait(0.5)
         else:
-            time.sleep(1)
+            time.sleep(0.5)
     raise DeliveryPendingError(
         job_id,
         f"Relay에 전송했지만 Receiver 수신 확인을 {wait_seconds}초 안에 받지 못했습니다. "
