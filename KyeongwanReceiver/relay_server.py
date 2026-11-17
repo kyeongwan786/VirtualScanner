@@ -282,6 +282,9 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except OSError:
             pass
         self.lock = threading.RLock()
+        # Volatile heartbeat timestamps; Receivers refresh these through their
+        # existing two-second emergency-command poll.
+        self.station_last_seen: dict[str, datetime] = {}
         self._load_station_provisioning()
         self._migrate_emergency_state()
 
@@ -555,6 +558,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._reply(200, {"status": "ready", "features": [
                 "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
                 "emergency-lock-v1", "emergency-receipts-v1", "station-provisioning-v1",
+                "station-presence-v1",
             ], "emergency_active": self.server.emergency_active(),
                 "emergency_storage_persistent": self.server.emergency_storage_persistent()})
             return
@@ -563,11 +567,29 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, self.server.emergency_report())
             return
+        if path == "/v1/stations/status":
+            if not self._authorize_central():
+                return
+            now = datetime.now(timezone.utc)
+            with self.server.lock:
+                stations = []
+                for station_id in sorted(self.server.config["stations"]):
+                    last_seen = self.server.station_last_seen.get(station_id)
+                    age = (now - last_seen).total_seconds() if last_seen else None
+                    stations.append({
+                        "station_id": station_id,
+                        "online": age is not None and age <= 15,
+                        "last_seen": last_seen.isoformat() if last_seen else None,
+                    })
+            self._reply(200, {"stations": stations})
+            return
         match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/emergency", path)
         if match:
             station_id = match.group(1)
             if not self._authorize_station(station_id):
                 return
+            with self.server.lock:
+                self.server.station_last_seen[station_id] = datetime.now(timezone.utc)
             report = self.server.emergency_report()
             self._reply(200, {
                 "active": report["active"], "event_id": report["event_id"],

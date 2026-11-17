@@ -143,6 +143,7 @@ PDF는 MuPDF로 페이지별 JPEG를 메모리에서 렌더링한다. 페이지�
 - `POST /v1/jobs`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/jobs/{jobId}/complete`, `DELETE /v1/jobs/{jobId}/cancel` — 중앙 토큰과 중앙 출구 IP로 제한
 - `new-work-zip-v1`은 같은 `PUT /pages/{chunkNumber}` 경로에 최대 40 MiB `application/octet-stream` ZIP 조각을 올리고, Receiver는 같은 페이지 경로에서 조각을 받아 SHA-256 확인 후 압축을 푼다. Relay의 `/health`에는 이 기능이 `new-work-zip-v1`로 표시된다.
 - `GET /v1/jobs/{jobId}/status` — 중앙 토큰으로 작업 상태(`uploading`, `queued`, `delivered`, `cancelled`) 확인
+- `GET /v1/stations/status` — 중앙 토큰 인증, 각 자리 Receiver의 최근 인증 폴링 시각과 15초 기준 온라인 여부 반환. Receiver가 기존 긴급 명령을 2초 간격으로 조회할 때 마지막 접속 시각을 갱신한다. 이 상태는 Relay 메모리에만 있어 Relay 재시작 뒤 다시 접속할 때까지 오프라인으로 보인다.
 - `GET /v1/stations/{stationId}/jobs/next`, `GET /v1/stations/{stationId}/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/stations/{stationId}/jobs/{jobId}/ack` — 해당 자리 전용 토큰과 그 자리 출구 IP로 제한
 - `GET /health` — 비민감 준비 상태만 제공
 

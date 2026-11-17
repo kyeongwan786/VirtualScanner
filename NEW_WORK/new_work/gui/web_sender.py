@@ -78,6 +78,8 @@ def _station_rows(app) -> list[dict[str, object]]:
         slots[next_slot] = index
 
     rows: list[dict[str, object]] = []
+    presence = getattr(app, "_receiver_presence", {})
+    presence_available = bool(getattr(app, "_receiver_presence_available", False))
     for slot, store_index in enumerate(slots):
         station_name = (
             RECEIVER_STATION_NAMES[slot]
@@ -85,7 +87,8 @@ def _station_rows(app) -> list[dict[str, object]]:
         )
         if store_index is None:
             rows.append({"slot": slot, "name": station_name, "configured": False,
-                         "relay_station_id": f"desk-{slot + 1:02d}"})
+                         "relay_station_id": f"desk-{slot + 1:02d}",
+                         "presence_available": presence_available})
             continue
         store = stores[store_index]
         display_name = getattr(app, "_store_display_names", {}).get(
@@ -97,6 +100,10 @@ def _station_rows(app) -> list[dict[str, object]]:
             "store_id": store.store_id,
             "relay_station_id": store.relay_station_id,
             "configured": bool(store.relay_station_id),
+            "online": (presence.get(store.relay_station_id, {}).get("online")
+                       if presence_available else None),
+            "registered": (store.relay_station_id in presence if presence_available else None),
+            "presence_available": presence_available,
             "selected": store_index == getattr(app, "_selected_store_index", -1),
         })
     return rows
@@ -209,6 +216,8 @@ def _backend_process(port: int, token: str) -> None:
         ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"),
         version="v2",
     )
+    app._receiver_presence = {}
+    app._receiver_presence_available = False
     hide_backend_application(root)
 
     def sync_provisioned_stations() -> None:
@@ -253,6 +262,7 @@ def _backend_process(port: int, token: str) -> None:
     }
     batch_cancel_event = threading.Event()
     emergency_state = {"active": False, "status": "", "error": "", "checking": False}
+    receiver_presence_state = {"checking": False, "last_check": 0.0}
     stop_event = threading.Event()
 
     def batch_summary() -> dict[str, object]:
@@ -1177,6 +1187,28 @@ def _backend_process(port: int, token: str) -> None:
 
     def refresh_state() -> None:
         try:
+            if (app.relay_config and not emergency_state["active"]
+                    and not receiver_presence_state["checking"]
+                    and time.monotonic() - receiver_presence_state["last_check"] >= 5):
+                receiver_presence_state["checking"] = True
+                receiver_presence_state["last_check"] = time.monotonic()
+
+                def check_receiver_presence() -> None:
+                    try:
+                        from new_work.relay_client import get_station_presence
+
+                        presence = get_station_presence(dict(app.relay_config))
+                        app._receiver_presence = presence
+                        app._receiver_presence_available = True
+                    except Exception:
+                        app._receiver_presence_available = False
+                    finally:
+                        receiver_presence_state["checking"] = False
+
+                threading.Thread(
+                    target=check_receiver_presence, daemon=True,
+                    name="sender-receiver-presence",
+                ).start()
             if (app.relay_config and not emergency_state["active"]
                     and not emergency_state["checking"]):
                 emergency_state["checking"] = True

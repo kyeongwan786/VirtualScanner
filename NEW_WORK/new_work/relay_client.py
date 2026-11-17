@@ -441,6 +441,25 @@ def get_emergency_report(relay_config: dict[str, str]) -> dict:
     return result
 
 
+def get_station_presence(relay_config: dict[str, str]) -> dict[str, dict]:
+    """Return Relay's recent authenticated Receiver polls, keyed by station ID."""
+    relay_url = relay_config["relay_url"].rstrip("/")
+    _, result = _request(
+        f"{relay_url}/v1/stations/status", relay_config["central_token"], timeout=8,
+    )
+    stations = result.get("stations") if isinstance(result, dict) else None
+    if not isinstance(stations, list):
+        raise TransferError("Relay Receiver 상태 응답이 올바르지 않습니다.")
+    presence = {}
+    for row in stations:
+        if (isinstance(row, dict) and isinstance(row.get("station_id"), str)
+                and isinstance(row.get("online"), bool)):
+            presence[row["station_id"]] = {
+                "online": row["online"], "last_seen": row.get("last_seen"),
+            }
+    return presence
+
+
 def report_station_emergency_result(
     relay_config: dict[str, str], station_id: str, event_id: str,
     *, cleanup_succeeded: bool, detail: str = "",

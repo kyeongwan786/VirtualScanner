@@ -23,6 +23,8 @@ The Render service is HTTPS. The network transport uses TCP underneath HTTPS; Re
 
 Emergency lock delivery also requires durable storage. Attach a Render Persistent Disk mounted at `/var/data` to a paid Web Service and set `KYEONGWAN_RELAY_DATA_DIR=/var/data/kyeongwan-relay`. The checked-in Blueprint remains a free test service and does not create a disk. Without the mounted disk, `/health` reports `emergency_storage_persistent: false` and the Relay refuses a new emergency lock instead of claiming it will survive a restart. Keep the existing Fernet key stable across deploys so queued encrypted data remains readable.
 
+The Sender's Receiver status cards use authenticated `GET /v1/stations/status` (central token). Each Receiver's existing two-second emergency-command poll updates an in-memory last-seen timestamp; the Sender reports online when the latest poll is within 15 seconds, otherwise offline. A newly provisioned station with no recent poll appears offline. The timestamp is intentionally volatile and resets when Relay restarts. Deploy the Relay with `station-presence-v1` and rebuild/update the Sender to show live status. The Receiver's “Relay 설정됨” label confirms saved settings only; the Sender's status card is the live reachability check.
+
 When a Receiver later reconnects, it applies the active emergency command, records cleanup success or errors, and requests shutdown. Offline stations remain `pending`. The receipt reports cleanup and a shutdown request; it cannot prove that the remote operating system actually terminated the process. On the central PC, with the Sender's saved Relay configuration available, inspect the current per-station results with `cd NEW_WORK && python -m new_work.emergency_status`.
 
 ## Automatic client settings
