@@ -942,6 +942,12 @@ def _backend_process(port: int, token: str) -> None:
                             raise ValueError("삭제할 수 있는 서류를 찾지 못했습니다.")
                         tree.selection_set(key)
                         app._delete_selected_documents(tree, already_confirmed=True)
+                    elif action == "exclude_document_page":
+                        key = str(data.get("key", ""))
+                        page_index = data.get("page_index")
+                        if not isinstance(page_index, int) or isinstance(page_index, bool):
+                            raise ValueError("제외할 페이지 번호가 올바르지 않습니다.")
+                        result["value"] = app._exclude_received_page(key, page_index)
                     elif action == "undo_delete":
                         app._undo_document_delete()
                     elif action == "settings":

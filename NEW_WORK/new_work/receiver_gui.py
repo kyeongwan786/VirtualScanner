@@ -602,6 +602,13 @@ class ReceiverApp:
                         and isinstance(item.get("job_rel"), str)
                         and isinstance(item.get("trash_rel"), str)
                     )
+                    or (
+                        item.get("kind") == "page"
+                        and isinstance(item.get("job_rel"), str)
+                        and isinstance(item.get("source_rel"), str)
+                        and isinstance(item.get("trash_rel"), str)
+                        and isinstance(item.get("pages_before"), list)
+                    )
                 )
             ]
         ready_jobs = state.get("ready_jobs")
@@ -1380,6 +1387,156 @@ class ReceiverApp:
         self.status.set("마지막 접수 건 삭제를 되돌렸습니다")
         return "break"
 
+    def _exclude_received_page(self, key: str, page_index: int) -> dict[str, object]:
+        """Move one received JPG out of a waiting PDF without changing other pages."""
+        if key not in self._items:
+            raise ValueError("서류를 찾지 못했습니다.")
+        if key not in self._queue_order:
+            raise ValueError("페이지를 제외하려면 먼저 스캔 대기열에서 해당 서류를 취소하세요.")
+        item = self._items[key]
+        document = item["document"]
+        pages = document.get("pages", [])
+        if not isinstance(page_index, int) or isinstance(page_index, bool):
+            raise ValueError("제외할 페이지 번호가 올바르지 않습니다.")
+        if not isinstance(pages, list) or not 0 <= page_index < len(pages):
+            raise ValueError("제외할 페이지가 없습니다. 목록을 새로고침하세요.")
+        if len(pages) <= 1:
+            raise ValueError("마지막 페이지입니다. 서류 전체를 삭제하려면 서류 삭제 버튼을 사용하세요.")
+
+        work_root = Path(self.config.get("work_path", "")).expanduser().resolve()
+        job_dir = Path(item["job_dir"]).resolve()
+        job_dir.relative_to(work_root / "jobs")
+        manifest_path = job_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        doc_id = str(document.get("document_id", ""))
+        manifest_docs = manifest.get("documents")
+        if not isinstance(manifest_docs, list):
+            raise ValueError("접수 서류 정보가 올바르지 않습니다.")
+        manifest_index = next((i for i, row in enumerate(manifest_docs)
+                               if isinstance(row, dict)
+                               and str(row.get("document_id", "")) == doc_id), -1)
+        if manifest_index < 0:
+            raise ValueError("접수 서류 정보를 찾지 못했습니다.")
+        manifest_pages = manifest_docs[manifest_index].get("pages", [])
+        if manifest_pages != pages:
+            raise ValueError("서류 페이지 목록이 갱신됐습니다. 다시 열어 확인하세요.")
+
+        relative = str(pages[page_index])
+        source = self._job_file(job_dir, relative).resolve()
+        (source.parent.resolve()).relative_to((job_dir / "documents").resolve())
+        trash_root = job_dir / ".page-trash"
+        if trash_root.is_symlink():
+            raise ValueError("페이지 휴지통 경로가 바로가기로 연결되어 있습니다.")
+        trash_root.mkdir(parents=True, exist_ok=True)
+        trash_root.resolve().relative_to(job_dir)
+        action_id = uuid4().hex
+        trash = trash_root / action_id / source.name
+        trash.parent.mkdir(parents=True, exist_ok=False)
+
+        action = {
+            "kind": "page",
+            "key": key,
+            "job_rel": job_dir.relative_to(work_root).as_posix(),
+            "document_id": doc_id,
+            "pages_before": list(pages),
+            "page_index": page_index,
+            "source_rel": source.relative_to(work_root).as_posix(),
+            "trash_rel": trash.relative_to(work_root).as_posix(),
+        }
+        old_manifest = json.loads(json.dumps(manifest, ensure_ascii=False))
+        old_queue = list(self._queue_order)
+        try:
+            os.replace(source, trash)
+            remaining = list(pages)
+            remaining.pop(page_index)
+            manifest_docs[manifest_index]["pages"] = remaining
+            manifest_docs[manifest_index]["page_count"] = len(remaining)
+            self._write_json_atomic(manifest_path, manifest)
+            self._document_undo_stack.append(action)
+            self._save_queue_state()
+        except (OSError, ValueError, TypeError) as exc:
+            self._queue_order = old_queue
+            if self._document_undo_stack and self._document_undo_stack[-1] is action:
+                self._document_undo_stack.pop()
+            if trash.exists() and not source.exists():
+                try:
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(trash, source)
+                except OSError:
+                    pass
+            try:
+                self._write_json_atomic(manifest_path, old_manifest)
+            except OSError:
+                pass
+            raise ValueError(f"페이지를 제외하지 못했습니다: {exc}") from exc
+
+        self._web_selected_job_id = str(item["job_id"])
+        self._selected_job_id = self._web_selected_job_id
+        self._refresh_queue()
+        self.status.set("PDF에서 JPG 1장을 제외했습니다 · Ctrl+Z로 복구할 수 있습니다")
+        return {
+            "message": f"PDF에서 JPG {page_index + 1}페이지를 제외했습니다 · Ctrl+Z로 복구할 수 있습니다",
+            "page_count": len(remaining),
+        }
+
+    def _undo_excluded_page(self, action: dict) -> str:
+        work_root = Path(self.config.get("work_path", "")).expanduser().resolve()
+        job_dir = (work_root / Path(*PurePosixPath(action["job_rel"]).parts)).resolve()
+        job_dir.relative_to(work_root / "jobs")
+        source = (work_root / Path(*PurePosixPath(action["source_rel"]).parts)).resolve()
+        trash = (work_root / Path(*PurePosixPath(action["trash_rel"]).parts)).resolve()
+        source.relative_to(job_dir / "documents")
+        trash.relative_to(job_dir / ".page-trash")
+        if source.exists() or not trash.is_file() or trash.is_symlink():
+            raise ValueError("제외한 페이지를 휴지통에서 복구할 수 없습니다.")
+        manifest_path = job_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        documents = manifest.get("documents")
+        if not isinstance(documents, list):
+            raise ValueError("접수 서류 정보가 올바르지 않습니다.")
+        doc = next((row for row in documents if isinstance(row, dict)
+                    and str(row.get("document_id", "")) == action["document_id"]), None)
+        if doc is None:
+            raise ValueError("복구할 서류 항목이 없습니다.")
+        pages = doc.get("pages")
+        if not isinstance(pages, list):
+            raise ValueError("서류 페이지 목록이 올바르지 않습니다.")
+        index = int(action["page_index"])
+        pages_before = action["pages_before"]
+        if (not isinstance(pages_before, list) or not 0 <= index < len(pages_before)
+                or pages_before[index] != source.relative_to(job_dir).as_posix()):
+            raise ValueError("복구할 페이지 순서가 올바르지 않습니다.")
+        expected = list(pages_before)
+        expected.pop(index)
+        if pages != expected:
+            raise ValueError("서류가 추가로 변경되어 페이지를 안전하게 복구할 수 없습니다.")
+        source.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(trash, source)
+        doc["pages"] = pages_before
+        doc["page_count"] = len(pages_before)
+        self._document_undo_stack.pop()
+        try:
+            self._write_json_atomic(manifest_path, manifest)
+            self._save_queue_state()
+        except OSError as exc:
+            self._document_undo_stack.append(action)
+            doc["pages"] = expected
+            doc["page_count"] = len(expected)
+            try:
+                self._write_json_atomic(manifest_path, manifest)
+            except OSError:
+                pass
+            try:
+                os.replace(source, trash)
+            except OSError:
+                pass
+            raise ValueError(f"페이지 복구 상태를 저장하지 못했습니다: {exc}") from exc
+        self._web_selected_job_id = str(action["key"]).split(":", 1)[0]
+        self._selected_job_id = self._web_selected_job_id
+        self._refresh_queue()
+        self.status.set("제외한 JPG 페이지를 복구했습니다")
+        return "break"
+
     def _delete_selected_documents(
         self, tree: ttk.Treeview, *, already_confirmed: bool = False,
     ) -> str:
@@ -1498,6 +1655,12 @@ class ReceiverApp:
             return None
         work_root = Path(self.config.get("work_path", "")).expanduser().resolve()
         action = self._document_undo_stack[-1]
+        if action.get("kind") == "page":
+            try:
+                return self._undo_excluded_page(action)
+            except (KeyError, OSError, ValueError, TypeError) as exc:
+                messagebox.showerror("페이지 제외 취소 실패", str(exc), parent=self.root)
+                return "break"
         if action.get("kind") == "job":
             try:
                 return self._undo_received_job_delete(action)
