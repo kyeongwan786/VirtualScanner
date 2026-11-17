@@ -41,9 +41,26 @@
     .intake-value { font-size: 13px; font-weight: 700; }
     .header-action { border:1px solid #ffffff35; border-radius:8px; padding:7px 10px; background:#ffffff12; color:#eaf2ff; font-size:11px; font-weight:700; }
     .header-action:hover { background:#ffffff22; }
-    .emergency-button { display:inline-flex;align-items:center;gap:6px;border:1px solid #ffb8b8;border-radius:8px;padding:7px 10px;background:#b42332;color:#fff;font-size:11px;font-weight:750; }
-    .emergency-button:hover { background:#8f1724; }
-    .emergency-button svg { width:15px;height:15px; }
+    .emergency-button { width:42px;height:42px;display:inline-grid;place-items:center;border:1px solid #ffb8b8;border-radius:12px;padding:0;background:#b42332;color:#fff;box-shadow:0 3px 10px #7f1d1d35; }
+    .emergency-button:hover { background:#8f1724;box-shadow:0 0 0 4px #fecaca55; }
+    .emergency-button:focus-visible { outline:3px solid #fecaca;outline-offset:2px; }
+    .emergency-button:disabled { cursor:wait;opacity:.8; }
+    .emergency-button svg { width:23px;height:23px; }
+    .emergency-dialog { width:min(560px,calc(100vw - 32px));max-width:none;padding:0;border:1px solid #fca5a5;border-radius:18px;background:#fff;box-shadow:0 24px 90px #450a0a66;color:#172b4d; }
+    .emergency-dialog::backdrop { background:#101828b8;backdrop-filter:blur(3px); }
+    .emergency-content { padding:26px 28px 22px; }
+    .emergency-symbol { width:66px;height:66px;display:grid;place-items:center;margin:0 auto 13px;border-radius:18px;background:#fef2f2; }
+    .emergency-symbol svg { width:50px;height:50px; }
+    .emergency-title { margin:0;text-align:center;color:#a61b29;font-size:21px;font-weight:800;letter-spacing:-.4px; }
+    .emergency-lead { margin:10px 0 15px;text-align:center;color:#7f1d1d;font-size:13px;font-weight:700;line-height:1.6; }
+    .emergency-scope { display:grid;gap:9px;margin:0;padding:14px 16px;border:1px solid #fecaca;border-radius:12px;background:#fff7f7;color:#5b2730;font-size:11px;line-height:1.6; }
+    .emergency-scope li { padding-left:2px; }
+    .emergency-preserve { margin:13px 0 0;color:#667085;font-size:10px;line-height:1.6; }
+    .emergency-actions { display:flex;justify-content:flex-end;gap:9px;margin-top:20px; }
+    .emergency-cancel,.emergency-confirm { min-height:40px;padding:0 16px;border-radius:9px;font-size:11px;font-weight:750; }
+    .emergency-cancel { border:1px solid #d0d5dd;background:#fff;color:#344054; }
+    .emergency-confirm { border:1px solid #b42332;background:#b42332;color:#fff;box-shadow:0 3px 8px #b4233233; }
+    .emergency-confirm:hover { background:#8f1724; }
     .portal-switch { display: flex; gap: 3px; padding: 3px; border: 1px solid #ffffff35; border-radius: 10px; background: #102f5a55; }
     .portal-switch button { min-width: 52px; padding: 7px 12px; border: 0; border-radius: 7px; color: #d4e0f0; background: transparent; font-weight: 700; }
     .portal-switch button.active { color: #15345e; background: white; box-shadow: 0 1px 4px #102f5a30; }
@@ -220,7 +237,7 @@
       </div>
       <div class="topbar-spacer"></div>
       <div class="connection"><i class="dot"></i><span id="connectionText">Relay 확인 중</span></div>
-      <button class="emergency-button" id="emergencyStop" title="송신 중단, 미수신 작업 취소, 송신기 종료" aria-label="긴급 중단"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/><path d="M12 5v4m0 3v.1"/></svg>긴급 중단</button>
+      <button class="emergency-button" id="emergencyStop" title="긴급 중단 및 전체 폐기" aria-label="긴급 중단 및 전체 폐기"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M9 18.2V15a7 7 0 0 1 14 0v3.2l3 4.4H6l3-4.4Z" fill="currentColor"/><path d="M7 25h18M13 28h6M16 2v3M4.9 7.1 7 9.2M27.1 7.1 25 9.2M2 15h3M27 15h3" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg></button>
       <div class="divider"></div>
       <div><div class="intake-label">접수 작업</div><div class="intake-value">새 접수</div></div>
       <button class="header-action" id="resetButton">작업 초기화</button>
@@ -296,6 +313,20 @@
   </div>
   <dialog class="settings-dialog" id="stationsDialog"><h2 class="settings-title">접점 설정</h2><p class="settings-desc">현풍부터 헬리오스까지 17개 자리가 자동 등록됩니다. 각 Receiver에서는 설치 후 자기 자리를 선택하고 설정을 저장하면 됩니다.</p><div id="stationSettingsRows"></div><button class="button" id="addStationRow">+ 접점 추가</button><div class="settings-actions"><button class="button" data-close="stationsDialog">닫기</button><button class="button primary" id="saveStations">접점 저장</button></div></dialog>
   <dialog class="settings-dialog" id="relayDialog"><h2 class="settings-title">Relay 설정</h2><p class="settings-desc">Render Relay 주소와 중앙 송신 토큰을 설정합니다.</p><div class="settings-form"><label>Relay HTTPS 주소<input id="relayUrlInput" placeholder="https://example.onrender.com"></label><label>중앙 송신 토큰<input id="relayTokenInput" type="password" autocomplete="new-password" placeholder="새 토큰 입력 시 교체"></label><div class="saved-token-state" id="savedTokenState" role="status"></div><p class="settings-desc token-help">토큰은 보안상 다시 표시하지 않습니다. 새 토큰을 입력하면 교체되고, 비워 두면 현재 저장된 토큰을 유지합니다.</p></div><div class="settings-actions"><button class="button" data-close="relayDialog">닫기</button><button class="button primary" id="saveRelay">Relay 설정 저장</button></div></dialog>
+  <dialog class="emergency-dialog" id="emergencyDialog" aria-labelledby="emergencyTitle" aria-describedby="emergencyLead emergencyScope">
+    <div class="emergency-content">
+      <div class="emergency-symbol"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 5 60 55H4L32 5Z" fill="#fee2e2" stroke="#c52232" stroke-width="4" stroke-linejoin="round"/><path d="M32 21v17" stroke="#b42332" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="46" r="2.8" fill="#b42332"/></svg></div>
+      <h2 class="emergency-title" id="emergencyTitle">긴급 중단 · 전체 폐기</h2>
+      <p class="emergency-lead" id="emergencyLead">이 명령은 취소할 수 없습니다. 아래 작업 자료와 Relay가 잠깁니다.</p>
+      <ul class="emergency-scope" id="emergencyScope">
+        <li>Relay에 대기 중인 전송 작업과 자료를 삭제합니다.</li>
+        <li>연결된 최신 Receiver의 NEW_WORK 수신 자료와 이 앱이 스캐너 ready에 등록한 파일을 삭제하고 프로그램을 종료합니다. Windows 설치본은 자동 제거 대상이며, 오프라인 PC는 다시 연결될 때 명령을 받습니다.</li>
+        <li>송신기 작업 자료를 지우고 송신기를 종료합니다. Windows 설치본은 자동 제거 대상입니다. macOS에서 소스로 실행한 폴더는 자동 삭제되지 않습니다.</li>
+      </ul>
+      <p class="emergency-preserve">기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존됩니다. Relay의 임시 저장소가 초기화되면 잠금 상태가 유지되지 않을 수 있습니다.</p>
+      <div class="emergency-actions"><button class="emergency-cancel" id="emergencyCancel">취소</button><button class="emergency-confirm" id="emergencyConfirm">긴급 중단 실행</button></div>
+    </div>
+  </dialog>
   <dialog class="batch-dialog" id="batchDialog">
     <div class="batch-shell">
       <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50개를 선택할 수 있습니다. JPG/JPEG/PNG/PDF를 섞어 올릴 수 있으며 PDF는 첫 페이지를 JPG로 변환해 신분증 OCR에 사용합니다. 서류는 서류 영역에 따로 추가하세요.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
@@ -505,14 +536,18 @@
     $("batchDialog").addEventListener("cancel",event=>event.preventDefault());
     $("ocrButton").onclick=()=>action("run_ocr");
     $("sendButton").onclick=()=>action("send");
-    $("emergencyStop").onclick=async()=>{
-      const phrase=prompt("Relay 대기 작업과 송신·수신 중인 NEW_WORK 작업자료 및 이 작업이 스캐너 ready에 올린 파일을 삭제합니다. 각 PC의 최신 송신기와 Receiver 프로그램도 종료·제거됩니다. 기존 SK/KT 결과, 데이터베이스, 백업과 설정은 보존합니다. 오프라인 PC는 다시 연결될 때 처리됩니다.\n\n계속하려면 ‘전체 폐기’를 입력하세요.");
-      if(phrase!=="전체 폐기")return;
+    const emergencyDialog=$("emergencyDialog");
+    $("emergencyStop").onclick=()=>{if(!$("emergencyStop").disabled)emergencyDialog.showModal();};
+    $("emergencyCancel").onclick=()=>emergencyDialog.close();
+    emergencyDialog.addEventListener("click",event=>{if(event.target===emergencyDialog)emergencyDialog.close();});
+    $("emergencyConfirm").onclick=async()=>{
+      emergencyDialog.close();
       $("emergencyStop").disabled=true;
-      $("emergencyStop").textContent="전체 중단 중…";
+      $("emergencyStop").title="긴급 중단 실행 중";
+      $("emergencyStop").setAttribute("aria-label","긴급 중단 실행 중");
       showNotice("Relay를 잠그고 전체 폐기 명령을 보내는 중…");
       try{await action("emergency_stop");}
-      catch(_error){$("emergencyStop").disabled=false;$("emergencyStop").textContent="중단 재시도";}
+      catch(_error){$("emergencyStop").disabled=false;$("emergencyStop").title="긴급 중단 실패 · 다시 눌러 재시도";$("emergencyStop").setAttribute("aria-label","긴급 중단 실패, 재시도");}
     };
     $("statusButton").onclick=()=>action("check_status");
     $("resetButton").onclick=()=>action("reset");
@@ -594,9 +629,9 @@
       $("sendHint").textContent=state.review_status|| (state.selected_station?`전송 대상: ${state.selected_station}`:"전송 대상을 선택하세요");$("sendHint").style.color="";
       const emergencyPending=Boolean(state.emergency_active);
       $("sendButton").textContent=state.sending?"전송 처리 중…":(state.selected_station?`${state.selected_station}로 전송`:"선택한 자리로 전송");$("sendButton").disabled=state.sending||emergencyPending;
-      if(state.emergency_status==="requesting"){$("emergencyStop").disabled=true;$("emergencyStop").textContent="전체 중단 중…";$("sendButton").disabled=true;}
-      else if(state.emergency_status==="failed"){$("emergencyStop").disabled=false;$("emergencyStop").textContent="중단 재시도";$("sendButton").disabled=true;if(state.emergency_error&&shownEmergencyFailure!==state.emergency_error){shownEmergencyFailure=state.emergency_error;showNotice(`전체 중단 실패 · ${state.emergency_error}`,true);}}
-      else if(state.emergency_status==="complete_with_error"){$("emergencyStop").disabled=true;$("emergencyStop").textContent="중단 완료";$("sendButton").disabled=true;}
+      if(state.emergency_status==="requesting"){$("emergencyStop").disabled=true;$("emergencyStop").title="긴급 중단 실행 중";$("emergencyStop").setAttribute("aria-label","긴급 중단 실행 중");$("sendButton").disabled=true;}
+      else if(state.emergency_status==="failed"){$("emergencyStop").disabled=false;$("emergencyStop").title="긴급 중단 실패 · 다시 눌러 재시도";$("emergencyStop").setAttribute("aria-label","긴급 중단 실패, 재시도");$("sendButton").disabled=true;if(state.emergency_error&&shownEmergencyFailure!==state.emergency_error){shownEmergencyFailure=state.emergency_error;showNotice(`전체 중단 실패 · ${state.emergency_error}`,true);}}
+      else if(state.emergency_status==="complete_with_error"){$("emergencyStop").disabled=true;$("emergencyStop").title="긴급 중단 완료";$("emergencyStop").setAttribute("aria-label","긴급 중단 완료");$("sendButton").disabled=true;}
       $("statusButton").hidden=!state.awaiting_confirmation;
     }
     async function refresh(){try{render(await request("/api/state"));}catch(_error){}setTimeout(refresh,550);}
