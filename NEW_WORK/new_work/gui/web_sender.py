@@ -539,8 +539,7 @@ def _backend_process(port: int, token: str) -> None:
                     item["send_status"] = "실패"
                     item["error"] = "OCR 결과를 찾지 못했습니다."
                     batch["status"] = "partial"
-                    batch["error"] = item["error"]
-                break
+                continue
             try:
                 create_work_package(
                     package, job_id=transfer_id,
@@ -575,15 +574,13 @@ def _backend_process(port: int, token: str) -> None:
                     item["job_id"] = exc.job_id
                     item["error"] = str(exc)
                     batch["status"] = "partial"
-                    batch["error"] = str(exc)
-                break
+                continue
             except Exception as exc:
                 with batch_lock:
                     item["send_status"] = "실패"
                     item["error"] = str(exc)
                     batch["status"] = "partial"
-                    batch["error"] = str(exc)
-                break
+                continue
             else:
                 with batch_lock:
                     item["send_status"] = "Relay 등록"
@@ -596,8 +593,14 @@ def _backend_process(port: int, token: str) -> None:
                 batch["error"] = ""
             elif batch_cancel_event.is_set():
                 batch["status"] = "cancelled"
-            elif batch["status"] == "sending":
+            else:
                 batch["status"] = "partial"
+                issues = [
+                    f"{int(item.get('index', 0)) + 1}번: {item.get('error') or item.get('send_status')}"
+                    for item in all_items
+                    if item.get("send_status") != "Relay 등록"
+                ]
+                batch["error"] = "일부 신분증을 전송하지 못했습니다 · " + " / ".join(issues)
         if not emergency_state["active"]:
             try:
                 app.root.after(0, lambda: app.review_status.set(
