@@ -220,7 +220,9 @@ def load_render_config() -> tuple[dict, bytes]:
 
     # Render's free filesystem is ephemeral. Job payloads still use this local
     # directory, while safety state is persisted separately in Neon Postgres.
-    data_dir = Path(os.environ.get("KYEONGWAN_RELAY_DATA_DIR", "/tmp/kyeongwan-relay"))
+    # Render uses a free Web Service here; ignore any stale /var/data setting
+    # left from the former Persistent Disk configuration.
+    data_dir = Path("/tmp/kyeongwan-relay")
     config = {
         "host": "0.0.0.0",
         "port": port,
