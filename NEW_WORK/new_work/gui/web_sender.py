@@ -270,8 +270,9 @@ def _backend_process(port: int, token: str) -> None:
     ]
     batch: dict[str, object] = {
         "id": "", "portal": "SK", "status": "idle", "error": "", "items": [],
-        "expected_count": 0,
+        "expected_count": 0, "auto_send_requested": False,
     }
+    auto_batch_send_state = {"scheduled": False}
     batch_cancel_event = threading.Event()
     emergency_state = {"active": False, "status": "", "error": "", "checking": False}
     receiver_presence_state = {
@@ -286,6 +287,7 @@ def _backend_process(port: int, token: str) -> None:
                 "id": batch["id"], "portal": batch["portal"],
                 "status": batch["status"], "error": batch["error"],
                 "expected_count": batch["expected_count"],
+                "auto_send_requested": bool(batch.get("auto_send_requested")),
                 "items": [
                     {key: item.get(key) for key in (
                         "id", "index", "name", "ocr_status", "code", "type_label",
@@ -428,7 +430,7 @@ def _backend_process(port: int, token: str) -> None:
                 and field not in {entry["key"] for entry in item["fields"]}
             ]
 
-    def _start_batch_send() -> None:
+    def _start_batch_send() -> dict[str, object]:
         store = app._selected_store()
         if store is None or not store.relay_station_id:
             raise ValueError("전송 대상을 선택하고 Relay 자리 ID를 설정하세요.")
@@ -436,22 +438,36 @@ def _backend_process(port: int, token: str) -> None:
             raise ValueError(app._relay_config_error or "Relay 설정을 확인하세요.")
         with batch_lock:
             items = sorted(batch["items"], key=lambda row: row.get("index", 0))
-            if len(items) < 2 or batch["status"] not in {"reviewing", "partial"}:
+            if len(items) < 2 or batch["status"] not in {
+                "reviewing", "partial", "waiting_ocr",
+            }:
                 raise ValueError("전송할 검토 묶음이 없습니다.")
             if len(items) != batch["expected_count"]:
-                raise ValueError("선택한 모든 신분증의 OCR 준비를 마친 뒤 전송하세요.")
+                raise ValueError("선택한 신분증 업로드가 모두 끝난 뒤 전송을 누르세요.")
+            failed = [item for item in items if item.get("ocr_status") == "실패"]
+            if failed:
+                batch["auto_send_requested"] = False
+                batch["status"] = "reviewing"
+                names = ", ".join(str(item.get("name", "신분증")) for item in failed)
+                batch["error"] = f"OCR 실패 항목이 있어 자동 전송을 멈췄습니다: {names}"
+                raise ValueError(batch["error"])
             if any(item.get("ocr_status") != "완료" for item in items):
-                raise ValueError("OCR가 완료되지 않은 신분증이 있습니다.")
-            if any(not item.get("reviewed") for item in items):
-                raise ValueError("모든 신분증을 하나씩 확인하고 저장하세요.")
+                batch["auto_send_requested"] = True
+                batch["status"] = "waiting_ocr"
+                batch["error"] = ""
+                return {"message": "업로드가 끝났습니다. OCR 완료 후 묶음을 자동 전송합니다."}
             if any(not item.get("code") for item in items):
-                raise ValueError("모든 신분증의 종류를 선택하세요.")
+                batch["auto_send_requested"] = False
+                batch["status"] = "reviewing"
+                batch["error"] = "OCR에서 신분증 종류를 찾지 못한 항목이 있습니다. 해당 종류를 지정한 뒤 다시 전송하세요."
+                raise ValueError(batch["error"])
             if any(item.get("send_status") == "확인 필요" for item in items):
                 raise ValueError("Relay 작업 상태를 먼저 확인하세요.")
             pending = [item for item in items if item.get("send_status") != "Relay 등록"]
             if not pending:
                 raise ValueError("모든 신분증이 이미 Relay에 등록되었습니다.")
             batch["status"] = "sending"
+            batch["auto_send_requested"] = False
             batch["error"] = ""
             portal = str(batch["portal"])
             batch_id = str(batch["id"])
@@ -463,6 +479,40 @@ def _backend_process(port: int, token: str) -> None:
             daemon=True,
             name="new-work-batch-send",
         ).start()
+        return {"message": "OCR 결과를 준비해 묶음 전송을 시작합니다."}
+
+    def _maybe_start_auto_batch_send() -> None:
+        with batch_lock:
+            if (not batch.get("auto_send_requested")
+                    or batch.get("status") != "waiting_ocr"):
+                return
+            items = batch["items"]
+            if (len(items) != batch["expected_count"]
+                    or any(item.get("ocr_status") in {"업로드 중", "대기 중", "인식 중"}
+                           for item in items)
+                    or auto_batch_send_state["scheduled"]):
+                return
+            auto_batch_send_state["scheduled"] = True
+
+        def start_when_idle() -> None:
+            auto_batch_send_state["scheduled"] = False
+            with batch_lock:
+                if (not batch.get("auto_send_requested")
+                        or batch.get("status") != "waiting_ocr"):
+                    return
+            try:
+                _start_batch_send()
+            except Exception as exc:
+                with batch_lock:
+                    if batch.get("status") == "waiting_ocr":
+                        batch["auto_send_requested"] = False
+                        batch["status"] = "reviewing"
+                        batch["error"] = str(exc)
+
+        try:
+            app.root.after(0, start_when_idle)
+        except Exception:
+            auto_batch_send_state["scheduled"] = False
 
     def _send_batch_worker(
         batch_id: str, all_items: list[dict[str, object]],
@@ -817,13 +867,19 @@ def _backend_process(port: int, token: str) -> None:
                         batch.update({
                             "id": str(uuid4()), "portal": app.portal_var.get(),
                             "status": "reviewing", "error": "", "items": [],
-                            "expected_count": count,
+                            "expected_count": count, "auto_send_requested": False,
                         })
                         result["value"] = {"batch_id": batch["id"]}
                     elif action == "batch_update":
                         update_batch_item(data)
                     elif action == "batch_cancel":
                         with batch_lock:
+                            if batch["status"] == "waiting_ocr":
+                                batch["auto_send_requested"] = False
+                                batch["status"] = "reviewing"
+                                batch["error"] = "자동 전송 예약을 취소했습니다."
+                                result["value"] = {"message": "OCR 후 자동 전송 예약을 취소했습니다."}
+                                return
                             if batch["status"] in {"sending", "partial", "checking"}:
                                 raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
                             if any(
@@ -837,10 +893,10 @@ def _backend_process(port: int, token: str) -> None:
                             shutil.rmtree(batch_dir, ignore_errors=True)
                             batch.update({
                                 "id": "", "status": "closed", "error": "", "items": [],
-                                "expected_count": 0,
+                                "expected_count": 0, "auto_send_requested": False,
                             })
                     elif action == "batch_send":
-                        _start_batch_send()
+                        result["value"] = _start_batch_send()
                     elif action == "batch_check":
                         _check_batch_status()
                     elif action == "batch_close":
@@ -853,7 +909,7 @@ def _backend_process(port: int, token: str) -> None:
                             shutil.rmtree(batch_dir, ignore_errors=True)
                             batch.update({
                                 "id": "", "status": "closed", "error": "", "items": [],
-                                "expected_count": 0,
+                                "expected_count": 0, "auto_send_requested": False,
                             })
                     elif action == "reset":
                         app._reset_sender_session()
@@ -1188,11 +1244,13 @@ def _backend_process(port: int, token: str) -> None:
                         "width": width, "height": height,
                         "ocr_status": "완료", "error": "", "fields": fields,
                     })
+                _maybe_start_auto_batch_send()
             except Exception as exc:
                 with batch_lock:
                     if requested_batch_id == batch["id"]:
                         item["ocr_status"] = "실패"
                         item["error"] = str(exc)
+                _maybe_start_auto_batch_send()
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
