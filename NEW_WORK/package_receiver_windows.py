@@ -100,7 +100,9 @@ def main() -> int:
                 json.dumps(provisioning, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            command.extend(("--add-data", f"{profile};new_work/relay-provisioning.json"))
+            # PyInstaller's destination is a directory; the source basename is
+            # retained, so this lands at _MEIPASS/new_work/relay-provisioning.json.
+            command.extend(("--add-data", f"{profile};new_work"))
             command.append("receiver_run.py")
             subprocess.run(command, check=True, cwd=root)
     else:
