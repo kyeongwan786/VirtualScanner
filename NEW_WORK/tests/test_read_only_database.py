@@ -34,9 +34,9 @@ class ReadOnlyDatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def test_kt_select_returns_exact_latest_ten_fields_preserving_null_and_empty(self):
+    def test_kt_select_returns_exact_latest_fields_preserving_null_and_empty(self):
         row = fetch_latest_kt_data(self.database_path)
-        self.assertEqual(len(row), 10)
+        self.assertEqual(len(row), len(KT_PAPER_FIELDS))
         self.assertEqual(row["CUST_NM"], "new-CUST_NM")
         self.assertIsNone(row["ISUE_DT"])
         self.assertEqual(row["DRV_LICEN_ISUE_NUM"], "")
