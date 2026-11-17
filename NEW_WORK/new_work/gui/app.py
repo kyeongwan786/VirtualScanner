@@ -1392,7 +1392,7 @@ class NewWorkApp:
         )
         self.ocr_button.grid(row=0, column=0, sticky="ns", padx=(0, 9))
         ttk.Label(
-            id_drop, text="신분증 JPG/JPEG/PNG 또는 PDF 드래그 앤 드롭\n(PDF는 첫 페이지를 OCR에 사용)",
+            id_drop, text="신분증 JPG/JPEG/PNG 또는 PDF 드래그 앤 드롭\n(PDF 첫 페이지를 JPG로 변환해 OCR)",
             anchor="center", justify="center", style="DropZoneMuted.TLabel",
         ).grid(row=0, column=1, sticky="ew")
         self.ocr_run_button = RoundedActionButton(
@@ -2758,9 +2758,8 @@ class NewWorkApp:
             job_id = job_id or str(uuid4())
             identity_directory = default_job_directory() / job_id / "identity"
             identity_directory.mkdir(parents=True, exist_ok=True)
-            staged_image = identity_directory / f"identity{path.suffix.lower()}"
-            if path.expanduser().resolve() != staged_image.resolve():
-                shutil.copy2(path, staged_image)
+            staged_image = identity_directory / "identity.jpg"
+            self._source_image.save(staged_image, format="JPEG", quality=95, optimize=True)
         except Exception as exc:
             messagebox.showerror(
                 "이미지 준비 실패", f"신분증 이미지를 작업 폴더에 준비하지 못했습니다: {exc}"
@@ -2860,17 +2859,17 @@ class NewWorkApp:
         # If documents were added first, attach the ID image to that same job.
         reuse_job = self.draft is None and self._document_job_id is not None
         job_id = self._document_job_id if reuse_job else str(uuid4())
-        extra_identity_pages: tuple[Path, ...] = ()
         original_identity_pdf = path if path.suffix.casefold() == ".pdf" else None
         if path.suffix.casefold() == ".pdf":
             rendered_identity = default_job_directory() / job_id / "identity_pdf_pages"
             try:
-                identity_pages = render_pdf_to_jpegs(path, rendered_identity)
+                identity_pages = render_pdf_to_jpegs(
+                    path, rendered_identity, first_page_only=True
+                )
             except Exception as exc:
                 messagebox.showerror("신분증 PDF 변환 실패", str(exc), parent=self.root)
                 return
             path = identity_pages[0]
-            extra_identity_pages = identity_pages[1:]
         if not self._load_image(path, job_id=job_id):
             return
         self._job_sent = False
@@ -2885,24 +2884,6 @@ class NewWorkApp:
         if not reuse_job:
             self._document_jobs.clear()
             self._refresh_document_table()
-        if self.version == "v2" and extra_identity_pages and original_identity_pdf is not None:
-            documents_root = default_job_directory() / job_id / "documents"
-            key = str(uuid4())
-            output_directory = documents_root / f"{key}_{original_identity_pdf.stem}_extra_pages"
-            try:
-                output_directory.mkdir(parents=True, exist_ok=False)
-                for page_index, source_page in enumerate(extra_identity_pages, start=1):
-                    shutil.copy2(source_page, output_directory / f"{page_index:03d}.jpg")
-            except OSError as exc:
-                shutil.rmtree(output_directory, ignore_errors=True)
-                messagebox.showerror("신분증 PDF 추가 페이지 준비 실패", str(exc), parent=self.root)
-            else:
-                self._document_jobs.append({
-                    "key": key, "source": original_identity_pdf, "output": output_directory,
-                    "status": "변환 완료", "pages": f"추가 {len(extra_identity_pages)}페이지",
-                    "page_count": len(extra_identity_pages), "started_at": perf_counter(),
-                    "elapsed_seconds": 0.0,
-                })
         if original_identity_pdf is not None and hasattr(self, "id_image_name"):
             self.id_image_name.set(display_name)
         self._refresh_package_summary()

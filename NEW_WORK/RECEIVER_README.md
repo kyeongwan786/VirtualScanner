@@ -5,7 +5,7 @@ SK/KT 결과를 적용하므로 Receiver가 필요하지 않다.
 
 NEW_WORK central and Receiver use the existing `KyeongwanReceiver` HTTPS relay. The central PC uploads its already prepared ZIP as one archive (split into 40 MiB chunks only when needed), with reviewed portal metadata. Receiver downloads and verifies that ZIP, stores it in a local folder, then acknowledges receipt. It does not write SK/KT portal data on arrival: the operator reviews the identity type and presses **신분증 확인** in Receiver first. Documents-only packages are acknowledged after local storage and never change SK/KT identity data. This replaces one relay upload and download request per image. It does not require an SMB share or an inbound port on the intake PC.
 
-The sender keeps the two input roles separate from file format. The identity area accepts JPG/JPEG/PNG or PDF; a PDF's first page is used for identity preview/OCR and later pages are added to the document scan queue. The document area accepts PDF/JPG/JPEG/PNG; PDFs become one scanner JPG per page and image files become one scanner JPG page each. These normalized pages use the same Receiver and TWAIN queue contract.
+The sender keeps the two input roles separate from file format. The identity area accepts JPG/JPEG/PNG or PDF and normalizes the selected identity image to JPG before identity OCR. For an identity PDF, only its first page is used as the identity image; remaining pages are not added to the document queue. Add documents separately in the document area. The document area accepts PDF/JPG/JPEG/PNG; PDFs become one scanner JPG per page and image files become one scanner JPG page each. These normalized pages use the same Receiver and TWAIN queue contract.
 
 ## Relay service
 

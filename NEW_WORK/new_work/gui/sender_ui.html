@@ -250,7 +250,7 @@
           </div>
           <div class="dropzone" id="idDrop">
             <button class="button primary" onclick="document.getElementById('idInput').click()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span id="idButtonText">신분증 파일 선택</span></button>
-            <div class="drop-copy"><strong>신분증 파일을 여기에 놓으세요</strong>JPG · JPEG · PNG · PDF(첫 페이지 OCR) · 여러 장 묶음 검토</div>
+            <div class="drop-copy"><strong>신분증 파일을 여기에 놓으세요</strong>JPG · JPEG · PNG · PDF(첫 페이지를 JPG로 변환해 OCR) · 여러 장 묶음 검토</div>
             <button class="button soft" id="ocrButton">OCR 다시 실행</button>
             <input id="idInput" type="file" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf" multiple hidden>
           </div>
@@ -286,7 +286,7 @@
           </div>
           <div class="subhead" style="margin:13px 0 0"><h3 id="pdfCount">서류 목록 (0건)</h3><button class="button" id="clearPdf">목록 비우기</button></div>
           <div class="pdf-list" id="pdfList"><div class="pdf-empty" id="pdfEmpty">추가한 서류가 없습니다</div></div>
-          <p class="panel-note">신분증 PDF는 첫 페이지를 OCR에 쓰고, 나머지 페이지는 스캔 서류로 함께 전송합니다.</p>
+          <p class="panel-note">신분증 PDF는 첫 페이지를 JPG로 변환해 신분증 OCR에 사용합니다. 서류로 보낼 파일은 서류 영역에 따로 추가하세요.</p>
         </article>
       </section>
 
@@ -309,11 +309,11 @@
   <dialog class="settings-dialog" id="relayDialog"><h2 class="settings-title">Relay 설정</h2><p class="settings-desc">Render Relay 주소와 중앙 송신 토큰을 설정합니다.</p><div class="settings-form"><label>Relay HTTPS 주소<input id="relayUrlInput" placeholder="https://example.onrender.com"></label><label>중앙 송신 토큰<input id="relayTokenInput" type="password" autocomplete="new-password" placeholder="새 토큰 입력 시 교체"></label><div class="saved-token-state" id="savedTokenState" role="status"></div><p class="settings-desc token-help">토큰은 보안상 다시 표시하지 않습니다. 새 토큰을 입력하면 교체되고, 비워 두면 현재 저장된 토큰을 유지합니다.</p></div><div class="settings-actions"><button class="button" data-close="relayDialog">닫기</button><button class="button primary" id="saveRelay">Relay 설정 저장</button></div></dialog>
   <dialog class="batch-dialog" id="batchDialog">
     <div class="batch-shell">
-      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50개를 선택할 수 있습니다. JPG/JPEG/PNG/PDF를 섞어 올릴 수 있으며 PDF는 첫 페이지를 OCR에 쓰고 나머지는 스캔 페이지로 보냅니다.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
+      <header class="batch-head"><div><div class="batch-title">신분증 묶음 검토</div><div class="batch-subtitle">최대 50개를 선택할 수 있습니다. JPG/JPEG/PNG/PDF를 섞어 올릴 수 있으며 PDF는 첫 페이지를 JPG로 변환해 신분증 OCR에 사용합니다. 서류는 서류 영역에 따로 추가하세요.</div></div><div class="batch-progress" id="batchProgress">준비 중</div></header>
       <div class="batch-work">
         <nav class="batch-list" id="batchList"></nav>
         <section class="batch-editor" id="batchEditor">
-          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다. 신분증 PDF는 첫 페이지를 OCR에 사용합니다.</div></div>
+          <div class="batch-preview-panel"><div class="batch-section-title" id="batchImageTitle">신분증 이미지 · idCrop 조정</div><div class="batch-image-area" id="batchImageArea"><div class="batch-image-empty" id="batchImageEmpty">신분증 이미지를 받는 중…</div><div class="batch-image-box" id="batchImageBox"><img id="batchIdentityImage" alt="신분증 미리보기"><div class="batch-crop" id="batchCrop"></div></div></div><div class="batch-image-note" id="batchImageNote">이미지가 도착하면 바로 미리보기를 표시합니다. 신분증 PDF는 첫 페이지를 JPG로 변환해 OCR에 사용합니다.</div></div>
           <div class="batch-fields-panel"><div class="batch-section-title">OCR 결과 · 확인 및 수정</div><div class="batch-pdf-tools" id="batchPdfTools"><label class="batch-defer-label"><input id="batchDefer" type="checkbox">서류와 함께 뒤에 전송</label><span class="batch-file-picker"><button class="button" id="batchPdfAdd" type="button">서류 붙이기</button><input id="batchPdfInput" class="batch-file-input" type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple></span><div class="batch-pdf-list" id="batchPdfList"></div></div><div class="batch-fields" id="batchFields"></div></div>
         </section>
       </div>

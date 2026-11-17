@@ -32,8 +32,9 @@ def render_pdf_to_jpegs(
     *,
     dpi: int = DEFAULT_DPI,
     quality: int = JPEG_QUALITY,
+    first_page_only: bool = False,
 ) -> tuple[Path, ...]:
-    """Render each PDF page into a numbered JPG without changing the source."""
+    """Render PDF pages, or only page one, into numbered JPGs."""
     try:
         import pymupdf as fitz
     except ImportError as exc:
@@ -59,6 +60,8 @@ def render_pdf_to_jpegs(
         output_directory.mkdir(parents=True, exist_ok=False)
         scale = dpi / 72.0
         for index, page in enumerate(document):
+            if first_page_only and index > 0:
+                break
             pixmap = page.get_pixmap(
                 matrix=fitz.Matrix(scale, scale),
                 colorspace=fitz.csRGB,

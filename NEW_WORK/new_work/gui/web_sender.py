@@ -1123,35 +1123,15 @@ def _backend_process(port: int, token: str) -> None:
             try:
                 identity_source = temporary
                 converted_directory = batch_dir / "identity_pdf_pages"
-                extra_identity_pages = ()
                 if temporary.suffix.casefold() == ".pdf":
-                    identity_pages = render_pdf_to_jpegs(temporary, converted_directory)
+                    identity_pages = render_pdf_to_jpegs(
+                        temporary, converted_directory, first_page_only=True
+                    )
                     identity_source = identity_pages[0]
-                    extra_identity_pages = identity_pages[1:]
                 with Image.open(identity_source) as opened:
                     staged = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = staged.size
                     staged.save(destination, format="JPEG", quality=95, optimize=True)
-                if extra_identity_pages:
-                    document_key = str(uuid4())
-                    document_dir = batch_dir / "documents" / document_key
-                    document_dir.mkdir(parents=True, exist_ok=False)
-                    safe_stem = "".join(
-                        char if char.isalnum() or char in " ._-" else "_"
-                        for char in Path(filename).stem
-                    ).strip(" .")[:100] or "identity"
-                    source_copy = document_dir / f"{safe_stem}.pdf"
-                    shutil.copy2(temporary, source_copy)
-                    output = document_dir / "pages"
-                    output.mkdir()
-                    for page_index, source_page in enumerate(extra_identity_pages, start=1):
-                        shutil.copy2(source_page, output / f"{page_index:03d}.jpg")
-                    item["documents"].append({
-                        "key": document_key, "source": source_copy, "output": output,
-                        "name": source_copy.name, "status": "변환 완료",
-                        "page_count": len(extra_identity_pages),
-                    })
-                    item["defer"] = True
                 temporary.unlink(missing_ok=True)
             except Exception as exc:
                 shutil.rmtree(batch_dir, ignore_errors=True)
