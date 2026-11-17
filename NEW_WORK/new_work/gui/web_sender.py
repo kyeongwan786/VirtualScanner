@@ -264,10 +264,9 @@ def _backend_process(port: int, token: str) -> None:
                 "items": [
                     {key: item.get(key) for key in (
                         "id", "index", "name", "ocr_status", "code", "type_label",
-                        "send_status", "job_id", "error", "reviewed", "defer",
+                        "send_status", "job_id", "error", "reviewed",
                     )}
                     | {
-                        "document_count": len(item.get("documents", [])),
                         "preview_ready": (
                             item.get("ocr_status") != "업로드 중"
                             and Path(item["path"]).is_file()
@@ -303,12 +302,6 @@ def _backend_process(port: int, token: str) -> None:
                 "fields": item["fields"], "values": dict(item["values"]),
                 "ocr_status": item["ocr_status"],
                 "reviewed": item["reviewed"],
-                "defer": item["defer"],
-                "documents": [
-                    {"key": document["key"], "name": document.get("name", Path(document["source"]).name),
-                     "page_count": document["page_count"], "status": document["status"]}
-                    for document in item["documents"]
-                ],
             }
 
     def update_batch_item(data: dict[str, object]) -> None:
@@ -366,9 +359,6 @@ def _backend_process(port: int, token: str) -> None:
                     if extracted.get(field) and not values.get(field, "").strip():
                         values[field] = extracted[field]
 
-            documents = item.get("documents", [])
-            defer = bool(data.get("defer", item.get("defer", False))) or bool(documents)
-
             source = Image.open(item["path"]).convert("RGB")
             portal = str(batch["portal"])
             is_crop_type = portal == "KT" or code in SK_ID_CROP_CODES
@@ -398,7 +388,6 @@ def _backend_process(port: int, token: str) -> None:
                 "detection": detection, "crop_bounds": bounds,
                 "crop_size": crop_size, "crop_fallback": fallback,
                 "crop_manual": crop_manual,
-                "defer": defer,
                 "fields": [
                     {"key": field, "label": title}
                     for field, title in FOCUS_FIELDS.get(
@@ -435,7 +424,6 @@ def _backend_process(port: int, token: str) -> None:
             if any(item.get("send_status") == "확인 필요" for item in items):
                 raise ValueError("Relay 작업 상태를 먼저 확인하세요.")
             pending = [item for item in items if item.get("send_status") != "Relay 등록"]
-            pending.sort(key=lambda item: bool(item.get("defer") or item.get("documents")))
             if not pending:
                 raise ValueError("모든 신분증이 이미 Relay에 등록되었습니다.")
             batch["status"] = "sending"
@@ -484,7 +472,7 @@ def _backend_process(port: int, token: str) -> None:
                     station_id=store.relay_station_id, carrier=carrier,
                     result=result, detection=item["detection"],
                     reviewed_values=dict(item["values"]),
-                    document_jobs=list(item.get("documents", [])),
+                    document_jobs=[],
                 )
                 job_id = send_work_package(
                     relay_config, store.relay_station_id, package,
@@ -790,25 +778,6 @@ def _backend_process(port: int, token: str) -> None:
                         result["value"] = {"batch_id": batch["id"]}
                     elif action == "batch_update":
                         update_batch_item(data)
-                    elif action == "batch_remove_pdf":
-                        item_id = str(data.get("item_id", ""))
-                        document_key = str(data.get("document_key", ""))
-                        with batch_lock:
-                            item = next(
-                                (row for row in batch["items"] if row["id"] == item_id), None,
-                            )
-                            if item is None or item.get("send_status") != "대기":
-                                raise ValueError("PDF를 제거할 신분증을 찾지 못했습니다.")
-                            document = next(
-                                (row for row in item.get("documents", [])
-                                 if row["key"] == document_key), None,
-                            )
-                            if document is None:
-                                raise ValueError("PDF를 찾지 못했습니다.")
-                            item["documents"].remove(document)
-                            shutil.rmtree(Path(document["source"]).parent, ignore_errors=True)
-                            if not item["documents"]:
-                                item["defer"] = False
                     elif action == "batch_cancel":
                         with batch_lock:
                             if batch["status"] in {"sending", "partial", "checking"}:
@@ -972,7 +941,6 @@ def _backend_process(port: int, token: str) -> None:
             kind = query.get("kind", [""])[0]
             filename = Path(query.get("name", [""])[0]).name
             batch_id = query.get("batch_id", [""])[0]
-            item_id = query.get("item_id", [""])[0]
             try:
                 item_index = int(query.get("index", ["0"])[0])
             except ValueError:
@@ -1014,70 +982,13 @@ def _backend_process(port: int, token: str) -> None:
                     temporary.unlink(missing_ok=True)
                 else:
                     if batch_id:
-                        self._add_batch_pdf(batch_id, item_id, safe_name, temporary)
-                        self._reply(200, {"ok": True, "name": safe_name})
-                        return
+                        raise ValueError("서류는 묶음 신분증 화면이 아니라 서류 영역에 추가하세요.")
                     self._dispatch("web_document", {"path": str(temporary)})
                     temporary_uploads[str(temporary)] = "document"
                 self._reply(200, {"ok": True, "name": safe_name})
             except Exception as exc:
                 temporary.unlink(missing_ok=True)
                 self._reply(400, {"ok": False, "error": str(exc)})
-
-        def _add_batch_pdf(
-            self, requested_batch_id: str, item_id: str, filename: str, temporary: Path,
-        ) -> None:
-            from new_work.pdf_render import render_document_to_jpegs
-
-            if not item_id:
-                raise ValueError("PDF를 연결할 신분증을 선택하세요.")
-            with batch_lock:
-                if requested_batch_id != batch["id"] or batch["status"] != "reviewing":
-                    raise ValueError("신분증 묶음 검토 작업이 만료되었습니다.")
-                item = next((row for row in batch["items"] if row["id"] == item_id), None)
-                if item is None or item.get("send_status") != "대기":
-                    raise ValueError("PDF를 연결할 신분증을 찾지 못했습니다.")
-                if not item.get("defer"):
-                    raise ValueError("먼저 이 신분증을 PDF와 함께 뒤에 보내기로 표시하세요.")
-                previous_bytes = sum(
-                    Path(row["path"]).stat().st_size
-                    for row in batch["items"] if Path(row["path"]).is_file()
-                )
-                previous_bytes += sum(
-                    Path(document["source"]).stat().st_size
-                    for row in batch["items"] for document in row.get("documents", [])
-                    if Path(document["source"]).is_file()
-                )
-                if previous_bytes + temporary.stat().st_size > 512 * 1024 * 1024:
-                    raise ValueError("신분증과 서류 묶음이 512 MiB 제한을 초과합니다.")
-                document_key = str(uuid4())
-                item_dir = Path(item["path"]).parent.parent
-                docs_root = item_dir / "documents"
-                docs_root.mkdir(parents=True, exist_ok=True)
-                safe_stem = "".join(
-                    char if char.isalnum() or char in " ._-" else "_"
-                    for char in Path(filename).stem
-                ).strip(" .")[:100] or "document"
-                document_dir = docs_root / document_key
-                document_dir.mkdir(parents=True, exist_ok=False)
-                source = document_dir / f"{safe_stem}{Path(filename).suffix.casefold()}"
-                output = document_dir / "pages"
-                temporary.replace(source)
-            try:
-                pages = render_document_to_jpegs(source, output)
-            except Exception:
-                shutil.rmtree(source.parent, ignore_errors=True)
-                raise
-            with batch_lock:
-                current = next((row for row in batch["items"] if row["id"] == item_id), None)
-                if requested_batch_id != batch["id"] or current is not item:
-                    shutil.rmtree(source.parent, ignore_errors=True)
-                    raise ValueError("신분증 묶음 검토가 취소되었습니다.")
-                item.setdefault("documents", []).append({
-                    "key": document_key, "source": source, "output": output,
-                    "name": source.name, "status": "변환 완료", "page_count": len(pages),
-                })
-                item["defer"] = True
 
         def _add_batch_identity(
             self, requested_batch_id: str, item_index: int,
@@ -1115,8 +1026,8 @@ def _backend_process(port: int, token: str) -> None:
                     "crop_fallback": False, "crop_manual": False,
                     "width": 0, "height": 0,
                     "ocr_status": "업로드 중", "send_status": "대기", "job_id": "",
-                    "error": "", "reviewed": False, "defer": False,
-                    "documents": [], "fields": [],
+                    "error": "", "reviewed": False,
+                    "fields": [],
                     "id_type_options": ["유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()],
                 }
                 batch["items"].append(item)

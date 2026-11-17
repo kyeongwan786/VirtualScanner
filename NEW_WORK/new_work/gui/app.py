@@ -1330,7 +1330,7 @@ class NewWorkApp:
             font=("Segoe UI", 15, "bold"),
         ).grid(row=0, column=1, sticky="sw", pady=(8, 0))
         tk.Label(
-            header, text="신분증과 서류를 넣으면 동시에 처리한 뒤 선택한 자리로 전송합니다.",
+            header, text="각 영역의 파일은 해당 작업으로 따로 처리합니다. 신분증과 서류를 함께 전송할 수도 있습니다.",
             bg="#1A4178", fg="#D5E4FA", font=("Segoe UI", 9),
         ).grid(row=1, column=1, sticky="nw", pady=(0, 8))
         self.relay_header_var = tk.StringVar()
