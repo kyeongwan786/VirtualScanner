@@ -525,9 +525,9 @@ def _backend_process(port: int, token: str) -> None:
         from new_work.job_package import create_work_package
         from new_work.domain import OcrResult
 
-        for item in pending:
+        def send_one(item: dict[str, object]) -> None:
             if batch_cancel_event.is_set():
-                break
+                return
             with batch_lock:
                 item["send_status"] = "전송 중"
                 item["error"] = ""
@@ -539,8 +539,7 @@ def _backend_process(port: int, token: str) -> None:
                 with batch_lock:
                     item["send_status"] = "실패"
                     item["error"] = "OCR 결과를 찾지 못했습니다."
-                    batch["status"] = "partial"
-                continue
+                return
             try:
                 create_work_package(
                     package, job_id=transfer_id,
@@ -566,27 +565,40 @@ def _backend_process(port: int, token: str) -> None:
                 with batch_lock:
                     item["send_status"] = "취소"
                     item["error"] = str(exc)
-                    batch["status"] = "cancelled"
-                    batch["error"] = str(exc)
-                break
+                return
             except DeliveryPendingError as exc:
                 with batch_lock:
                     item["send_status"] = "확인 필요"
                     item["job_id"] = exc.job_id
                     item["error"] = str(exc)
-                    batch["status"] = "partial"
-                continue
+                return
             except Exception as exc:
                 with batch_lock:
                     item["send_status"] = "실패"
                     item["error"] = str(exc)
-                    batch["status"] = "partial"
-                continue
+                return
             else:
                 with batch_lock:
                     item["send_status"] = "Relay 등록"
                     item["job_id"] = job_id
                     item["error"] = ""
+
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(pending)),
+            thread_name_prefix="new-work-batch-send",
+        ) as executor:
+            futures = {
+                executor.submit(send_one, item): item for item in pending
+            }
+            for future, item in futures.items():
+                try:
+                    future.result()
+                except Exception as exc:
+                    # Keep each item isolated so one unexpected failure cannot
+                    # prevent the rest of the selected identities from sending.
+                    with batch_lock:
+                        item["send_status"] = "실패"
+                        item["error"] = str(exc)
 
         with batch_lock:
             if all(item.get("send_status") == "Relay 등록" for item in all_items):

@@ -12,7 +12,7 @@ import time
 import stat
 import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from threading import Event, local
+from threading import Event, Lock, local
 from typing import Callable
 from urllib.parse import quote, urlsplit
 
@@ -23,6 +23,9 @@ MAX_PAGE_BYTES = 40 * 1024 * 1024
 MAX_PAGES = 100
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 _http_state = local()
+_health_cache_lock = Lock()
+_health_cache_until: dict[str, float] = {}
+_HEALTH_CACHE_SECONDS = 300
 
 
 def _trim_jpeg_zero_padding(path: Path) -> None:
@@ -259,14 +262,17 @@ def send_work_package(
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["central_token"]
     report = progress or (lambda _message: None)
-    health_status, health = _request(f"{relay_url}/health", token)
-    check_cancelled()
-    if (health_status != 200 or not isinstance(health, dict)
-            or "new-work-zip-v1" not in health.get("features", [])):
-        raise TransferError(
-            "Render Relay가 NEW_WORK ZIP 전송 API를 지원하지 않습니다. "
-            "저장소의 KyeongwanReceiver/relay_server.py 변경을 Render에 배포한 뒤 다시 시도하세요."
-        )
+    with _health_cache_lock:
+        if _health_cache_until.get(relay_url, 0) <= time.monotonic():
+            health_status, health = _request(f"{relay_url}/health", token)
+            check_cancelled()
+            if (health_status != 200 or not isinstance(health, dict)
+                    or "new-work-zip-v1" not in health.get("features", [])):
+                raise TransferError(
+                    "Render Relay가 NEW_WORK ZIP 전송 API를 지원하지 않습니다. "
+                    "저장소의 KyeongwanReceiver/relay_server.py 변경을 Render에 배포한 뒤 다시 시도하세요."
+                )
+            _health_cache_until[relay_url] = time.monotonic() + _HEALTH_CACHE_SECONDS
     with zipfile.ZipFile(package_path, "r") as archive:
         work_package, page_paths = _package_metadata(archive, station_id)
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
@@ -275,12 +281,6 @@ def send_work_package(
         archive_size = archive_path.stat().st_size
         if not 1 <= archive_size <= MAX_ARCHIVE_BYTES:
             raise TransferError("작업 ZIP이 Relay의 512 MiB 제한을 초과했습니다.")
-        archive_sha256 = hashlib.sha256()
-        with archive_path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                check_cancelled()
-                archive_sha256.update(chunk)
-        archive_sha256_hex = archive_sha256.hexdigest()
         chunk_count = (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES
         document_count = len(work_package["documents"])
         has_identity = work_package.get("identity_filename") is not None
@@ -299,7 +299,6 @@ def send_work_package(
             "payload_type": "new-work-zip-v1",
             "work_package": work_package,
             "archive_size": archive_size,
-            "archive_sha256": archive_sha256_hex,
         }
         created = False
         completion_started = False
@@ -332,14 +331,16 @@ def send_work_package(
                         raise TransferError(f"Relay가 ZIP 조각 {number}를 받지 못했습니다: {result}")
                     report(f"Relay ZIP 전송 중 · {number}/{chunk_count}")
                     check_cancelled()
-            if upload_size != archive_size or upload_digest.hexdigest() != archive_sha256_hex:
-                raise TransferError("전송 중 작업 ZIP이 변경되었습니다. Relay 작업을 취소합니다.")
+            if upload_size != archive_size:
+                raise TransferError("전송 중 작업 ZIP 크기가 변경되었습니다. Relay 작업을 취소합니다.")
 
             check_cancelled()
             completion_started = True
             status, result = _request(
                 f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/complete",
-                token, method="POST", body=b"", content_type="application/json",
+                token, method="POST",
+                body=json.dumps({"archive_sha256": upload_digest.hexdigest()}).encode("ascii"),
+                content_type="application/json",
             )
             if status not in (200, 201):
                 raise TransferError(f"Relay가 작업 완료를 확인하지 못했습니다: {result}")

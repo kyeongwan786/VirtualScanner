@@ -336,6 +336,8 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except OSError:
             pass
         self.lock = threading.RLock()
+        self.page_write_condition = threading.Condition(self.lock)
+        self.inflight_page_writes: dict[tuple[str, int], int] = {}
         # Volatile heartbeat timestamps; Receivers refresh these through their
         # existing two-second emergency-command poll.
         self.station_last_seen: dict[str, datetime] = {}
@@ -524,7 +526,7 @@ class RelayHTTPServer(ThreadingHTTPServer):
             return result
 
     def activate_emergency(self) -> int:
-        with self.lock:
+        with self.page_write_condition:
             if not self.emergency_storage_persistent():
                 raise OSError("durable emergency state storage is unavailable")
             if self.emergency_active():
@@ -537,6 +539,10 @@ class RelayHTTPServer(ThreadingHTTPServer):
                 "results": {},
                 "sender_result": {},
             })
+            # A PUT reserved before the lock was recorded must finish (and
+            # observe the lock) before payload directories are removed.
+            while self.inflight_page_writes:
+                self.page_write_condition.wait()
             removed = 0
             for item in list(self.jobs_dir.iterdir()):
                 try:
@@ -751,15 +757,23 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not metadata or metadata.get("station_id") != station_id or metadata.get("status") != "queued" or number > metadata.get("page_count", 0):
                     self._reply(404, {"error": "job page not found"})
                     return
-                try:
-                    encrypted = (job / f"{number:03d}.fernet").read_bytes()
-                    content = self.server.cipher.decrypt(encrypted)
-                except (OSError, InvalidToken):
-                    self._reply(500, {"error": "stored page is unavailable"})
+                encrypted_path = job / f"{number:03d}.fernet"
+                payload_type = metadata.get("payload_type")
+            try:
+                # Chunk reads and Fernet decryption can involve tens of MiB;
+                # do not serialize them with other stations' metadata calls.
+                encrypted = encrypted_path.read_bytes()
+                content = self.server.cipher.decrypt(encrypted)
+            except (OSError, InvalidToken):
+                self._reply(500, {"error": "stored page is unavailable"})
+                return
+            with self.server.lock:
+                if self.server.emergency_active():
+                    self._reply(410, {"error": "relay permanently disabled by emergency command"})
                     return
             content_type = (
                 "application/octet-stream"
-                if metadata.get("payload_type") == "new-work-zip-v1"
+                if payload_type == "new-work-zip-v1"
                 else "image/jpeg"
             )
             self._reply(200, content, content_type)
@@ -914,9 +928,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             if payload_type == "new-work-zip-v1":
                 if (not isinstance(archive_size, int) or isinstance(archive_size, bool)
                         or not 1 <= archive_size <= MAX_JOB_BYTES
-                        or not isinstance(archive_sha256, str)
-                        or not re.fullmatch(r"[0-9a-f]{64}", archive_sha256)):
-                    self._reply(400, {"error": "invalid ZIP size or SHA-256"})
+                        or (archive_sha256 is not None
+                            and (not isinstance(archive_sha256, str)
+                                 or not re.fullmatch(r"[0-9a-f]{64}", archive_sha256)))):
+                    self._reply(400, {"error": "invalid ZIP size or optional SHA-256"})
                     return
             metadata = {"job_id": job_id, "station_id": station_id, "page_count": page_count, "dpi": dpi,
                         "total_bytes": 0, "status": "uploading", "payload_type": payload_type,
@@ -940,7 +955,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 details = {"source_name": source_name.replace("/", "_").replace("\\", "_")}
                 if payload_type in {"new-work-v1", "new-work-zip-v1"}:
                     details["work_package"] = work_package
-                if payload_type == "new-work-zip-v1":
+                if payload_type == "new-work-zip-v1" and archive_sha256 is not None:
                     details["archive_sha256"] = archive_sha256
                 _atomic_write(job / "details.fernet", self.server.cipher.encrypt(_json_bytes(details)))
             self._reply(201, {"status": "created", "job_id": job_id})
@@ -948,6 +963,23 @@ class RelayHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,64})/complete", path)
         if match:
             if not self._authorize_central():
+                return
+            body = self._body(64 * 1024)
+            if body is None:
+                return
+            try:
+                completion = json.loads(body.decode("utf-8")) if body else {}
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._reply(400, {"error": "completion body must be JSON"})
+                return
+            if not isinstance(completion, dict):
+                self._reply(400, {"error": "completion body must be an object"})
+                return
+            supplied_sha256 = completion.get("archive_sha256")
+            if (supplied_sha256 is not None
+                    and (not isinstance(supplied_sha256, str)
+                         or not re.fullmatch(r"[0-9a-f]{64}", supplied_sha256))):
+                self._reply(400, {"error": "invalid ZIP SHA-256"})
                 return
             job_id = match.group(1)
             with self.server.lock:
@@ -970,6 +1002,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                         and metadata.get("total_bytes") != metadata.get("archive_size")):
                     self._reply(409, {"error": "ZIP archive is incomplete"})
                     return
+                if metadata.get("payload_type") == "new-work-zip-v1":
+                    details_path = job / "details.fernet"
+                    try:
+                        details = json.loads(self.server.cipher.decrypt(
+                            details_path.read_bytes()).decode("utf-8"))
+                    except (OSError, InvalidToken, UnicodeDecodeError, json.JSONDecodeError):
+                        self._reply(500, {"error": "job details are unavailable"})
+                        return
+                    archive_sha256 = supplied_sha256 or details.get("archive_sha256")
+                    if not isinstance(archive_sha256, str) or not re.fullmatch(
+                            r"[0-9a-f]{64}", archive_sha256):
+                        self._reply(400, {"error": "ZIP SHA-256 is required"})
+                        return
+                    details["archive_sha256"] = archive_sha256
+                    _atomic_write(details_path, self.server.cipher.encrypt(_json_bytes(details)))
                 metadata["status"] = "queued"
                 _atomic_write(job / "metadata.json", _json_bytes(metadata))
             self._reply(201, {"status": "queued", "job_id": job_id})
@@ -1037,7 +1084,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         if number > MAX_PAGES or not body:
             self._reply(400, {"error": "invalid page or chunk"})
             return
-        with self.server.lock:
+        page_key = (job_id, number)
+        with self.server.page_write_condition:
             if self.server.emergency_active():
                 self._reply(410, {"error": "relay permanently disabled by emergency command"})
                 return
@@ -1058,6 +1106,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                     or not body.endswith(b"\xff\xd9")):
                 self._reply(400, {"error": "invalid JPEG page"})
                 return
+            if page_key in self.server.inflight_page_writes:
+                self._reply(409, {"error": "page upload is already in progress"})
+                return
             target = job / f"{number:03d}.fernet"
             digest = hashlib.sha256(body).hexdigest()
             if target.exists():
@@ -1071,13 +1122,41 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 self._reply(200, {"status": "duplicate", "page": number})
                 return
-            if metadata.get("total_bytes", 0) + len(body) > MAX_JOB_BYTES:
+            reserved_bytes = sum(
+                size for (reserved_job, _), size in self.server.inflight_page_writes.items()
+                if reserved_job == job_id
+            )
+            if metadata.get("total_bytes", 0) + reserved_bytes + len(body) > MAX_JOB_BYTES:
                 self._reply(413, {"error": "job exceeds the 512 MiB total limit"})
                 return
-            _atomic_write(target, self.server.cipher.encrypt(body))
-            metadata["total_bytes"] = metadata.get("total_bytes", 0) + len(body)
-            _atomic_write(job / "metadata.json", _json_bytes(metadata))
-        self._reply(201, {"status": "received", "page": number})
+            self.server.inflight_page_writes[page_key] = len(body)
+
+        # Encryption and durable chunk write can take significant time for a
+        # 40 MiB page. Keep them outside the global metadata lock so unrelated
+        # stations/jobs can make progress in parallel.
+        response_status = 201
+        response_payload = {"status": "received", "page": number}
+        try:
+            encrypted = self.server.cipher.encrypt(body)
+            _atomic_write(target, encrypted)
+            with self.server.page_write_condition:
+                metadata = self._metadata(job)
+                emergency_active = self.server.emergency_active()
+                if (emergency_active or not metadata or metadata.get("status") != "uploading"):
+                    target.unlink(missing_ok=True)
+                    response_status = 410 if emergency_active else 409
+                    response_payload = {"error": "job stopped while page was being stored"}
+                else:
+                    metadata["total_bytes"] = metadata.get("total_bytes", 0) + len(body)
+                    _atomic_write(job / "metadata.json", _json_bytes(metadata))
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        finally:
+            with self.server.page_write_condition:
+                self.server.inflight_page_writes.pop(page_key, None)
+                self.server.page_write_condition.notify_all()
+        self._reply(response_status, response_payload)
 
     def do_DELETE(self):
         if not self._authorize_central():
@@ -1089,7 +1168,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not match:
             self._reply(404, {"error": "not found"})
             return
-        with self.server.lock:
+        with self.server.page_write_condition:
             job = self._job_dir(match.group(1))
             metadata = self._metadata(job)
             if not metadata:
@@ -1101,6 +1180,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             metadata["status"] = "cancelled"
             metadata["cancelled_at"] = datetime.now(timezone.utc).isoformat()
             _atomic_write(job / "metadata.json", _json_bytes(metadata))
+            while any(job_id == match.group(1)
+                      for job_id, _ in self.server.inflight_page_writes):
+                self.server.page_write_condition.wait()
         self._reply(200, {"status": "cancelled", "job_id": match.group(1)})
 
 
