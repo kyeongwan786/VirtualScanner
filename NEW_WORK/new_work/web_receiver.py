@@ -59,7 +59,9 @@ def _parse_crop_bounds(value: object) -> tuple[int, int, int, int] | None:
 
 
 def _fallback_crop_bounds(width: int, height: int, code: str) -> tuple[int, int, int, int] | None:
-    crop_width, crop_height = (340, 406) if code == "1001" else (320, 420)
+    from new_work.image.face_crop import id_portrait_size
+
+    crop_width, crop_height = id_portrait_size(code, (width, height))
     crop_width, crop_height = min(crop_width, width), min(crop_height, height)
     if crop_width < 20 or crop_height < 20:
         return None

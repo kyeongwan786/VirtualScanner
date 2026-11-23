@@ -495,6 +495,11 @@
       batchCropManual=Boolean(payload.crop_manual);renderBatchCrop();updateBatchControls();
     }
     function batchValues(){const values={};document.querySelectorAll("#batchFields [data-field]").forEach(input=>values[input.dataset.field]=input.value);return values;}
+    function batchImageContentRect(){
+      const box=$("batchImageBox").getBoundingClientRect(),image=$("batchIdentityImage"),imageRect=image.getBoundingClientRect();
+      const width=batchItem?.image_width||1,height=batchItem?.image_height||1;
+      return{left:imageRect.left-box.left,top:imageRect.top-box.top,scaleX:imageRect.width/width,scaleY:imageRect.height/height};
+    }
     async function saveBatchItem(){
       if(!batchItem)return true;
       if(batchItem.ocr_status!=="완료")return true;
@@ -507,13 +512,14 @@
     function renderBatchCrop(){
       if(!batchItem)return;const box=$("batchCrop"),image=$("batchIdentityImage");const bounds=batchCropDrag?.bounds||batchItem.crop_bounds;
       if(!bounds||!image.clientWidth||!batchItem.image_width){box.classList.remove("visible");return;}
-      const scale=image.clientWidth/batchItem.image_width;box.classList.add("visible");box.style.left=`${bounds[0]*scale}px`;box.style.top=`${bounds[1]*scale}px`;box.style.width=`${(bounds[2]-bounds[0])*scale}px`;box.style.height=`${(bounds[3]-bounds[1])*scale}px`;box.style.setProperty("--crop-label",batchState?.portal==="KT"?'"CR.jpg"':'"idCrop"');box.classList.toggle("fallback",batchItem.crop_fallback&&!batchCropManual);
+      const area=batchImageContentRect();box.classList.add("visible");box.style.left=`${area.left+bounds[0]*area.scaleX}px`;box.style.top=`${area.top+bounds[1]*area.scaleY}px`;box.style.width=`${(bounds[2]-bounds[0])*area.scaleX}px`;box.style.height=`${(bounds[3]-bounds[1])*area.scaleY}px`;box.style.setProperty("--crop-label",batchState?.portal==="KT"?'"CR.jpg"':'"idCrop"');box.classList.toggle("fallback",batchItem.crop_fallback&&!batchCropManual);
     }
-    function batchCropAt(event){if(!batchCropDrag||!batchItem)return null;const scale=$("batchIdentityImage").clientWidth/batchItem.image_width;const dx=Math.round((event.clientX-batchCropDrag.x)/scale),dy=Math.round((event.clientY-batchCropDrag.y)/scale);const [left,top,right,bottom]=batchCropDrag.original,w=right-left,h=bottom-top;const x=Math.min(Math.max(0,left+dx),batchItem.image_width-w),y=Math.min(Math.max(0,top+dy),batchItem.image_height-h);return[x,y,x+w,y+h];}
-    $("batchCrop").addEventListener("pointerdown",event=>{if(!batchItem?.crop_bounds)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);batchCropDrag={x:event.clientX,y:event.clientY,original:[...batchItem.crop_bounds],bounds:[...batchItem.crop_bounds]};});
+    function batchCropAt(event){if(!batchCropDrag||!batchItem)return null;const dx=Math.round((event.clientX-batchCropDrag.x)/batchCropDrag.scaleX),dy=Math.round((event.clientY-batchCropDrag.y)/batchCropDrag.scaleY);const [left,top,right,bottom]=batchCropDrag.original,w=right-left,h=bottom-top;const x=Math.min(Math.max(0,left+dx),batchItem.image_width-w),y=Math.min(Math.max(0,top+dy),batchItem.image_height-h);return[x,y,x+w,y+h];}
+    $("batchCrop").addEventListener("pointerdown",event=>{if(!batchItem?.crop_bounds)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);const area=batchImageContentRect();batchCropDrag={x:event.clientX,y:event.clientY,scaleX:area.scaleX,scaleY:area.scaleY,original:[...batchItem.crop_bounds],bounds:[...batchItem.crop_bounds]};});
     $("batchCrop").addEventListener("pointermove",event=>{if(!batchCropDrag)return;batchCropDrag.bounds=batchCropAt(event);renderBatchCrop();});
     $("batchCrop").addEventListener("pointerup",event=>{if(!batchCropDrag)return;batchItem.crop_bounds=batchCropAt(event)||batchCropDrag.bounds;batchCropDrag=null;batchCropManual=true;renderBatchCrop();});
     $("batchCrop").addEventListener("pointercancel",()=>{batchCropDrag=null;renderBatchCrop();});
+    window.addEventListener("resize",()=>{renderBatchCrop();renderCrop(currentState||{});});
     function updateBatchControls(){
       const items=batchState?.items||[];const waitingAuto=batchState?.status==="waiting_ocr";const sending=["sending","checking","waiting_ocr"].includes(batchState?.status);const activeStatus=items.find(item=>item.id===batchItem?.id)?.send_status;const locked=sending||batchItem?.ocr_status!=="완료"||(activeStatus&&activeStatus!=="대기");const allQueued=items.length>=2&&items.every(item=>item.send_status==="Relay 등록");const expected=batchState?.expected_count||items.length;const uploadComplete=items.length===expected&&!batchUploading;const ocrFailed=items.some(item=>item.ocr_status==="실패");
       const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const failedCount=items.filter(item=>item.ocr_status==="실패").length;const ocrReady=items.length===expected&&ocrDone===expected;
@@ -626,8 +632,8 @@
       b=cropDrag?.bounds||pendingCropBounds||state.crop_bounds;
       if(!b||!state.image_width||!state.image_height){box.classList.remove("visible");return;}
       const area=imageContentRect();
-      box.classList.add("visible");box.style.left=`${area.left+b[0]*area.scale}px`;box.style.top=`${area.top+b[1]*area.scale}px`;
-      box.style.width=`${(b[2]-b[0])*area.scale}px`;box.style.height=`${(b[3]-b[1])*area.scale}px`;
+      box.classList.add("visible");box.style.left=`${area.left+b[0]*area.scaleX}px`;box.style.top=`${area.top+b[1]*area.scaleY}px`;
+      box.style.width=`${(b[2]-b[0])*area.scaleX}px`;box.style.height=`${(b[3]-b[1])*area.scaleY}px`;
       box.style.setProperty("--crop-label",state.portal==="KT"?'"CR.jpg"':'"idCrop"');box.classList.toggle("fallback",state.crop_fallback&&!state.crop_manual);
     }
     function render(state){
@@ -652,20 +658,29 @@
     }
     async function refresh(){try{render(await request("/api/state"));}catch(_error){}setTimeout(refresh,550);}
     function imageContentRect(){
-      const card=$("idCard").getBoundingClientRect(),w=currentState?.image_width||1,h=currentState?.image_height||1;
-      const scale=Math.min(card.width/w,card.height/h);return{left:(card.width-w*scale)/2,top:(card.height-h*scale)/2,scale,card};
+      const card=$("idCard"),cardRect=card.getBoundingClientRect(),image=$("identityImage"),imageRect=image.getBoundingClientRect();
+      const sourceWidth=currentState?.image_width||1,sourceHeight=currentState?.image_height||1;
+      const previewWidth=image.naturalWidth||sourceWidth,previewHeight=image.naturalHeight||sourceHeight;
+      const fitScale=Math.min(imageRect.width/previewWidth,imageRect.height/previewHeight);
+      const contentWidth=previewWidth*fitScale,contentHeight=previewHeight*fitScale;
+      const originLeft=cardRect.left+card.clientLeft,originTop=cardRect.top+card.clientTop;
+      return{
+        left:imageRect.left-originLeft+(imageRect.width-contentWidth)/2,
+        top:imageRect.top-originTop+(imageRect.height-contentHeight)/2,
+        scaleX:contentWidth/sourceWidth,scaleY:contentHeight/sourceHeight,
+      };
     }
     function cropBoundsAt(event){
       if(!cropDrag||!currentState)return null;
       const {image_width:w,image_height:h}=currentState;
-      const dx=Math.round((event.clientX-cropDrag.startX)/cropDrag.scale);
-      const dy=Math.round((event.clientY-cropDrag.startY)/cropDrag.scale);
+      const dx=Math.round((event.clientX-cropDrag.startX)/cropDrag.scaleX);
+      const dy=Math.round((event.clientY-cropDrag.startY)/cropDrag.scaleY);
       const [l,t,r,b]=cropDrag.original,width=r-l,height=b-t;
       const left=Math.min(Math.max(0,l+dx),w-width),top=Math.min(Math.max(0,t+dy),h-height);
       return [left,top,left+width,top+height];
     }
     const cropBox=$("idCropBox");
-    cropBox.addEventListener("pointerdown",(event)=>{if(!currentState?.crop_bounds)return;event.preventDefault();cropBox.setPointerCapture(event.pointerId);cropDrag={startX:event.clientX,startY:event.clientY,original:[...currentState.crop_bounds],bounds:[...currentState.crop_bounds],scale:imageContentRect().scale};});
+    cropBox.addEventListener("pointerdown",(event)=>{if(!currentState?.crop_bounds)return;event.preventDefault();cropBox.setPointerCapture(event.pointerId);const area=imageContentRect();cropDrag={startX:event.clientX,startY:event.clientY,original:[...currentState.crop_bounds],bounds:[...currentState.crop_bounds],scaleX:area.scaleX,scaleY:area.scaleY};});
     cropBox.addEventListener("pointermove",(event)=>{if(!cropDrag)return;const bounds=cropBoundsAt(event);if(!bounds)return;cropDrag.bounds=bounds;renderCrop(currentState);});
     cropBox.addEventListener("pointerup",async(event)=>{if(!cropDrag||!currentState)return;const bounds=cropBoundsAt(event)||cropDrag.bounds;cropDrag=null;pendingCropBounds=bounds;renderCrop(currentState);try{await action("set_crop",{bounds});}catch(_error){pendingCropBounds=null;renderCrop(currentState);}});
     cropBox.addEventListener("pointercancel",()=>{if(!cropDrag)return;cropDrag=null;renderCrop(currentState);});
