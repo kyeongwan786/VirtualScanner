@@ -51,6 +51,10 @@ RECEIVER_STATION_NAMES = (
 )
 
 
+class OcrCancelledError(RuntimeError):
+    """Raised when a user requests cancellation during a cooperative OCR stage."""
+
+
 def _rounded_rect_points(
     x0: float, y0: float, x1: float, y1: float, radius: float, segments: int = 5,
 ) -> tuple[float, ...]:
@@ -957,6 +961,7 @@ class NewWorkApp:
         self._ocr_warmup_finished = not isinstance(self.ocr, PaddleOcrAdapter)
         self._ocr_models_ready = self._ocr_warmup_finished
         self._pending_ocr_path: Path | None = None
+        self._ocr_cancel_event: Event | None = None
         self._document_job_id: str | None = None
         self._document_jobs: list[dict[str, object]] = []
         self._job_sent = False
@@ -3224,9 +3229,14 @@ class NewWorkApp:
         self._start_ocr(image_path)
 
     def _start_ocr(self, image_path: Path) -> None:
+        cancel_event = Event()
+        self._ocr_cancel_event = cancel_event
         self.ocr_button.configure(state="disabled")
         if hasattr(self, "ocr_run_button"):
             self.ocr_run_button.configure(state="disabled")
+        self.ocr_button.configure(
+            state="normal", text="OCR 취소", command=self.cancel_ocr,
+        )
         self._start_scan_animation(image_path)
         if self._ocr_models_ready:
             self.ocr_status.set("OCR 인식 중")
@@ -3237,20 +3247,48 @@ class NewWorkApp:
         if hasattr(self, "ocr_footer_var"):
             self.ocr_footer_var.set("신분증 이미지를 분석하고 있습니다…")
             self.ocr_elapsed_var.set("처리 중")
-        Thread(target=self._recognize_in_background, args=(image_path,), daemon=True).start()
+        Thread(
+            target=self._recognize_in_background,
+            args=(image_path, cancel_event), daemon=True,
+        ).start()
 
-    def _recognize_in_background(self, image_path: Path) -> None:
+    def cancel_ocr(self) -> None:
+        cancel_event = self._ocr_cancel_event
+        if cancel_event is None or cancel_event.is_set():
+            return
+        cancel_event.set()
+        self.ocr_button.configure(state="disabled", text="취소 중…")
+        self.review_status.set("OCR 취소 요청 · 현재 인식 단계가 끝나면 중단합니다.")
+        if hasattr(self, "ocr_footer_var"):
+            self.ocr_footer_var.set("취소 요청됨 · 실행 중인 인식 단계가 끝나면 중단합니다.")
+
+    def _recognize_in_background(
+        self, image_path: Path, cancel_event: Event | None = None,
+    ) -> None:
         started = perf_counter()
+        cancel_event = cancel_event or Event()
+
+        def check_cancelled() -> None:
+            if cancel_event.is_set():
+                raise OcrCancelledError("OCR 취소됨")
+
         try:
-            result = self.ocr.recognize(image_path)
+            check_cancelled()
+            if isinstance(self.ocr, PaddleOcrAdapter):
+                result = self.ocr.recognize(image_path, cancel_event=cancel_event)
+            else:
+                result = self.ocr.recognize(image_path)
+            check_cancelled()
             detection = detect_id_type(result.lines)
             if detection.code is None:
                 heading_reader = getattr(self.ocr, "recognize_card_heading", None)
                 if callable(heading_reader):
+                    check_cancelled()
                     try:
                         heading_lines = heading_reader(image_path)
                     except Exception:
                         heading_lines = ()
+                    check_cancelled()
                     if heading_lines:
                         result = OcrResult(
                             job_id=result.job_id,
@@ -3264,12 +3302,14 @@ class NewWorkApp:
                         detection = detect_id_type(result.lines)
             numeric_reader = getattr(self.ocr, "recognize_numeric_fields", None)
             if detection.code and callable(numeric_reader):
+                check_cancelled()
                 try:
                     numeric_fields = numeric_reader(
                         image_path, result.lines, detection.code
                     ) or {}
                 except Exception:
                     numeric_fields = {}
+                check_cancelled()
                 if numeric_fields:
                     result = OcrResult(
                         job_id=result.job_id,
@@ -3310,13 +3350,16 @@ class NewWorkApp:
                             details = details_future.result()
                         except Exception:
                             details = None
+                    check_cancelled()
                 else:
                     if callable(english_reader):
+                        check_cancelled()
                         try:
                             english_lines = english_reader(image_path)
                         except Exception as exc:
                             english_error = str(exc)
                     if callable(details_reader):
+                        check_cancelled()
                         try:
                             details = details_reader(image_path, result.lines)
                         except TypeError:
@@ -3328,6 +3371,7 @@ class NewWorkApp:
                                 details = None
                         except Exception:
                             details = None
+                    check_cancelled()
                 if english_lines:
                     english_engine_used = True
                     result = OcrResult(
@@ -3368,10 +3412,12 @@ class NewWorkApp:
                     )
                 number_reader = getattr(self.ocr, "recognize_foreigner_reg_number", None)
                 if not callable(details_reader) and callable(number_reader):
+                    check_cancelled()
                     try:
                         number = number_reader(image_path)
                     except Exception:
                         number = ""
+                    check_cancelled()
                     if number:
                         result = OcrResult(
                             job_id=result.job_id,
@@ -3394,10 +3440,12 @@ class NewWorkApp:
                     self.ocr, "recognize_korean_name_near_number", None
                 )
                 if callable(name_reader):
+                    check_cancelled()
                     try:
                         name = name_reader(image_path, result.lines, detection.code)
                     except Exception:
                         name = ""
+                    check_cancelled()
                     current_name = (
                         result.values.get("custNm")
                         or name_fields.get("custNm", "")
@@ -3445,6 +3493,7 @@ class NewWorkApp:
             focused_fields: dict[str, str] = {}
             focused_reader = getattr(self.ocr, "recognize_issuer_fields", None)
             if needs_focused_issuer_read and callable(focused_reader):
+                check_cancelled()
                 try:
                     try:
                         focused_fields = focused_reader(
@@ -3456,6 +3505,7 @@ class NewWorkApp:
                         ) or {}
                 except Exception:
                     focused_fields = {}
+                check_cancelled()
             if (
                 needs_focused_issuer_read
                 and not callable(focused_reader)
@@ -3506,7 +3556,13 @@ class NewWorkApp:
                     elapsed_seconds=result.elapsed_seconds,
                 )
         except Exception as exc:
+            if isinstance(exc, OcrCancelledError) or cancel_event.is_set():
+                self.root.after(0, self._ocr_cancelled, image_path, cancel_event)
+                return
             self.root.after(0, self._ocr_failed, image_path, exc)
+            return
+        if cancel_event.is_set():
+            self.root.after(0, self._ocr_cancelled, image_path, cancel_event)
             return
         result = OcrResult(
             job_id=result.job_id,
@@ -3519,11 +3575,39 @@ class NewWorkApp:
         )
         self.root.after(0, self._ocr_succeeded, image_path, result)
 
-    def _ocr_failed(self, image_path: Path, error: Exception) -> None:
+    def _ocr_cancelled(self, image_path: Path, cancel_event: Event) -> None:
+        if self._ocr_cancel_event is not cancel_event:
+            return
+        reset_requested = self._reset_requested
+        self._restore_ocr_controls()
         self._stop_scan_animation(image_path)
-        self.ocr_button.configure(state="normal")
+        if reset_requested:
+            self._clear_sender_session()
+            self.ocr_status.set("OCR 대기")
+            self.review_status.set("OCR 취소 및 작업 초기화 완료")
+            return
+
+        self.ocr_status.set("OCR 취소됨")
+        self.review_status.set("OCR을 취소했습니다.")
+        if hasattr(self, "ocr_footer_var"):
+            self.ocr_footer_var.set("OCR을 취소했습니다.")
+            self.ocr_elapsed_var.set("취소됨")
+        if self._pending_auto_send is not None:
+            self._cancel_pending_auto_send("OCR이 취소되어 자동 전송 예약을 취소했습니다.")
+
+    def _restore_ocr_controls(self) -> None:
+        self._ocr_cancel_event = None
+        self.ocr_button.configure(
+            state="normal",
+            text="신분증 파일 선택" if self.version == "v2" else "가져오기",
+            command=self.import_and_ocr,
+        )
         if hasattr(self, "ocr_run_button"):
             self.ocr_run_button.configure(state="normal")
+
+    def _ocr_failed(self, image_path: Path, error: Exception) -> None:
+        self._restore_ocr_controls()
+        self._stop_scan_animation(image_path)
         if isinstance(error, OcrUnavailableError):
             self.ocr_status.set("OCR 모델 오류")
             if hasattr(self, "ocr_footer_var"):
@@ -3543,10 +3627,12 @@ class NewWorkApp:
             self._cancel_pending_auto_send("OCR에 실패해 자동 전송 예약을 취소했습니다.")
 
     def _ocr_succeeded(self, image_path: Path, result: OcrResult) -> None:
+        cancel_event = self._ocr_cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            self._ocr_cancelled(image_path, cancel_event)
+            return
+        self._restore_ocr_controls()
         self._stop_scan_animation(image_path)
-        self.ocr_button.configure(state="normal")
-        if hasattr(self, "ocr_run_button"):
-            self.ocr_run_button.configure(state="normal")
         if self.draft is None or self.draft.result.image_path != image_path:
             return
         detection = detect_id_type(result.lines)
@@ -4050,6 +4136,15 @@ class NewWorkApp:
         if not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
             return
 
+        if self._ocr_cancel_event is not None:
+            self._reset_requested = True
+            self._ocr_cancel_event.set()
+            self.reset_button.configure(state="disabled", text="OCR 취소 중…")
+            self.review_status.set(
+                "OCR 취소 요청 중 · 실행 중인 인식 단계가 끝나면 작업 자료를 정리합니다."
+            )
+            return
+
         if self._transfer_cancel_event is not None:
             self._reset_requested = True
             self._transfer_cancel_event.set()
@@ -4109,6 +4204,8 @@ class NewWorkApp:
             self.review_status.set("전송 취소 및 작업 초기화 완료")
 
     def _clear_sender_session(self) -> None:
+        if self._ocr_cancel_event is not None:
+            self._ocr_cancel_event.set()
         job_id = self._document_job_id
         if job_id:
             shutil.rmtree(default_job_directory() / job_id, ignore_errors=True)
@@ -4345,8 +4442,14 @@ def main(version: str = "v2") -> None:
     root.mainloop()
 
 
-def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[OcrResult, IdTypeDetection, dict[str, str]]:
+def recognize_identity_for_review(
+    ocr: OcrAdapter, image_path: Path, cancel_event: Event | None = None,
+) -> tuple[OcrResult, IdTypeDetection, dict[str, str]]:
     """Run the exact sender OCR/retry pipeline without constructing its UI."""
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise OcrCancelledError("OCR 취소됨")
+
     callbacks: list[tuple[object, tuple[object, ...]]] = []
 
     class _CallbackCapture:
@@ -4357,10 +4460,13 @@ def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[Oc
     worker = NewWorkApp.__new__(NewWorkApp)
     worker.ocr = ocr
     worker.root = _CallbackCapture()
-    worker._recognize_in_background(Path(image_path))
+    worker._recognize_in_background(Path(image_path), cancel_event)
     if not callbacks:
         raise RuntimeError("OCR 결과를 받지 못했습니다.")
     callback, args = callbacks[-1]
+    check_cancelled()
+    if getattr(callback, "__name__", "") == "_ocr_cancelled":
+        raise OcrCancelledError("OCR 취소됨")
     if getattr(callback, "__name__", "") == "_ocr_failed":
         error = args[-1] if args else RuntimeError("OCR에 실패했습니다.")
         raise error
@@ -4369,6 +4475,7 @@ def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[Oc
     result = args[-1]
     if not isinstance(result, OcrResult):
         raise RuntimeError("OCR 결과 데이터가 올바르지 않습니다.")
+    check_cancelled()
     detection = detect_id_type(result.lines)
     values = extract_identity_fields(result.lines, id_type_code=detection.code)
     values.update({key: str(value) for key, value in result.values.items()})
@@ -4377,9 +4484,11 @@ def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[Oc
     if detection.code == "1401":
         mask_position = result.values.get("mskPos", "")
     else:
+        check_cancelled()
         mask_position = result.values.get("mskPos") or detect_mask_position(
             result.lines, image_path=result.image_path,
         )
+    check_cancelled()
     values["mskPos"] = str(mask_position or "")
     if detection.code:
         values.update({
@@ -4388,4 +4497,5 @@ def recognize_identity_for_review(ocr: OcrAdapter, image_path: Path) -> tuple[Oc
             "idType": detection.type_code or "",
             "nationClCd": "F" if detection.code == "1401" else "I",
         })
+    check_cancelled()
     return result, detection, values

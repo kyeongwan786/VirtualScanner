@@ -177,6 +177,7 @@ def _snapshot(app) -> dict[str, object]:
         "relay_configured": bool(getattr(app, "relay_config", None)),
         "relay_url": (getattr(app, "relay_config", None) or {}).get("relay_url", ""),
         "ocr_status": ocr_status_var.get() if ocr_status_var else "OCR 대기",
+        "ocr_active": getattr(app, "_ocr_cancel_event", None) is not None,
         "review_status": status_var.get() if status_var else "",
         "identity_name": identity_name,
         "identity_image": image_data,
@@ -443,12 +444,15 @@ def _backend_process(port: int, token: str) -> None:
                 raise ValueError("전송할 검토 묶음이 없습니다.")
             if len(items) != batch["expected_count"]:
                 raise ValueError("선택한 신분증 업로드가 모두 끝난 뒤 전송을 누르세요.")
-            failed = [item for item in items if item.get("ocr_status") == "실패"]
+            failed = [
+                item for item in items
+                if item.get("ocr_status") in {"실패", "취소됨"}
+            ]
             if failed:
                 batch["auto_send_requested"] = False
                 batch["status"] = "reviewing"
                 names = ", ".join(str(item.get("name", "신분증")) for item in failed)
-                batch["error"] = f"OCR 실패 항목이 있어 자동 전송을 멈췄습니다: {names}"
+                batch["error"] = f"OCR 실패/취소 항목이 있어 전송을 멈췄습니다: {names}"
                 raise ValueError(batch["error"])
             if any(item.get("ocr_status") != "완료" for item in items):
                 batch["auto_send_requested"] = True
@@ -857,6 +861,10 @@ def _backend_process(port: int, token: str) -> None:
                         app._select_store(index)
                     elif action == "run_ocr":
                         app.run_ocr()
+                    elif action == "cancel_ocr":
+                        if app._ocr_cancel_event is None:
+                            raise ValueError("취소할 OCR 작업이 없습니다.")
+                        app.cancel_ocr()
                     elif action == "send":
                         app.mark_reviewed()
                     elif action == "batch_start":
@@ -888,19 +896,32 @@ def _backend_process(port: int, token: str) -> None:
                         update_batch_item(data)
                     elif action == "batch_cancel":
                         with batch_lock:
+                            if batch["status"] in {"sending", "partial", "checking"}:
+                                raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
+                            if any(row.get("ocr_status") == "업로드 중" for row in batch["items"]):
+                                raise ValueError("이미지 업로드/변환이 끝난 뒤 OCR을 취소하세요.")
+                            active_ocr = [
+                                row for row in batch["items"]
+                                if row.get("ocr_status") in {"대기 중", "인식 중", "취소 중"}
+                            ]
+                            batch["auto_send_requested"] = False
+                            if active_ocr:
+                                for row in active_ocr:
+                                    row["ocr_cancel_event"].set()
+                                    row["ocr_status"] = (
+                                        "취소됨" if row.get("ocr_status") == "대기 중"
+                                        else "취소 중"
+                                    )
+                                    row["error"] = ""
+                                batch["status"] = "reviewing"
+                                batch["error"] = "OCR 취소 요청 중 · 현재 모델 인식 단계가 끝나면 중단됩니다."
+                                result["value"] = {"message": "진행 중인 OCR에 취소를 요청했습니다."}
+                                return
                             if batch["status"] == "waiting_ocr":
-                                batch["auto_send_requested"] = False
                                 batch["status"] = "reviewing"
                                 batch["error"] = "자동 전송 예약을 취소했습니다."
                                 result["value"] = {"message": "OCR 후 자동 전송 예약을 취소했습니다."}
                                 return
-                            if batch["status"] in {"sending", "partial", "checking"}:
-                                raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
-                            if any(
-                                row.get("ocr_status") in {"업로드 중", "대기 중", "인식 중"}
-                                for row in batch["items"]
-                            ):
-                                raise ValueError("진행 중인 OCR이 끝난 뒤 묶음을 취소하세요.")
                             batch_dir = (
                                 default_job_directory() / ".sender-batches" / str(batch["id"])
                             )
@@ -1147,6 +1168,7 @@ def _backend_process(port: int, token: str) -> None:
                     "width": 0, "height": 0,
                     "ocr_status": "업로드 중", "send_status": "대기", "job_id": "",
                     "error": "", "reviewed": False,
+                    "ocr_cancel_event": threading.Event(),
                     "fields": [],
                     "id_type_options": ["유형 선택…", *ID_TYPE_LABEL_TO_CODE.keys()],
                 }
@@ -1196,7 +1218,7 @@ def _backend_process(port: int, token: str) -> None:
         ) -> None:
             from new_work.gui.app import (
                 FOCUS_FIELDS, FOCUS_GROUP_BY_CODE, ID_TYPE_CODE_TO_LABEL,
-                recognize_identity_for_review,
+                OcrCancelledError, recognize_identity_for_review,
             )
             from new_work.ocr.adapter import PaddleOcrAdapter
             from new_work.carrier.sk_report import SK_ID_CROP_CODES
@@ -1211,14 +1233,23 @@ def _backend_process(port: int, token: str) -> None:
                     if requested_batch_id != batch["id"]:
                         return
                     item["ocr_status"] = "인식 중"
+                    cancel_event = item["ocr_cancel_event"]
+                if cancel_event.is_set():
+                    with batch_lock:
+                        item["ocr_status"] = "취소됨"
+                    return
                 if worker_index == 1 and batch_ocr_adapters[worker_index] is None:
                     adapter = PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5")
                     adapter.warmup()
                     batch_ocr_adapters[worker_index] = adapter
+                if cancel_event.is_set():
+                    raise OcrCancelledError("사용자가 OCR을 취소했습니다.")
                 adapter = batch_ocr_adapters[worker_index]
                 ocr_result, detection, values = recognize_identity_for_review(
-                    adapter, destination,
+                    adapter, destination, cancel_event=cancel_event,
                 )
+                if cancel_event.is_set():
+                    raise OcrCancelledError("사용자가 OCR을 취소했습니다.")
                 with Image.open(destination) as opened:
                     source_image = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = source_image.size
@@ -1257,6 +1288,10 @@ def _backend_process(port: int, token: str) -> None:
                 with batch_lock:
                     if requested_batch_id != batch["id"]:
                         return
+                    if cancel_event.is_set():
+                        item["ocr_status"] = "취소됨"
+                        item["error"] = ""
+                        return
                     item.update({
                         "result": ocr_result, "detection": detection,
                         "values": values, "code": code, "type_label": label,
@@ -1269,8 +1304,12 @@ def _backend_process(port: int, token: str) -> None:
             except Exception as exc:
                 with batch_lock:
                     if requested_batch_id == batch["id"]:
-                        item["ocr_status"] = "실패"
-                        item["error"] = str(exc)
+                        if isinstance(exc, OcrCancelledError):
+                            item["ocr_status"] = "취소됨"
+                            item["error"] = ""
+                        else:
+                            item["ocr_status"] = "실패"
+                            item["error"] = str(exc)
                 _maybe_start_auto_batch_send()
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)

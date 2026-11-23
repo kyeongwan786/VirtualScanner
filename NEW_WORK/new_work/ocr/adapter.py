@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Event, Lock
 from time import perf_counter
 from typing import Any, Callable, Protocol
 from uuid import uuid4
@@ -27,7 +27,9 @@ class OcrAdapter(Protocol):
     @property
     def status(self) -> str: ...
 
-    def recognize(self, image_path: Path) -> OcrResult: ...
+    def recognize(
+        self, image_path: Path, cancel_event: Event | None = None,
+    ) -> OcrResult: ...
 
 
 class PaddleOcrAdapter:
@@ -725,12 +727,19 @@ class PaddleOcrAdapter:
                     selected["_isueDt_consensus"] = "1"
         return selected
 
-    def recognize(self, image_path: Path) -> OcrResult:
+    def recognize(
+        self, image_path: Path, cancel_event: Event | None = None,
+    ) -> OcrResult:
         path = Path(image_path)
         if not path.is_file():
             raise OcrUnavailableError(f"이미지 파일을 찾을 수 없습니다: {path}")
 
+        def check_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("OCR 취소됨")
+
         started = perf_counter()
+        check_cancelled()
         try:
             lines = tuple(
                 self._recognize_card_lines(self._get_engine(), path, "korean")
@@ -739,6 +748,7 @@ class PaddleOcrAdapter:
             raise
         except Exception as exc:
             raise OcrUnavailableError(f"PaddleOCR 인식 실패: {exc}") from exc
+        check_cancelled()
 
         # Small print on card photos can disappear when the detector scales a
         # full-resolution image down to its fast default input size. Only then
@@ -795,6 +805,7 @@ class PaddleOcrAdapter:
                 or needs_numeric_retry
                 or needs_low_confidence_retry
             ):
+                check_cancelled()
                 detail_lines = tuple(
                     self._recognize_card_lines(
                         self._get_detail_engine(), path, "korean_detail"
@@ -848,6 +859,7 @@ class PaddleOcrAdapter:
             # The high-detail pass is a recovery path. A failed optional pass
             # must not discard a usable result from the normal OCR pass.
             pass
+        check_cancelled()
 
         try:
             version = metadata.version("paddleocr")
@@ -1278,7 +1290,9 @@ class UnconnectedOcrAdapter:
     def status(self) -> str:
         return "PaddleOCR 미연결 (설치 필요)"
 
-    def recognize(self, image_path: Path) -> OcrResult:
+    def recognize(
+        self, image_path: Path, cancel_event: Event | None = None,
+    ) -> OcrResult:
         raise OcrUnavailableError(
             "PaddleOCR/PaddlePaddle 런타임이 설치되지 않아 OCR을 실행할 수 없습니다."
         )
