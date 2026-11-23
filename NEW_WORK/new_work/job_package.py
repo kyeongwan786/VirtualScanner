@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import zipfile
+import shutil
 from pathlib import Path
 from typing import Mapping, Sequence
-from uuid import uuid4
 
 from new_work.domain import OcrResult
 from new_work.ocr.id_types import IdTypeDetection
-from new_work.ocr.result_writer import write_ocr_result
 
 MAX_PACKAGE_FILES = 1000
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
@@ -37,7 +34,7 @@ def create_work_package(
     reviewed_values: Mapping[str, str],
     document_jobs: Sequence[Mapping[str, object]],
 ) -> Path:
-    """Build a self-contained transfer archive; input documents remain untouched."""
+    """Prepare a manifest/JPG directory for direct Relay page transfer."""
     if carrier not in {"SK", "KT"}:
         raise ValueError("포탈은 SK 또는 KT여야 합니다.")
     if not station_id:
@@ -49,9 +46,9 @@ def create_work_package(
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        raise FileExistsError(output_path)
     package_root = output_path.parent / f"{output_path.stem}_payload"
+    if output_path.exists() or package_root.exists():
+        raise FileExistsError(output_path if output_path.exists() else package_root)
     package_root.mkdir(parents=True, exist_ok=False)
     identity_relative: str | None = None
     if result is not None:
@@ -75,7 +72,7 @@ def create_work_package(
             relative_page = relative_directory / page_path.name
             destination = package_root / relative_page
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(page_path.read_bytes())
+            shutil.copyfile(page_path, destination)
             copied_pages.append(relative_page.as_posix())
         document_entries.append({
             "document_id": document_id,
@@ -102,13 +99,6 @@ def create_work_package(
         "identity_image": identity_relative,
         "documents": document_entries,
     }
-    if carrier == "SK" and result is not None:
-        report_path = package_root / "sk_report.txt"
-        write_ocr_result(
-            OcrResult(job_id=result.job_id, image_path=identity_path),
-            detection, values=reviewed_values, path=report_path
-        )
-        manifest["sk_report"] = "sk_report.txt"
     (package_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -119,15 +109,4 @@ def create_work_package(
     if sum(item.stat().st_size for item in members) > MAX_PACKAGE_BYTES:
         raise ValueError("작업 패키지가 512 MiB 제한을 초과합니다.")
 
-    temporary_archive = output_path.with_name(f".{output_path.name}.{uuid4().hex}.partial")
-    try:
-        with zipfile.ZipFile(temporary_archive, "x", compression=zipfile.ZIP_STORED) as archive:
-            for item in sorted(package_root.rglob("*")):
-                if item.is_file():
-                    archive.write(item, item.relative_to(package_root).as_posix())
-        os.link(temporary_archive, output_path)
-    except Exception:
-        raise
-    finally:
-        temporary_archive.unlink(missing_ok=True)
-    return output_path
+    return package_root

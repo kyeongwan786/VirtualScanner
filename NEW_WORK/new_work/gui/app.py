@@ -3990,7 +3990,7 @@ class NewWorkApp:
                 document_jobs=documents,
             )
             if cancel_event.is_set():
-                raise TransferCancelledError("작업 ZIP 생성 중 송신기 초기화가 요청됐습니다.")
+                raise TransferCancelledError("전송 자료 준비 중 송신기 초기화가 요청됐습니다.")
             def progress(message: str) -> None:
                 self.root.after(0, self._send_progress, cancel_event, message)
 
@@ -4045,7 +4045,7 @@ class NewWorkApp:
         prompt = (
             "현재 송신 작업을 취소하고 화면과 임시 작업 자료를 초기화할까요?\n\n"
             "Relay 전송 중이면 취소를 요청합니다. Receiver가 이미 받은 자료는 Receiver에서 별도로 초기화해야 합니다.\n"
-            "이 앱이 만든 임시 신분증 사본·PDF 페이지·전송 ZIP만 정리하며, 원본 파일은 삭제하지 않습니다."
+            "이 앱이 만든 임시 신분증 사본·PDF 페이지·전송 자료만 정리하며, 원본 파일은 삭제하지 않습니다."
         )
         if not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
             return

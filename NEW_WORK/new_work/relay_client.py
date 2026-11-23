@@ -11,6 +11,7 @@ import tempfile
 import time
 import stat
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Event, Lock, local
 from typing import Callable
@@ -221,6 +222,90 @@ def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, 
     return work_package, page_paths
 
 
+def _directory_package_metadata(
+    package_root: Path, station_id: str,
+) -> tuple[dict, list[Path], dict]:
+    """Validate direct JPG payloads without building or reading a ZIP archive."""
+    package_root = Path(package_root).resolve()
+    try:
+        manifest = json.loads((package_root / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TransferError(f"작업 manifest를 읽을 수 없습니다: {exc}") from exc
+    if (not isinstance(manifest, dict) or manifest.get("station_id") != station_id
+            or not isinstance(manifest.get("job_id"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", manifest["job_id"])
+            or manifest.get("carrier") not in {"SK", "KT"}
+            or not isinstance(manifest.get("id_type_detection"), dict)
+            or not isinstance(manifest.get("reviewed_values"), dict)):
+        raise TransferError("작업 manifest의 자리, 작업 ID 또는 OCR 값이 올바르지 않습니다.")
+
+    identity_name = manifest.get("identity_image")
+    if identity_name is not None and not isinstance(identity_name, str):
+        raise TransferError("작업 manifest 신분증 경로가 올바르지 않습니다.")
+    documents = manifest.get("documents")
+    if not isinstance(documents, list):
+        raise TransferError("작업 manifest 서류 목록이 올바르지 않습니다.")
+    relative_paths = [identity_name] if identity_name else []
+    document_entries = []
+    for document in documents:
+        if not isinstance(document, dict) or not isinstance(document.get("pages"), list) or not document["pages"]:
+            raise TransferError("작업 manifest 서류 페이지 목록이 올바르지 않습니다.")
+        page_numbers = []
+        for relative in document["pages"]:
+            if not isinstance(relative, str):
+                raise TransferError("작업 manifest 서류 경로가 올바르지 않습니다.")
+            page_numbers.append(len(relative_paths) + 1)
+            relative_paths.append(relative)
+        document_entries.append({
+            "document_id": str(document.get("document_id", "")),
+            "label": str(document.get("label", "서류"))[:255],
+            "source_name": str(document.get("source_name", ""))[:255],
+            "order": len(document_entries) + 1,
+            "page_count": len(page_numbers),
+            "page_numbers": page_numbers,
+        })
+    if not relative_paths or len(relative_paths) > MAX_PAGES:
+        raise TransferError(f"신분증/JPG 페이지 수는 1~{MAX_PAGES}장이어야 합니다.")
+
+    page_sources = []
+    total_size = 0
+    root_resolved = package_root.resolve()
+    for relative in relative_paths:
+        safe = PurePosixPath(relative)
+        if ("\\" in relative or safe.is_absolute()
+                or any(part in {"", ".", ".."} for part in safe.parts)
+                or safe.suffix.casefold() not in {".jpg", ".jpeg"}):
+            raise TransferError(f"허용되지 않는 JPG 페이지 경로입니다: {relative}")
+        path = package_root.joinpath(*safe.parts)
+        if not path.resolve().is_relative_to(root_resolved) or not path.is_file():
+            raise TransferError(f"패키지 JPG 페이지를 찾지 못했습니다: {relative}")
+        size = path.stat().st_size
+        if not 4 <= size <= MAX_PAGE_BYTES:
+            raise TransferError(f"JPG 페이지가 허용 크기를 벗어났습니다: {relative}")
+        with path.open("rb") as image:
+            start = image.read(3)
+            image.seek(-2, os.SEEK_END)
+            end = image.read(2)
+        if start != b"\xff\xd8\xff" or end != b"\xff\xd9":
+            raise TransferError(f"올바른 JPG 페이지가 아닙니다: {relative}")
+        page_sources.append(path)
+        total_size += size
+    if total_size > MAX_ARCHIVE_BYTES:
+        raise TransferError("작업 패키지가 Relay의 512 MiB 제한을 초과했습니다.")
+
+    work_package = {
+        "schema_version": 1,
+        "carrier": manifest["carrier"],
+        "id_type_code": manifest.get("id_type_code"),
+        "id_type_detection": manifest["id_type_detection"],
+        "reviewed_values": manifest["reviewed_values"],
+        "identity_page": 1 if identity_name else None,
+        "identity_filename": PurePosixPath(identity_name).name if identity_name else None,
+        "documents": document_entries,
+    }
+    return work_package, page_sources, manifest
+
+
 def send_work_package(
     relay_config: dict[str, str],
     station_id: str,
@@ -231,7 +316,7 @@ def send_work_package(
     cancel_event: Event | None = None,
     wait_for_delivery: bool = True,
 ) -> str:
-    """Upload the complete work ZIP in bounded encrypted chunks."""
+    """Upload JPG payloads directly, with ZIP support for older local packages."""
     def check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise TransferCancelledError("송신기에서 전송 취소를 요청했습니다.")
@@ -262,60 +347,104 @@ def send_work_package(
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["central_token"]
     report = progress or (lambda _message: None)
+    package_path = Path(package_path)
+    direct_pages = package_path.is_dir()
     with _health_cache_lock:
         if _health_cache_until.get(relay_url, 0) <= time.monotonic():
             health_status, health = _request(f"{relay_url}/health", token)
             check_cancelled()
+            required_feature = "new-work-v1" if direct_pages else "new-work-zip-v1"
             if (health_status != 200 or not isinstance(health, dict)
-                    or "new-work-zip-v1" not in health.get("features", [])):
+                    or required_feature not in health.get("features", [])):
                 raise TransferError(
-                    "Render Relay가 NEW_WORK ZIP 전송 API를 지원하지 않습니다. "
-                    "저장소의 KyeongwanReceiver/relay_server.py 변경을 Render에 배포한 뒤 다시 시도하세요."
+                    "Render Relay가 NEW_WORK 파일 전송 API를 지원하지 않습니다. "
+                    "저장소의 KyeongwanReceiver/relay_server.py를 배포한 뒤 다시 시도하세요."
                 )
             _health_cache_until[relay_url] = time.monotonic() + _HEALTH_CACHE_SECONDS
-    with zipfile.ZipFile(package_path, "r") as archive:
-        work_package, page_paths = _package_metadata(archive, station_id)
-        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    if direct_pages:
+        work_package, page_paths, manifest = _directory_package_metadata(
+            package_path, station_id,
+        )
         job_id = str(manifest["job_id"])
-        archive_path = Path(package_path)
-        archive_size = archive_path.stat().st_size
+        payload_type = "new-work-v1"
+        page_count = len(page_paths)
+    else:
+        with zipfile.ZipFile(package_path, "r") as archive:
+            work_package, zip_page_paths = _package_metadata(archive, station_id)
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        job_id = str(manifest["job_id"])
+        archive_size = package_path.stat().st_size
         if not 1 <= archive_size <= MAX_ARCHIVE_BYTES:
             raise TransferError("작업 ZIP이 Relay의 512 MiB 제한을 초과했습니다.")
-        chunk_count = (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES
-        document_count = len(work_package["documents"])
-        has_identity = work_package.get("identity_filename") is not None
-        if has_identity and document_count:
-            source_name = f"{work_package['carrier']} 신분증 + PDF {document_count}건"
-        elif has_identity:
-            source_name = f"{work_package['carrier']} 신분증 1건"
+        page_count = (archive_size + MAX_PAGE_BYTES - 1) // MAX_PAGE_BYTES
+        payload_type = "new-work-zip-v1"
+
+    document_count = len(work_package["documents"])
+    has_identity = work_package.get("identity_filename") is not None
+    if has_identity and document_count:
+        source_name = f"{work_package['carrier']} 신분증 + PDF {document_count}건"
+    elif has_identity:
+        source_name = f"{work_package['carrier']} 신분증 1건"
+    else:
+        source_name = f"{work_package['carrier']} PDF {document_count}건"
+    metadata = {
+        "job_id": job_id,
+        "station_id": station_id,
+        "page_count": page_count,
+        "dpi": 100,
+        "source_name": source_name,
+        "payload_type": payload_type,
+        "work_package": work_package,
+    }
+    if not direct_pages:
+        metadata["archive_size"] = archive_size
+
+    created = False
+    completion_started = False
+    try:
+        check_cancelled()
+        status, result = _request(
+            f"{relay_url}/v1/jobs", token, method="POST",
+            body=json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
+            content_type="application/json",
+        )
+        if status != 201:
+            raise TransferError(f"Relay가 작업을 만들지 못했습니다: {result}")
+        created = True
+
+        if direct_pages:
+            upload_lock = Lock()
+            uploaded = {"pages": 0}
+
+            def upload_page(number: int, page_path: Path) -> None:
+                check_cancelled()
+                content = page_path.read_bytes()
+                status, result = _request(
+                    f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/pages/{number}",
+                    token, method="PUT", body=content, content_type="image/jpeg",
+                )
+                if status not in (200, 201):
+                    raise TransferError(f"Relay가 JPG 페이지 {number}를 받지 못했습니다: {result}")
+                with upload_lock:
+                    uploaded["pages"] += 1
+                    report(f"Relay JPG 전송 중 · {uploaded['pages']}/{page_count}")
+                check_cancelled()
+
+            with ThreadPoolExecutor(
+                max_workers=min(4, page_count), thread_name_prefix="relay-jpg-upload",
+            ) as executor:
+                futures = [
+                    executor.submit(upload_page, number, page_path)
+                    for number, page_path in enumerate(page_paths, start=1)
+                ]
+                for future in as_completed(futures):
+                    future.result()
+            completion_body = b"{}"
         else:
-            source_name = f"{work_package['carrier']} PDF {document_count}건"
-        metadata = {
-            "job_id": job_id,
-            "station_id": station_id,
-            "page_count": chunk_count,
-            "dpi": 100,
-            "source_name": source_name,
-            "payload_type": "new-work-zip-v1",
-            "work_package": work_package,
-            "archive_size": archive_size,
-        }
-        created = False
-        completion_started = False
-        try:
-            check_cancelled()
-            status, result = _request(
-                f"{relay_url}/v1/jobs", token, method="POST",
-                body=json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
-                content_type="application/json",
-            )
-            if status != 201:
-                raise TransferError(f"Relay가 작업을 만들지 못했습니다: {result}")
-            created = True
             upload_digest = hashlib.sha256()
             upload_size = 0
-            with archive_path.open("rb") as source:
-                for number in range(1, chunk_count + 1):
+            with package_path.open("rb") as source:
+                for number in range(1, page_count + 1):
                     check_cancelled()
                     content = source.read(MAX_PAGE_BYTES)
                     if not content:
@@ -329,47 +458,49 @@ def send_work_package(
                     )
                     if status not in (200, 201):
                         raise TransferError(f"Relay가 ZIP 조각 {number}를 받지 못했습니다: {result}")
-                    report(f"Relay ZIP 전송 중 · {number}/{chunk_count}")
+                    report(f"Relay ZIP 전송 중 · {number}/{page_count}")
                     check_cancelled()
             if upload_size != archive_size:
                 raise TransferError("전송 중 작업 ZIP 크기가 변경되었습니다. Relay 작업을 취소합니다.")
+            completion_body = json.dumps({
+                "archive_sha256": upload_digest.hexdigest(),
+            }).encode("ascii")
 
-            check_cancelled()
-            completion_started = True
-            status, result = _request(
-                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/complete",
-                token, method="POST",
-                body=json.dumps({"archive_sha256": upload_digest.hexdigest()}).encode("ascii"),
-                content_type="application/json",
-            )
-            if status not in (200, 201):
-                raise TransferError(f"Relay가 작업 완료를 확인하지 못했습니다: {result}")
-            check_cancelled()
-        except Exception as exc:
-            if cancel_event is not None and cancel_event.is_set():
-                if created:
-                    remote_status = cancel_remote_job(job_id)
-                    if remote_status == "delivered":
-                        raise TransferCancelledError(
-                            "취소 전에 Receiver가 자료 수신을 완료했습니다. "
-                            f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
-                        ) from exc
-                raise TransferCancelledError(
-                    f"Relay 전송을 취소했습니다. 작업 ID: {job_id}"
-                ) from exc
-            if completion_started:
-                raise DeliveryPendingError(
-                    job_id,
-                    f"Relay 작업 완료 요청 결과를 확인하지 못했습니다. 중복 전송하지 말고 "
-                    f"Receiver와 Render 상태를 확인하세요. 작업 ID: {job_id}",
-                ) from exc
+        check_cancelled()
+        completion_started = True
+        status, result = _request(
+            f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/complete",
+            token, method="POST", body=completion_body,
+            content_type="application/json",
+        )
+        if status not in (200, 201):
+            raise TransferError(f"Relay가 작업 완료를 확인하지 못했습니다: {result}")
+        check_cancelled()
+    except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
             if created:
-                try:
-                    _request(f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
-                             token, method="DELETE")
-                except TransferError:
-                    pass
-            raise
+                remote_status = cancel_remote_job(job_id)
+                if remote_status == "delivered":
+                    raise TransferCancelledError(
+                        "취소 전에 Receiver가 자료 수신을 완료했습니다. "
+                        f"송신기 자료만 초기화합니다. 작업 ID: {job_id}"
+                    ) from exc
+            raise TransferCancelledError(
+                f"Relay 전송을 취소했습니다. 작업 ID: {job_id}"
+            ) from exc
+        if completion_started:
+            raise DeliveryPendingError(
+                job_id,
+                f"Relay 작업 완료 요청 결과를 확인하지 못했습니다. 중복 전송하지 말고 "
+                f"Receiver와 Render 상태를 확인하세요. 작업 ID: {job_id}",
+            ) from exc
+        if created:
+            try:
+                _request(f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
+                         token, method="DELETE")
+            except TransferError:
+                pass
+        raise
 
     if not wait_for_delivery:
         return job_id
@@ -842,7 +973,10 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
     station_path = quote(station_id, safe="")
     if progress:
         progress(0, page_count, "pages")
-    for number in range(1, page_count + 1):
+    progress_lock = Lock()
+    completed_pages = {"count": 0}
+
+    def download_page(number: int) -> tuple[int, bytes]:
         check_cancelled()
         page_url = (f"{relay_url}/v1/stations/{station_path}/jobs/"
                     f"{quote(job_id, safe='')}/pages/{number}")
@@ -852,6 +986,9 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             raise TransferError(f"Relay에서 {number}페이지를 받지 못했습니다.")
         if not content.startswith(b"\xff\xd8\xff") or not content.endswith(b"\xff\xd9"):
             raise TransferError(f"Relay의 {number}페이지가 올바른 JPG가 아닙니다.")
+        return number, content
+
+    def save_page(number: int, content: bytes) -> None:
         target = staging / page_map[number]
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".page-", suffix=".tmp", dir=target.parent)
@@ -867,7 +1004,18 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         if number == 1 and identity_relative is not None:
             manifest["identity_sha256"] = hashlib.sha256(content).hexdigest()
         if progress:
-            progress(number, page_count, "pages")
+            with progress_lock:
+                completed_pages["count"] += 1
+                progress(completed_pages["count"], page_count, "pages")
+
+    with ThreadPoolExecutor(
+        max_workers=min(4, page_count), thread_name_prefix="relay-jpg-download",
+    ) as executor:
+        futures = [executor.submit(download_page, number)
+                   for number in range(1, page_count + 1)]
+        for future in as_completed(futures):
+            number, content = future.result()
+            save_page(number, content)
     check_cancelled()
     (staging / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

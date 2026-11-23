@@ -759,7 +759,7 @@ class ReceiverApp:
             if job_dir is None:
                 self.root.after(0, self._receive_finished, None)
                 return
-            self.root.after(0, self._set_receive_progress_stage, "전송 완료 · 검증/압축 해제/저장 중")
+            self.root.after(0, self._set_receive_progress_stage, "전송 완료 · 검증/저장 중")
             if self._cancel_receive.is_set():
                 raise RuntimeError("받은 자료 초기화 요청으로 Relay 수신을 취소했습니다.")
             identity_image = manifest.get("identity_image")
@@ -813,7 +813,7 @@ class ReceiverApp:
         percent = done * 100.0 / total
         self.receive_progress_bar.configure(value=percent)
         if done >= total:
-            self.receive_progress_label.set("전송 완료 · 검증/압축 해제/저장 중")
+            self.receive_progress_label.set("전송 완료 · 검증/저장 중")
             return
         elapsed = max(0.001, monotonic() - self._receive_progress_started)
         rate = done / elapsed
@@ -1015,6 +1015,12 @@ class ReceiverApp:
         if outcome:
             self.status.set(outcome)
             self._refresh_queue()
+        # Drain a batch of queued jobs immediately. The normal inbox poll runs
+        # once per second, which otherwise adds that delay after every item.
+        if (new_job_id and not self._clearing_received and not self._correction_busy
+                and not self._processing):
+            self._processing = True
+            Thread(target=self._receive_relay_work, daemon=True).start()
 
     def _retry_failed(self) -> None:
         self._retry_after = 0.0
