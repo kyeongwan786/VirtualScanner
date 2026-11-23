@@ -75,6 +75,7 @@ class TransferCancelledError(TransferError):
 
 def _request(url: str, token: str, *, method: str = "GET",
              body: bytes | None = None, content_type: str | None = None,
+             extra_headers: dict[str, str] | None = None,
              response_limit: int = 64 * 1024,
              on_download_chunk: Callable[[int], None] | None = None,
              timeout: float = 60) -> tuple[int, dict | bytes]:
@@ -86,6 +87,8 @@ def _request(url: str, token: str, *, method: str = "GET",
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if content_type:
         headers["Content-Type"] = content_type
+    if extra_headers:
+        headers.update(extra_headers)
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
@@ -549,7 +552,7 @@ def get_work_package_status(relay_config: dict[str, str], job_id: str) -> str:
         relay_config["central_token"],
     )
     status = result.get("status") if isinstance(result, dict) else None
-    if status not in {"uploading", "queued", "delivered", "cancelled"}:
+    if status not in {"uploading", "queued", "receiving", "delivered", "cancelled"}:
         raise TransferError("Relay가 알 수 없는 작업 상태를 돌려줬습니다.")
     return status
 
@@ -734,9 +737,10 @@ def _receive_work_archive(
     archive_size: int,
     archive_sha256: str,
     work_package: dict,
+    claim_token: str,
     cancel_event: Event | None,
     progress: Callable[[int, int, str], None] | None,
-) -> tuple[Path, dict]:
+) -> tuple[Path, dict, str]:
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["token"]
     station = quote(station_id, safe="")
@@ -781,6 +785,7 @@ def _receive_work_archive(
                 size_in_chunk = [0]
                 status, content = _request(
                     url, token, response_limit=MAX_PAGE_BYTES,
+                    extra_headers={"X-Relay-Claim": claim_token},
                     on_download_chunk=on_download_chunk,
                 )
                 check_cancelled()
@@ -818,9 +823,9 @@ def _receive_work_archive(
                 saved = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
                 if saved.get("job_id") == job_id and saved.get("station_id") == station_id:
                     shutil.rmtree(staging, ignore_errors=True)
-                    return job_dir, saved
+                    return job_dir, saved, claim_token
             raise
-        return job_dir, manifest
+        return job_dir, manifest, claim_token
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -831,19 +836,29 @@ def _receive_work_archive(
 def receive_work_package(relay_config: dict[str, str], station_id: str,
                          work_path: Path,
                          cancel_event: Event | None = None,
-                         progress: Callable[[int, int, str], None] | None = None
-                         ) -> tuple[Path, dict] | None:
-    """Pull one assigned ZIP package, with compatibility for older page-wise jobs."""
+                         progress: Callable[[int, int, str], None] | None = None,
+                         claim_state: dict | None = None,
+                         ) -> tuple[Path, dict, str] | None:
+    """Atomically claim and receive one assigned package."""
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["token"]
     station = quote(station_id, safe="")
+    with _health_cache_lock:
+        if _health_cache_until.get(f"{relay_url}:claims", 0) <= time.monotonic():
+            health_status, health = _request(f"{relay_url}/health", token)
+            if (health_status != 200 or not isinstance(health, dict)
+                    or "new-work-claim-v1" not in health.get("features", [])):
+                raise TransferError(
+                    "동시 수신 기능이 없는 Relay입니다. Receiver와 Relay를 함께 업데이트하세요."
+                )
+            _health_cache_until[f"{relay_url}:claims"] = time.monotonic() + _HEALTH_CACHE_SECONDS
     status, response = _request(
-        f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-zip-v1", token,
+        f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-zip-v1&claim=1", token,
         response_limit=2 * 1024 * 1024,
     )
     if status == 204:
         status, response = _request(
-            f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-v1", token,
+            f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-v1&claim=1", token,
             response_limit=2 * 1024 * 1024,
         )
         if status == 204:
@@ -860,6 +875,11 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             or not isinstance(page_count, int) or isinstance(page_count, bool)
             or not 1 <= page_count <= MAX_PAGES or not isinstance(package, dict)):
         raise TransferError("Relay 작업 정보가 올바르지 않습니다.")
+    claim_token = response.get("claim_token")
+    if not isinstance(claim_token, str) or len(claim_token) < 32:
+        raise TransferError("Relay가 Receiver 작업 선점 토큰을 주지 않았습니다.")
+    if claim_state is not None:
+        claim_state.update({"job_id": job_id, "claim_token": claim_token})
     if package.get("carrier") not in {"SK", "KT"}:
         raise TransferError("지원하지 않는 포탈 작업입니다.")
     values = package.get("reviewed_values")
@@ -893,7 +913,7 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             raise FileExistsError(f"Receiver 작업 폴더가 올바르지 않습니다: {job_dir}") from exc
         if saved.get("station_id") != station_id or saved.get("job_id") != job_id:
             raise FileExistsError(f"기존 Receiver 작업이 다른 자리/작업입니다: {job_dir}")
-        return job_dir, saved
+        return job_dir, saved, claim_token
 
     job_root.mkdir(parents=True, exist_ok=True)
     staging.mkdir(parents=True, exist_ok=True)
@@ -913,6 +933,7 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             archive_size=archive_size,
             archive_sha256=archive_sha256,
             work_package=package,
+            claim_token=claim_token,
             cancel_event=cancel_event,
             progress=progress,
         )
@@ -980,7 +1001,10 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         check_cancelled()
         page_url = (f"{relay_url}/v1/stations/{station_path}/jobs/"
                     f"{quote(job_id, safe='')}/pages/{number}")
-        status, content = _request(page_url, token, response_limit=MAX_PAGE_BYTES)
+        status, content = _request(
+            page_url, token, response_limit=MAX_PAGE_BYTES,
+            extra_headers={"X-Relay-Claim": claim_token},
+        )
         check_cancelled()
         if status != 200 or not isinstance(content, bytes):
             raise TransferError(f"Relay에서 {number}페이지를 받지 못했습니다.")
@@ -1027,19 +1051,33 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         if job_dir.exists():
             saved = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
             if saved.get("job_id") == job_id and saved.get("station_id") == station_id:
-                return job_dir, saved
+                return job_dir, saved, claim_token
         raise
-    return job_dir, manifest
+    return job_dir, manifest, claim_token
 
 
 def acknowledge_work_package(relay_config: dict[str, str], station_id: str,
-                             job_id: str) -> None:
+                             job_id: str, claim_token: str) -> None:
     relay_url = relay_config["relay_url"].rstrip("/")
     station = quote(station_id, safe="")
     _request(
         f"{relay_url}/v1/stations/{station}/jobs/{quote(job_id, safe='')}/ack",
         relay_config["token"], method="POST", body=b"",
         content_type="application/json",
+        extra_headers={"X-Relay-Claim": claim_token},
+    )
+
+
+def release_work_package_claim(
+    relay_config: dict[str, str], station_id: str, job_id: str, claim_token: str,
+) -> None:
+    relay_url = relay_config["relay_url"].rstrip("/")
+    station = quote(station_id, safe="")
+    _request(
+        f"{relay_url}/v1/stations/{station}/jobs/{quote(job_id, safe='')}/release",
+        relay_config["token"], method="POST", body=b"",
+        content_type="application/json",
+        extra_headers={"X-Relay-Claim": claim_token},
     )
 
 

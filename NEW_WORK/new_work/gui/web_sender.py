@@ -722,7 +722,7 @@ def _backend_process(port: int, token: str) -> None:
                     item["error"] = f"상태 확인 실패: {exc}"
                 continue
             with batch_lock:
-                if status in {"queued", "delivered"}:
+                if status in {"queued", "receiving", "delivered"}:
                     item["send_status"] = "Relay 등록"
                     item["error"] = ""
                 elif status == "cancelled":

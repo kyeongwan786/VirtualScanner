@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tkinter as tk
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event, Thread
 from time import monotonic, time_ns
 from datetime import datetime
@@ -32,6 +33,7 @@ from new_work.relay_client import (
     acknowledge_work_package,
     get_station_emergency_command,
     report_station_emergency_result,
+    release_work_package_claim,
     receive_work_package,
 )
 
@@ -745,20 +747,44 @@ class ReceiverApp:
             pass
 
     def _receive_relay_work(self) -> None:
+        outcomes: list[tuple[str | None, str | None]] = []
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="receiver-job") as executor:
+            futures = [executor.submit(self._drain_relay_jobs) for _ in range(4)]
+            for future in as_completed(futures):
+                try:
+                    outcomes.extend(future.result())
+                except Exception as exc:
+                    outcomes.append((f"Relay 수신 실패 · {exc}", None))
+        self.root.after(0, self._receive_batch_finished, outcomes)
+
+    def _drain_relay_jobs(self) -> list[tuple[str | None, str | None]]:
+        outcomes = []
+        while not self._cancel_receive.is_set() and not self._emergency_stopping:
+            outcome, job_id = self._receive_one_relay_work()
+            if outcome is None:
+                break
+            outcomes.append((outcome, job_id))
+            if job_id is None:
+                break
+        return outcomes
+
+    def _receive_one_relay_work(self) -> tuple[str | None, str | None]:
         new_job_id: str | None = None
+        claim_state: dict = {}
         try:
             def progress(done: int, total: int, unit: str) -> None:
                 self.root.after(0, self._update_receive_progress, done, total, unit)
 
-            job_dir, manifest = receive_work_package(
+            received = receive_work_package(
                 {"relay_url": self.config["relay_url"], "token": self.config["token"]},
                 self.config["station_id"], Path(self.config["work_path"]),
                 cancel_event=self._cancel_receive,
                 progress=progress,
-            ) or (None, None)
-            if job_dir is None:
-                self.root.after(0, self._receive_finished, None)
-                return
+                claim_state=claim_state,
+            )
+            if received is None:
+                return None, None
+            job_dir, manifest, claim_token = received
             self.root.after(0, self._set_receive_progress_stage, "전송 완료 · 검증/저장 중")
             if self._cancel_receive.is_set():
                 raise RuntimeError("받은 자료 초기화 요청으로 Relay 수신을 취소했습니다.")
@@ -787,8 +813,9 @@ class ReceiverApp:
                 )
             acknowledge_work_package(
                 {"relay_url": self.config["relay_url"], "token": self.config["token"]},
-                self.config["station_id"], str(manifest["job_id"]),
+                self.config["station_id"], str(manifest["job_id"]), claim_token,
             )
+            claim_state.clear()
             new_job_id = str(manifest["job_id"])
             if has_identity and documents:
                 outcome = "신분증과 서류 수신 완료 · 폴더에서 각각 확인하세요"
@@ -799,9 +826,18 @@ class ReceiverApp:
             new_job_id = str(manifest["job_id"])
             self._retry_after = 0.0
         except Exception as exc:
+            if claim_state:
+                try:
+                    release_work_package_claim(
+                        {"relay_url": self.config["relay_url"], "token": self.config["token"]},
+                        self.config["station_id"],
+                        claim_state["job_id"], claim_state["claim_token"],
+                    )
+                except Exception:
+                    pass
             outcome = f"Relay 수신/검증 실패 · {exc}"
-            self._retry_after = monotonic() + 30
-        self.root.after(0, self._receive_finished, outcome, new_job_id)
+            return outcome, None
+        return outcome, new_job_id
 
     def _update_receive_progress(self, done: int, total: int, unit: str) -> None:
         if total <= 0:
@@ -992,10 +1028,8 @@ class ReceiverApp:
             raise ValueError(f"작업 패키지 파일을 찾지 못했습니다: {relative_name}")
         return target
 
-    def _receive_finished(
-        self,
-        outcome: str | None,
-        new_job_id: str | None = None,
+    def _receive_batch_finished(
+        self, outcomes: list[tuple[str | None, str | None]],
     ) -> None:
         self._processing = False
         if self._emergency_stopping:
@@ -1010,17 +1044,25 @@ class ReceiverApp:
         if self._pending_received_reset is not None:
             self._finish_received_reset()
             return
-        if new_job_id:
-            self._selected_job_id = new_job_id
-        if outcome:
-            self.status.set(outcome)
+        successful = [(outcome, job_id) for outcome, job_id in outcomes if job_id]
+        failures = [outcome for outcome, job_id in outcomes if outcome and not job_id]
+        if failures:
+            self._retry_after = monotonic() + 30
+        elif successful:
+            self._retry_after = 0.0
+        if successful:
+            self._selected_job_id = successful[-1][1]
+            if failures:
+                self.status.set(
+                    f"{len(successful)}건 동시 수신 완료 · {len(failures)}건 오류"
+                )
+            elif len(successful) == 1:
+                self.status.set(successful[0][0])
+            else:
+                self.status.set(f"{len(successful)}건 동시 수신 완료 · 폴더에서 확인하세요")
             self._refresh_queue()
-        # Drain a batch of queued jobs immediately. The normal inbox poll runs
-        # once per second, which otherwise adds that delay after every item.
-        if (new_job_id and not self._clearing_received and not self._correction_busy
-                and not self._processing):
-            self._processing = True
-            Thread(target=self._receive_relay_work, daemon=True).start()
+        elif failures:
+            self.status.set(failures[0])
 
     def _retry_failed(self) -> None:
         self._retry_after = 0.0

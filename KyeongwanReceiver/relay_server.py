@@ -21,6 +21,7 @@ import shutil
 import ssl
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -642,6 +643,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, {"status": "ready", "features": [
                 "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
+                "new-work-claim-v1",
                 "emergency-lock-v1", "emergency-receipts-v1", "station-provisioning-v1",
                 "station-presence-v1",
             ], "emergency_active": self.server.emergency_active(),
@@ -712,10 +714,21 @@ class RelayHandler(BaseHTTPRequestHandler):
             # Legacy clients that do not send a filter continue to receive
             # scanner-page jobs and never consume NEW_WORK packages.
             requested_type = requested_types[0] if requested_types else "scanner-pages-v1"
+            wants_claim = parse_qs(urlsplit(self.path).query).get("claim", []) == ["1"]
             with self.server.lock:
+                now = time.time()
                 queued = []
                 for job in self.server.jobs_dir.iterdir():
                     metadata = self._metadata(job)
+                    claim_expiry = (metadata or {}).get("claim_expires_at")
+                    if (metadata and metadata.get("station_id") == station_id
+                            and metadata.get("status") == "receiving"
+                            and (not isinstance(claim_expiry, (int, float))
+                                 or claim_expiry <= now)):
+                        metadata["status"] = "queued"
+                        metadata.pop("claim_hash", None)
+                        metadata.pop("claim_expires_at", None)
+                        _atomic_write(job / "metadata.json", _json_bytes(metadata))
                     payload_type = (metadata or {}).get("payload_type", "scanner-pages-v1")
                     if (metadata and metadata.get("station_id") == station_id
                             and metadata.get("status") == "queued"
@@ -731,6 +744,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                         details = {}
                         source_name = "relay-job"
                     response = {key: metadata[key] for key in ("job_id", "page_count", "dpi", "created_at")}
+                    if wants_claim:
+                        claim_token = secrets.token_urlsafe(32)
+                        metadata["status"] = "receiving"
+                        metadata["claim_hash"] = hashlib.sha256(claim_token.encode("ascii")).hexdigest()
+                        metadata["claim_expires_at"] = now + 300
+                        _atomic_write(job / "metadata.json", _json_bytes(metadata))
+                        response["claim_token"] = claim_token
                     if metadata.get("payload_type") == "new-work-zip-v1":
                         response["archive_size"] = metadata["archive_size"]
                         response["archive_sha256"] = details.get("archive_sha256")
@@ -747,6 +767,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             station_id, job_id, page_text = match.groups()
             if not self._authorize_station(station_id):
                 return
+            claim_token = self.headers.get("X-Relay-Claim", "")
             with self.server.lock:
                 if self.server.emergency_active():
                     self._reply(410, {"error": "relay permanently disabled by emergency command"})
@@ -754,9 +775,23 @@ class RelayHandler(BaseHTTPRequestHandler):
                 job = self._job_dir(job_id)
                 metadata = self._metadata(job)
                 number = int(page_text)
-                if not metadata or metadata.get("station_id") != station_id or metadata.get("status") != "queued" or number > metadata.get("page_count", 0):
+                claim_matches = bool(
+                    claim_token and metadata
+                    and hmac.compare_digest(
+                        str(metadata.get("claim_hash", "")),
+                        hashlib.sha256(claim_token.encode("utf-8")).hexdigest(),
+                    )
+                )
+                is_claimed = bool(metadata and metadata.get("status") == "receiving")
+                if (not metadata or metadata.get("station_id") != station_id
+                        or (metadata.get("status") != "queued" and not (is_claimed and claim_matches))
+                        or (is_claimed and not claim_matches)
+                        or number > metadata.get("page_count", 0)):
                     self._reply(404, {"error": "job page not found"})
                     return
+                if is_claimed:
+                    metadata["claim_expires_at"] = time.time() + 300
+                    _atomic_write(job / "metadata.json", _json_bytes(metadata))
                 encrypted_path = job / f"{number:03d}.fernet"
                 payload_type = metadata.get("payload_type")
             try:
@@ -1021,20 +1056,44 @@ class RelayHandler(BaseHTTPRequestHandler):
                 _atomic_write(job / "metadata.json", _json_bytes(metadata))
             self._reply(201, {"status": "queued", "job_id": job_id})
             return
-        match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/jobs/([A-Za-z0-9_-]{1,64})/ack", path)
+        match = re.fullmatch(
+            r"/v1/stations/([A-Za-z0-9_-]{1,64})/jobs/([A-Za-z0-9_-]{1,64})/(ack|release)",
+            path,
+        )
         if match:
-            station_id, job_id = match.groups()
+            station_id, job_id, action = match.groups()
             if not self._authorize_station(station_id):
                 return
+            claim_token = self.headers.get("X-Relay-Claim", "")
             with self.server.lock:
                 job = self._job_dir(job_id)
                 metadata = self._metadata(job)
                 if not metadata or metadata.get("station_id") != station_id:
                     self._reply(404, {"error": "job not found"})
                     return
+                if metadata.get("status") == "receiving":
+                    expected_hash = str(metadata.get("claim_hash", ""))
+                    supplied_hash = hashlib.sha256(claim_token.encode("utf-8")).hexdigest()
+                    if (not claim_token
+                            or not hmac.compare_digest(expected_hash, supplied_hash)):
+                        self._reply(409, {"error": "receiver claim does not match"})
+                        return
+                    if action == "release":
+                        metadata["status"] = "queued"
+                        metadata.pop("claim_hash", None)
+                        metadata.pop("claim_expires_at", None)
+                        _atomic_write(job / "metadata.json", _json_bytes(metadata))
+                        self._reply(200, {"status": "queued", "job_id": job_id})
+                        return
+                elif action == "release":
+                    self._reply(409, {"error": "job is not claimed"})
+                    return
+                elif metadata.get("status") != "queued" and metadata.get("status") != "delivered":
+                    self._reply(409, {"error": "job is not ready to acknowledge"})
+                    return
                 if metadata.get("status") == "delivered":
                     pass
-                elif metadata.get("status") != "queued":
+                elif metadata.get("status") not in {"queued", "receiving"}:
                     self._reply(409, {"error": "job is not queued"})
                     return
                 else:
