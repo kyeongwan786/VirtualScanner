@@ -42,7 +42,7 @@ Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지�
 
 `NEW_WORK` 중앙 OCR GUI는 두 흐름으로 분리돼 있다. V1은 OCR 전용 UI로, 접수 PC에서 실행해 SK `sk_report.txt` 또는 KT `myCustomer.db` 및 `ORG.jpg`/`CR.jpg`를 그 PC에 직접 갱신하며 별도 Receiver가 필요 없다. V3는 중앙 PC에서 접수 PC와 포탈을 선택하고 자료를 ZIP 작업으로 HTTPS 릴레이에 보낸다. 신분증 영역은 JPG/JPEG/PNG/PDF를 받고 입력을 JPG로 정규화해 신분증 OCR만 수행한다. 신분증 PDF는 첫 페이지를 신분증 이미지로 사용하며 다른 페이지는 서류 영역에 자동으로 붙이지 않는다. 서류 영역은 PDF/JPG/JPEG/PNG를 모두 받고 PDF는 페이지마다, 이미지 파일은 파일마다 한 장의 JPG 스캔 페이지로 정규화한다. Receiver는 신분증을 현장에서 확인한 뒤 SK/KT에 저장하고 정규화된 서류 JPG 페이지를 스캔 대기열로 관리한다. V1/V3 중앙 앱과 V3 Receiver의 Windows 소스 빌드 ZIP을 각각 제공한다. V3 Receiver UI도 macOS에서 소스로 실행할 수 있지만 업무페이지 TWAIN 스캔은 Windows 대상 PC에서 확인해야 한다.
 
-중앙 OCR 미리보기의 `idCrop`/`CR.jpg` 영역은 종류별 고정 크기로 표시하고 드래그해 위치만 조정할 수 있다. 선택 좌표는 작업 패키지의 `reviewed_values._idCropBounds`로 전달되며 SK Base64 크롭과 Receiver KT `CR.jpg` 생성에 사용된다. KT 쪽 수동 영역은 이 좌표 필드를 지원하는 Receiver 빌드가 필요하다.
+중앙 OCR 미리보기의 `idCrop`/`CR.jpg` 영역은 종류별 고정 크기로 표시하고 드래그해 위치만 조정할 수 있다. 자동/수동 및 묶음 전송 모두 송신기에 표시된 원본 이미지 픽셀 좌표를 작업 패키지의 `reviewed_values._idCropBounds`로 전달하며 Receiver가 별도 추정하지 않고 같은 좌표를 표시와 크롭 생성에 사용한다. SK Base64 크롭과 Receiver KT `CR.jpg` 생성에 사용된다. KT 쪽 수동 영역은 이 좌표 필드를 지원하는 Receiver 빌드가 필요하다.
 
 Receiver의 **받은 자료 초기화**는 로컬 수신 작업 패키지와 신분증/OCR/서류 메모리 참조, 스캔 목록 상태, 설정된 스캐너 `ready` 폴더 안의 작업을 강제 삭제한다. 진행 중인 페이지 요청이 끝난 뒤 정리하며, 적용이 시작된 작업은 적용과 Relay 응답을 마친 뒤 정리한다. 진행 중 스캔은 실패할 수 있다. 이미 적용된 SK/KT 대상 파일과 백업, Relay에 남은 미수신 작업은 유지한다.
 

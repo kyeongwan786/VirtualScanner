@@ -3882,6 +3882,10 @@ class NewWorkApp:
             )
             return
         values = self._current_values() if result is not None else {}
+        if result is not None and self._id_crop_preview_bounds is not None:
+            values["_idCropBounds"] = ",".join(
+                str(value) for value in self._id_crop_preview_bounds
+            )
         if result is not None and values.get("kaitIdType", "").strip() not in ID_TYPES:
             messagebox.showinfo(
                 "신분증 종류 확인",

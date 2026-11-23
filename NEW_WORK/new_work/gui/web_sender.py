@@ -378,8 +378,6 @@ def _backend_process(port: int, token: str) -> None:
                         and 0 <= top < bottom <= item["height"]):
                     raise ValueError("idCrop 영역이 이미지 범위를 벗어났습니다.")
                 bounds = [left, top, right, bottom]
-                if crop_manual or not item.get("crop_fallback"):
-                    values["_idCropBounds"] = ",".join(str(value) for value in bounds)
 
             if code == "1302":
                 extracted = extract_identity_fields(item["result"].lines, id_type_code=code)
@@ -401,11 +399,11 @@ def _backend_process(port: int, token: str) -> None:
                     source, recog_sub_cd=code,
                 )
                 bounds = list(automatic) if automatic else None
-                if bounds and fallback:
-                    values.pop("_idCropBounds", None)
             if not is_crop_type:
                 values.pop("_idCropBounds", None)
                 bounds = None
+            elif bounds is not None:
+                values["_idCropBounds"] = ",".join(str(value) for value in bounds)
 
             detection = IdTypeDetection(
                 name=ID_TYPES[code]["name"], type_code=ID_TYPES[code]["type"],
@@ -1239,6 +1237,10 @@ def _backend_process(port: int, token: str) -> None:
                     crop_bounds = crop_bounds or id_portrait_fallback_bounds(
                         source_image, recog_sub_cd=code,
                     )
+                    if crop_bounds is not None:
+                        values["_idCropBounds"] = ",".join(
+                            str(value) for value in crop_bounds
+                        )
                 fields = [
                     {"key": field, "label": title}
                     for field, title in FOCUS_FIELDS.get(
