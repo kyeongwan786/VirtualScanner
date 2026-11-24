@@ -543,7 +543,7 @@ def _backend_process(port: int, token: str) -> None:
                     item["error"] = "OCR 결과를 찾지 못했습니다."
                 return
             try:
-                create_work_package(
+                package = create_work_package(
                     package, job_id=transfer_id,
                     station_id=store.relay_station_id, carrier=carrier,
                     result=result, detection=item["detection"],
