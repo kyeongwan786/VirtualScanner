@@ -41,6 +41,7 @@ PAGE_RE = re.compile(r"^/v1/jobs/([A-Za-z0-9_-]{1,64})/pages/([1-9][0-9]{0,2})$"
 MAX_PAGE_BYTES = 40 * 1024 * 1024
 MAX_PAGES = 100
 MAX_JOB_BYTES = 512 * 1024 * 1024
+NEW_WORK_PAYLOAD_TYPES = ("new-work-v1", "new-work-zip-v1")
 
 
 def _ip_allowed(peer: str, entries: list[str]) -> bool:
@@ -82,20 +83,26 @@ class NeonStateStore:
 
     def __init__(self, dsn: str):
         try:
-            import psycopg
+            from psycopg_pool import ConnectionPool
         except ImportError as exc:
-            raise RuntimeError("install psycopg to use Neon DATABASE_URL") from exc
-        self._psycopg = psycopg
-        self._dsn = dsn
-        self._execute(
-            "CREATE TABLE IF NOT EXISTS kyeongwan_relay_state ("
-            "state_key TEXT PRIMARY KEY, state_value JSONB NOT NULL, "
-            "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            raise RuntimeError("install relay-requirements.txt to use Neon DATABASE_URL") from exc
+        self._pool = ConnectionPool(
+            dsn, min_size=2, max_size=8, timeout=8, open=True,
+            kwargs={"connect_timeout": 8, "autocommit": True, "prepare_threshold": None},
         )
+        try:
+            self._execute(
+                "CREATE TABLE IF NOT EXISTS kyeongwan_relay_state ("
+                "state_key TEXT PRIMARY KEY, state_value JSONB NOT NULL, "
+                "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+        except OSError:
+            self.close()
+            raise
 
     def _execute(self, query: str, params: tuple = (), *, fetch: bool = False):
         try:
-            with self._psycopg.connect(self._dsn, connect_timeout=8) as conn:
+            with self._pool.connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     return cur.fetchone() if fetch else None
@@ -122,6 +129,9 @@ class NeonStateStore:
     def ready(self) -> bool:
         self._execute("SELECT 1", fetch=True)
         return True
+
+    def close(self) -> None:
+        self._pool.close()
 
 
 def load_config(path: Path) -> dict:
@@ -342,8 +352,17 @@ class RelayHTTPServer(ThreadingHTTPServer):
         # Volatile heartbeat timestamps; Receivers refresh these through their
         # existing two-second emergency-command poll.
         self.station_last_seen: dict[str, datetime] = {}
-        self._load_station_provisioning()
-        self._migrate_emergency_state()
+        try:
+            self._load_station_provisioning()
+            self._migrate_emergency_state()
+        except Exception:
+            self.server_close()
+            raise
+
+    def server_close(self) -> None:
+        super().server_close()
+        if self.state_store:
+            self.state_store.close()
 
     def _read_state(self, key: str, path: Path) -> dict | None:
         if self.state_store:
@@ -462,16 +481,11 @@ class RelayHTTPServer(ThreadingHTTPServer):
         except OSError:
             return False
 
+    def emergency_command(self) -> dict:
+        return self._read_state("emergency", self.emergency_path) or {}
+
     def emergency_report(self) -> dict:
-        try:
-            event = self._read_state("emergency", self.emergency_path)
-        except (OSError, ValueError):
-            logging.exception("Could not read emergency report state")
-            event = {"active": True, "event_id": None, "activated_at": None, "results": {}}
-        if event is None:
-            event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
-        if not isinstance(event, dict):
-            event = {"active": False, "event_id": None, "activated_at": None, "results": {}}
+        event = self.emergency_command()
         results = event.get("results") if isinstance(event.get("results"), dict) else {}
         sender_result = event.get("sender_result")
         if not isinstance(sender_result, dict):
@@ -643,7 +657,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._reply(200, {"status": "ready", "features": [
                 "scanner-pages-v1", "new-work-v1", "new-work-zip-v1", "job-status-v1",
-                "new-work-claim-v1",
+                "new-work-claim-v1", "new-work-inbox-v1",
                 "emergency-lock-v1", "emergency-receipts-v1", "station-provisioning-v1",
                 "station-presence-v1",
             ], "emergency_active": self.server.emergency_active(),
@@ -652,7 +666,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path == "/v1/emergency":
             if not self._authorize_central():
                 return
-            self._reply(200, self.server.emergency_report())
+            try:
+                report = self.server.emergency_report()
+            except (OSError, ValueError):
+                self._reply(503, {"error": "emergency state is unavailable"})
+                return
+            self._reply(200, report)
             return
         if path == "/v1/stations/status":
             if not self._authorize_central():
@@ -677,10 +696,15 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             with self.server.lock:
                 self.server.station_last_seen[station_id] = datetime.now(timezone.utc)
-            report = self.server.emergency_report()
+            try:
+                command = self.server.emergency_command()
+            except (OSError, ValueError):
+                self._reply(503, {"error": "emergency state is unavailable"})
+                return
             self._reply(200, {
-                "active": report["active"], "event_id": report["event_id"],
-                "activated_at": report["activated_at"],
+                "active": command.get("active") is True,
+                "event_id": command.get("event_id"),
+                "activated_at": command.get("activated_at"),
             })
             return
         if self.server.emergency_active():
@@ -705,16 +729,17 @@ class RelayHandler(BaseHTTPRequestHandler):
             station_id = match.group(1)
             if not self._authorize_station(station_id):
                 return
-            requested_types = parse_qs(urlsplit(self.path).query).get("payload_type", [])
-            if requested_types and requested_types[0] not in {
-                "scanner-pages-v1", "new-work-v1", "new-work-zip-v1"
-            }:
+            query = parse_qs(urlsplit(self.path).query)
+            requested_type = query.get("payload_type", ["scanner-pages-v1"])[0]
+            wants_claim = query.get("claim") == ["1"]
+            if requested_type == "new-work" and wants_claim:
+                requested_types = NEW_WORK_PAYLOAD_TYPES
+            elif requested_type in ("scanner-pages-v1", *NEW_WORK_PAYLOAD_TYPES):
+                requested_types = (requested_type,)
+            else:
                 self._reply(400, {"error": "unsupported payload_type filter"})
                 return
-            # Legacy clients that do not send a filter continue to receive
-            # scanner-page jobs and never consume NEW_WORK packages.
-            requested_type = requested_types[0] if requested_types else "scanner-pages-v1"
-            wants_claim = parse_qs(urlsplit(self.path).query).get("claim", []) == ["1"]
+            response = None
             with self.server.lock:
                 now = time.time()
                 queued = []
@@ -732,7 +757,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     payload_type = (metadata or {}).get("payload_type", "scanner-pages-v1")
                     if (metadata and metadata.get("station_id") == station_id
                             and metadata.get("status") == "queued"
-                            and payload_type == requested_type):
+                            and payload_type in requested_types):
                         queued.append((metadata.get("created_at", ""), job, metadata))
                 if queued:
                     _, job, metadata = min(queued, key=lambda item: item[0])
@@ -758,9 +783,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                                      "payload_type": metadata.get("payload_type", "scanner-pages-v1")})
                     if metadata.get("payload_type") in {"new-work-v1", "new-work-zip-v1"}:
                         response["work_package"] = details.get("work_package")
-                    self._reply(200, response)
-                    return
-            self._reply(204, {})
+            if response is None:
+                self._reply(204, {})
+            else:
+                self._reply(200, response)
             return
         match = re.fullmatch(r"/v1/stations/([A-Za-z0-9_-]{1,64})/jobs/([A-Za-z0-9_-]{1,64})/pages/([1-9][0-9]{0,2})", path)
         if match:
@@ -911,7 +937,12 @@ class RelayHandler(BaseHTTPRequestHandler):
                 status = 503 if "durable emergency state storage" in str(exc) else 500
                 self._reply(status, {"error": f"could not persist emergency lock: {exc}"})
                 return
-            self._reply(200, {**self.server.emergency_report(), "removed_jobs": removed})
+            try:
+                report = self.server.emergency_report()
+            except (OSError, ValueError):
+                self._reply(503, {"error": "emergency state is unavailable"})
+                return
+            self._reply(200, {**report, "removed_jobs": removed})
             return
         if self.server.emergency_active():
             self._reply(410, {"error": "relay permanently disabled by emergency command"})
@@ -1297,7 +1328,7 @@ def main() -> int:
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(config["tls_cert"], config["tls_key"])
             server.socket = context.wrap_socket(server.socket, server_side=True)
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
         logging.error("Relay startup refused: %s", error)
         return 2
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

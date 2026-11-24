@@ -25,7 +25,7 @@ MAX_PAGES = 100
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 _http_state = local()
 _health_cache_lock = Lock()
-_health_cache_until: dict[str, float] = {}
+_health_cache: dict[str, tuple[float, frozenset[str]]] = {}
 _HEALTH_CACHE_SECONDS = 300
 
 
@@ -150,6 +150,20 @@ def _request(url: str, token: str, *, method: str = "GET",
             connection.close()
         _http_state.connection = None
         raise TransferError(f"Relay 연결 실패: {exc}") from exc
+
+
+def _relay_features(relay_url: str, token: str) -> frozenset[str]:
+    with _health_cache_lock:
+        cached = _health_cache.get(relay_url)
+        if cached is not None and cached[0] > time.monotonic():
+            return cached[1]
+        status, health = _request(f"{relay_url}/health", token)
+        features = health.get("features") if status == 200 and isinstance(health, dict) else None
+        if not isinstance(features, list) or not all(isinstance(item, str) for item in features):
+            return frozenset()
+        available = frozenset(features)
+        _health_cache[relay_url] = (time.monotonic() + _HEALTH_CACHE_SECONDS, available)
+        return available
 
 
 def _package_metadata(archive: zipfile.ZipFile, station_id: str) -> tuple[dict, list[str]]:
@@ -352,18 +366,14 @@ def send_work_package(
     report = progress or (lambda _message: None)
     package_path = Path(package_path)
     direct_pages = package_path.is_dir()
-    with _health_cache_lock:
-        if _health_cache_until.get(relay_url, 0) <= time.monotonic():
-            health_status, health = _request(f"{relay_url}/health", token)
-            check_cancelled()
-            required_feature = "new-work-v1" if direct_pages else "new-work-zip-v1"
-            if (health_status != 200 or not isinstance(health, dict)
-                    or required_feature not in health.get("features", [])):
-                raise TransferError(
-                    "Render Relay가 NEW_WORK 파일 전송 API를 지원하지 않습니다. "
-                    "저장소의 KyeongwanReceiver/relay_server.py를 배포한 뒤 다시 시도하세요."
-                )
-            _health_cache_until[relay_url] = time.monotonic() + _HEALTH_CACHE_SECONDS
+    features = _relay_features(relay_url, token)
+    check_cancelled()
+    required_feature = "new-work-v1" if direct_pages else "new-work-zip-v1"
+    if required_feature not in features:
+        raise TransferError(
+            "Render Relay가 NEW_WORK 파일 전송 API를 지원하지 않습니다. "
+            "저장소의 KyeongwanReceiver/relay_server.py를 배포한 뒤 다시 시도하세요."
+        )
     if direct_pages:
         work_package, page_paths, manifest = _directory_package_metadata(
             package_path, station_id,
@@ -433,15 +443,18 @@ def send_work_package(
                     report(f"Relay JPG 전송 중 · {uploaded['pages']}/{page_count}")
                 check_cancelled()
 
-            with ThreadPoolExecutor(
-                max_workers=min(4, page_count), thread_name_prefix="relay-jpg-upload",
-            ) as executor:
-                futures = [
-                    executor.submit(upload_page, number, page_path)
-                    for number, page_path in enumerate(page_paths, start=1)
-                ]
-                for future in as_completed(futures):
-                    future.result()
+            if page_count == 1:
+                upload_page(1, page_paths[0])
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=min(4, page_count), thread_name_prefix="relay-jpg-upload",
+                ) as executor:
+                    futures = [
+                        executor.submit(upload_page, number, page_path)
+                        for number, page_path in enumerate(page_paths, start=1)
+                    ]
+                    for future in as_completed(futures):
+                        future.result()
             completion_body = b"{}"
         else:
             upload_digest = hashlib.sha256()
@@ -838,31 +851,32 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
                          cancel_event: Event | None = None,
                          progress: Callable[[int, int, str], None] | None = None,
                          claim_state: dict | None = None,
+                         *, on_claim: Callable[[], None] | None = None,
                          ) -> tuple[Path, dict, str] | None:
     """Atomically claim and receive one assigned package."""
+    if cancel_event is not None and cancel_event.is_set():
+        return None
     relay_url = relay_config["relay_url"].rstrip("/")
     token = relay_config["token"]
-    station = quote(station_id, safe="")
-    with _health_cache_lock:
-        if _health_cache_until.get(f"{relay_url}:claims", 0) <= time.monotonic():
-            health_status, health = _request(f"{relay_url}/health", token)
-            if (health_status != 200 or not isinstance(health, dict)
-                    or "new-work-claim-v1" not in health.get("features", [])):
-                raise TransferError(
-                    "동시 수신 기능이 없는 Relay입니다. Receiver와 Relay를 함께 업데이트하세요."
-                )
-            _health_cache_until[f"{relay_url}:claims"] = time.monotonic() + _HEALTH_CACHE_SECONDS
-    status, response = _request(
-        f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-zip-v1&claim=1", token,
-        response_limit=2 * 1024 * 1024,
+    station_path = quote(station_id, safe="")
+    features = _relay_features(relay_url, token)
+    if "new-work-claim-v1" not in features:
+        raise TransferError(
+            "동시 수신 기능이 없는 Relay입니다. Receiver와 Relay를 함께 업데이트하세요."
+        )
+    filters = ("new-work",) if "new-work-inbox-v1" in features else (
+        "new-work-zip-v1", "new-work-v1",
     )
-    if status == 204:
+    for payload_filter in filters:
         status, response = _request(
-            f"{relay_url}/v1/stations/{station}/jobs/next?payload_type=new-work-v1&claim=1", token,
+            f"{relay_url}/v1/stations/{station_path}/jobs/next?payload_type={payload_filter}&claim=1",
+            token,
             response_limit=2 * 1024 * 1024,
         )
-        if status == 204:
-            return None
+        if status != 204:
+            break
+    else:
+        return None
     if status != 200 or not isinstance(response, dict):
         raise TransferError(f"Relay가 올바른 작업 응답을 주지 않았습니다: {response}")
     payload_type = response.get("payload_type")
@@ -880,6 +894,8 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         raise TransferError("Relay가 Receiver 작업 선점 토큰을 주지 않았습니다.")
     if claim_state is not None:
         claim_state.update({"job_id": job_id, "claim_token": claim_token})
+    if on_claim is not None:
+        on_claim()
     if package.get("carrier") not in {"SK", "KT"}:
         raise TransferError("지원하지 않는 포탈 작업입니다.")
     values = package.get("reviewed_values")
@@ -898,11 +914,8 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
 
     job_root = Path(work_path).expanduser() / "jobs"
     job_dir = job_root / job_id
-    staging = job_root / f".{job_id}.incoming"
-
     def check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
-            shutil.rmtree(staging, ignore_errors=True)
             raise TransferError("자료 초기화 요청으로 Relay 수신을 취소했습니다.")
 
     check_cancelled()
@@ -916,7 +929,6 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         return job_dir, saved, claim_token
 
     job_root.mkdir(parents=True, exist_ok=True)
-    staging.mkdir(parents=True, exist_ok=True)
     if payload_type == "new-work-zip-v1":
         archive_size = response.get("archive_size")
         archive_sha256 = response.get("archive_sha256")
@@ -991,13 +1003,13 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
         "identity_image": identity_relative,
         "documents": normalized_documents,
     }
-    station_path = quote(station_id, safe="")
     if progress:
         progress(0, page_count, "pages")
     progress_lock = Lock()
     completed_pages = {"count": 0}
+    staging = Path(tempfile.mkdtemp(prefix=f".{job_id}.incoming-", dir=job_root))
 
-    def download_page(number: int) -> tuple[int, bytes]:
+    def receive_page(number: int) -> None:
         check_cancelled()
         page_url = (f"{relay_url}/v1/stations/{station_path}/jobs/"
                     f"{quote(job_id, safe='')}/pages/{number}")
@@ -1010,9 +1022,6 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
             raise TransferError(f"Relay에서 {number}페이지를 받지 못했습니다.")
         if not content.startswith(b"\xff\xd8\xff") or not content.endswith(b"\xff\xd9"):
             raise TransferError(f"Relay의 {number}페이지가 올바른 JPG가 아닙니다.")
-        return number, content
-
-    def save_page(number: int, content: bytes) -> None:
         target = staging / page_map[number]
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".page-", suffix=".tmp", dir=target.parent)
@@ -1032,26 +1041,34 @@ def receive_work_package(relay_config: dict[str, str], station_id: str,
                 completed_pages["count"] += 1
                 progress(completed_pages["count"], page_count, "pages")
 
-    with ThreadPoolExecutor(
-        max_workers=min(4, page_count), thread_name_prefix="relay-jpg-download",
-    ) as executor:
-        futures = [executor.submit(download_page, number)
-                   for number in range(1, page_count + 1)]
-        for future in as_completed(futures):
-            number, content = future.result()
-            save_page(number, content)
-    check_cancelled()
-    (staging / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    check_cancelled()
     try:
-        os.replace(staging, job_dir)
-    except OSError:
-        if job_dir.exists():
+        if page_count == 1:
+            receive_page(1)
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(4, page_count), thread_name_prefix="relay-jpg-download",
+            ) as executor:
+                futures = [executor.submit(receive_page, number)
+                           for number in range(1, page_count + 1)]
+                for future in as_completed(futures):
+                    future.result()
+        check_cancelled()
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        check_cancelled()
+        try:
+            os.replace(staging, job_dir)
+        except OSError:
+            if not job_dir.exists():
+                raise
             saved = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
-            if saved.get("job_id") == job_id and saved.get("station_id") == station_id:
-                return job_dir, saved, claim_token
+            if saved.get("job_id") != job_id or saved.get("station_id") != station_id:
+                raise
+            shutil.rmtree(staging, ignore_errors=True)
+            return job_dir, saved, claim_token
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
         raise
     return job_dir, manifest, claim_token
 

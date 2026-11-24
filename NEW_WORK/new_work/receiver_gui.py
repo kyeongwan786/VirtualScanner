@@ -10,12 +10,13 @@ import sqlite3
 import sys
 import tkinter as tk
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from threading import Event, Thread
 from time import monotonic, time_ns
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -174,6 +175,7 @@ class ReceiverApp:
             except (OSError, json.JSONDecodeError) as exc:
                 messagebox.showerror("Receiver 설정 오류", str(exc), parent=root)
         self._processing = False
+        self._receive_queue_refresh: str | None = None
         self._receive_progress_started = 0.0
         self._retry_after = 0.0
         self._photo: ImageTk.PhotoImage | None = None
@@ -205,7 +207,7 @@ class ReceiverApp:
         if not all(self.config.get(key) for key in ("station_id", "relay_url", "token")):
             self.status.set("Receiver 설정 필요 · Relay 주소, 자리 ID, 자리 토큰을 지정하세요")
         self._refresh_queue()
-        self.root.after(1000, self._poll_inbox)
+        self.root.after(500, self._poll_inbox)
         self.root.after(1200, self._poll_remote_emergency)
 
     def _build(self) -> None:
@@ -672,7 +674,7 @@ class ReceiverApp:
                 and monotonic() >= self._retry_after):
             self._processing = True
             Thread(target=self._receive_relay_work, daemon=True).start()
-        self.root.after(1000, self._poll_inbox)
+        self.root.after(500, self._poll_inbox)
 
     def _poll_remote_emergency(self) -> None:
         if (not self._emergency_stopping and not self._emergency_checking
@@ -748,39 +750,64 @@ class ReceiverApp:
 
     def _receive_relay_work(self) -> None:
         outcomes: list[tuple[str | None, str | None]] = []
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="receiver-job") as executor:
-            futures = [executor.submit(self._drain_relay_jobs) for _ in range(4)]
-            for future in as_completed(futures):
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="receiver-job") as executor:
+            futures = set()
+
+            def collect(future: Future[list[tuple[str | None, str | None]]]) -> None:
                 try:
                     outcomes.extend(future.result())
                 except Exception as exc:
                     outcomes.append((f"Relay 수신 실패 · {exc}", None))
+
+            def start_workers() -> None:
+                for future in tuple(futures):
+                    if future.done():
+                        futures.remove(future)
+                        collect(future)
+                if not self._cancel_receive.is_set():
+                    for _ in range(3 - len(futures)):
+                        futures.add(executor.submit(self._drain_relay_jobs))
+
+            try:
+                outcomes.extend(self._drain_relay_jobs(on_claim=start_workers))
+            except Exception as exc:
+                outcomes.append((f"Relay 수신 실패 · {exc}", None))
+            for future in as_completed(futures):
+                collect(future)
         self.root.after(0, self._receive_batch_finished, outcomes)
 
-    def _drain_relay_jobs(self) -> list[tuple[str | None, str | None]]:
+    def _drain_relay_jobs(
+        self, on_claim: Callable[[], None] | None = None,
+    ) -> list[tuple[str | None, str | None]]:
         outcomes = []
         while not self._cancel_receive.is_set() and not self._emergency_stopping:
-            outcome, job_id = self._receive_one_relay_work()
+            outcome, job_id = self._receive_one_relay_work(on_claim=on_claim)
             if outcome is None:
                 break
             outcomes.append((outcome, job_id))
             if job_id is None:
                 break
+            self.root.after(0, self._publish_received_job, outcome)
         return outcomes
 
-    def _receive_one_relay_work(self) -> tuple[str | None, str | None]:
+    def _receive_one_relay_work(
+        self, on_claim: Callable[[], None] | None = None,
+    ) -> tuple[str | None, str | None]:
         new_job_id: str | None = None
         claim_state: dict = {}
+        config = self.config
+        relay_config = {"relay_url": config["relay_url"], "token": config["token"]}
+        station_id = config["station_id"]
         try:
             def progress(done: int, total: int, unit: str) -> None:
                 self.root.after(0, self._update_receive_progress, done, total, unit)
 
             received = receive_work_package(
-                {"relay_url": self.config["relay_url"], "token": self.config["token"]},
-                self.config["station_id"], Path(self.config["work_path"]),
+                relay_config, station_id, Path(config["work_path"]),
                 cancel_event=self._cancel_receive,
                 progress=progress,
                 claim_state=claim_state,
+                on_claim=on_claim,
             )
             if received is None:
                 return None, None
@@ -812,8 +839,7 @@ class ReceiverApp:
                     encoding="utf-8",
                 )
             acknowledge_work_package(
-                {"relay_url": self.config["relay_url"], "token": self.config["token"]},
-                self.config["station_id"], str(manifest["job_id"]), claim_token,
+                relay_config, station_id, str(manifest["job_id"]), claim_token,
             )
             claim_state.clear()
             new_job_id = str(manifest["job_id"])
@@ -823,14 +849,12 @@ class ReceiverApp:
                 outcome = "신분증 수신 완료 · 확인 버튼을 누르면 포탈에 저장됩니다"
             else:
                 outcome = "서류 수신 완료 · 원하는 서류를 스캔 대기열에 추가하세요"
-            new_job_id = str(manifest["job_id"])
             self._retry_after = 0.0
         except Exception as exc:
             if claim_state:
                 try:
                     release_work_package_claim(
-                        {"relay_url": self.config["relay_url"], "token": self.config["token"]},
-                        self.config["station_id"],
+                        relay_config, station_id,
                         claim_state["job_id"], claim_state["claim_token"],
                     )
                 except Exception:
@@ -1028,6 +1052,18 @@ class ReceiverApp:
             raise ValueError(f"작업 패키지 파일을 찾지 못했습니다: {relative_name}")
         return target
 
+    def _publish_received_job(self, outcome: str) -> None:
+        if self._clearing_received or self._emergency_stopping:
+            return
+        self.status.set(outcome)
+        if self._receive_queue_refresh is None:
+            self._receive_queue_refresh = self.root.after(75, self._refresh_received_queue)
+
+    def _refresh_received_queue(self) -> None:
+        self._receive_queue_refresh = None
+        if not self._clearing_received and not self._emergency_stopping:
+            self._refresh_queue(preserve_selected_preview=True)
+
     def _receive_batch_finished(
         self, outcomes: list[tuple[str | None, str | None]],
     ) -> None:
@@ -1036,9 +1072,7 @@ class ReceiverApp:
             self._finish_remote_emergency_when_idle()
             return
         self.receive_progress_frame.grid_remove()
-        # The web Receiver snapshot reads this StringVar while the next inbox
-        # poll is running. Clear the previous job's text so an empty 2-second
-        # poll cannot flash a stale "transfer complete" progress line.
+        # Clear the previous progress before the next inbox poll.
         self.receive_progress_label.set("")
         self.receive_progress_bar.configure(value=0)
         if self._pending_received_reset is not None:
@@ -1051,7 +1085,6 @@ class ReceiverApp:
         elif successful:
             self._retry_after = 0.0
         if successful:
-            self._selected_job_id = successful[-1][1]
             if failures:
                 self.status.set(
                     f"{len(successful)}건 동시 수신 완료 · {len(failures)}건 오류"
@@ -1060,7 +1093,6 @@ class ReceiverApp:
                 self.status.set(successful[0][0])
             else:
                 self.status.set(f"{len(successful)}건 동시 수신 완료 · 폴더에서 확인하세요")
-            self._refresh_queue()
         elif failures:
             self.status.set(failures[0])
 
@@ -1209,7 +1241,7 @@ class ReceiverApp:
             self._cancel_receive = Event()
             self._clearing_received = False
 
-    def _refresh_queue(self) -> None:
+    def _refresh_queue(self, *, preserve_selected_preview: bool = False) -> None:
         self._sync_active_scan()
         self._items.clear()
         self._jobs.clear()
@@ -1293,7 +1325,7 @@ class ReceiverApp:
         self.scan_count_var.set(f"{len(self._scan_order)}개 · ready 폴더 등록")
         self.wait_count_var.set(f"{len(self._queue_order)}개 · 아직 스캔 목록에 없음")
         self.completed_count.set(f"스캔 완료 {len(self._completed)}개")
-        self._refresh_job_selector()
+        self._refresh_job_selector(preserve_selected_preview=preserve_selected_preview)
 
     def _render_document_tree(
         self, tree: ttk.Treeview, order: list[str], active_keys: set[str], idle_state: str,
@@ -1774,7 +1806,7 @@ class ReceiverApp:
         self.status.set("마지막 서류 삭제를 되돌렸습니다")
         return "break"
 
-    def _refresh_job_selector(self) -> None:
+    def _refresh_job_selector(self, *, preserve_selected_preview: bool = False) -> None:
         jobs = sorted(self._jobs.values(), key=lambda item: item["mtime"], reverse=True)
         self._job_labels.clear()
         labels = []
@@ -1805,6 +1837,8 @@ class ReceiverApp:
         )
         self.job_box.set(current_label)
         selected_id = self._job_labels.get(current_label, "")
+        if preserve_selected_preview and selected_id and selected_id == current_id:
+            return
         if selected_id:
             self._show_job(selected_id)
         else:

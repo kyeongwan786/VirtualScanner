@@ -145,9 +145,12 @@ PDF는 MuPDF로 페이지별 JPEG를 메모리에서 렌더링한다. 페이지�
 - `GET /v1/jobs/{jobId}/status` — 중앙 토큰으로 작업 상태(`uploading`, `queued`, `receiving`, `delivered`, `cancelled`) 확인
 - `GET /v1/stations/status` — 중앙 토큰 인증, 각 자리 Receiver의 최근 인증 폴링 시각과 15초 기준 온라인 여부 반환. Receiver가 기존 긴급 명령을 2초 간격으로 조회할 때 마지막 접속 시각을 갱신한다. 이 상태는 Relay 메모리에만 있어 Relay 재시작 뒤 다시 접속할 때까지 오프라인으로 보인다.
 - `GET /v1/stations/{stationId}/jobs/next?payload_type=...&claim=1`, `GET /v1/stations/{stationId}/jobs/{jobId}/pages/{pageNumber}`, `POST /v1/stations/{stationId}/jobs/{jobId}/ack|release` — 해당 자리 전용 토큰과 그 자리 출구 IP로 제한. Claim은 작업을 원자적으로 선점하며 5분 동안 갱신되고 만료 시 재수신 가능하다.
+- `/health`에 `new-work-inbox-v1`이 있으면 `jobs/next?payload_type=new-work&claim=1`로 JPG와 구형 ZIP 작업을 한 번에 조회하고 해당 자리의 가장 오래된 작업을 선점한다. 기존 단일 형식 조회도 사용할 수 있다.
 - `GET /health` — 비민감 준비 상태만 제공
 
 Relay는 기존 스캐너 페이지와 NEW_WORK JPG 페이지를 Fernet으로 암호화해 `relay-data/jobs`에 저장한다. 페이지당 최대 40 MiB, 작업당 최대 512 MiB다. 새 NEW_WORK 송신기는 manifest와 JPG 페이지를 `payload_type: new-work-v1`로 직접 전송해 ZIP 생성·전송·압축 해제와 archive SHA-256 계산을 건너뛴다. Receiver는 최대 4개의 독립 작업을 동시에 claim하고 각각의 JPG 페이지도 최대 4개씩 병렬로 받아 검증한 뒤 staging에 저장하고 완료를 ack한다. 구형 ZIP 방식 `new-work-zip-v1`도 호환을 위해 유지하며, 이 경우 Relay가 ZIP 조각을 암호화하고 Receiver가 SHA-256 검증 및 안전한 압축 해제를 수행한다. 다른 작업의 암호화·디스크 쓰기와 Receiver 읽기·복호화는 전역 상태 잠금 밖에서 처리한다. 긴급 잠금과 취소는 진행 중인 쓰기가 끝나기 전 작업 데이터를 정리하지 않는다. Receiver가 로컬 저장 후 ack하면 Relay는 페이지 payload와 메타데이터를 삭제하되, 중앙 UI의 적용 확인을 위해 개인정보가 없는 상태 레코드만 남긴다. 동시 claim API 추가로 Relay도 함께 배포하고 새 Sender/Receiver를 설치해야 한다. Render에서는 Receiver가 내려받기 전에 서비스가 재시작되면 대기 작업이 유실될 수 있다.
+
+`DATABASE_URL`을 구성한 Relay는 `relay-requirements.txt`의 Psycopg 연결 풀로 Neon 세션을 재사용한다. 전송 중 긴급 잠금 조회에 실패하면 작업을 차단한다. 긴급 명령 조회 자체가 실패하면 HTTP 503을 반환해 클라이언트가 이를 정리 명령으로 처리하지 않게 한다.
 
 - 구형 직접 Receiver API (개발 호환 전용): `GET /health`, `PUT /v1/jobs/{jobId}/pages/{pageNumber}`, `POST /complete`, `DELETE /cancel`
 - `PUT /v1/jobs/{jobId}/pages/{pageNumber}` — 인증 헤더 `X-Receiver-Token`과 JPG 본문으로 페이지 업로드
