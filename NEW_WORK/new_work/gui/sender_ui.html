@@ -551,8 +551,8 @@
       const ocrDone=items.filter(item=>item.ocr_status==="완료").length;const failedCount=items.filter(item=>["실패","취소됨"].includes(item.ocr_status)).length;const ocrReady=items.length===expected&&ocrDone===expected;
       const deliveryCount=items.filter(item=>item.send_status==="Relay 등록").length;
       $("batchProgress").textContent=allQueued?`${items.length}건 Relay 등록 완료`:batchState?.status==="checking"?"Relay 전송 상태 확인 중…":waitingAuto?`OCR ${ocrDone}/${expected} 완료 · 완료되면 자동 전송`:batchState?.status==="sending"?`Relay 등록 ${deliveryCount}/${expected}건 · 처리 중`:batchUploading?`업로드 ${items.length}/${expected} · OCR ${ocrDone}/${expected} 완료`:`OCR ${ocrDone}/${expected}${failedCount?` · 실패 ${failedCount}`:""} · 전송 대기`;
-      $("batchCancel").disabled=batchUploading||["sending","partial","checking"].includes(batchState?.status)||(!activeOcr&&items.some(item=>item.send_status!=="대기"));
-      $("batchCancel").textContent=activeOcr?"OCR 취소":waitingAuto?"자동 전송 취소":"묶음 취소";
+      $("batchCancel").disabled=batchUploading;
+      $("batchCancel").textContent=["sending","partial","checking"].includes(batchState?.status)?"전송 취소":activeOcr?"OCR 취소":waitingAuto?"자동 전송 취소":"묶음 취소";
       $("batchFinish").disabled=stationSelectionBusy||stationSelectionFailed||(sending&&!changedTarget)||batchUploading||items.length<2||(!allQueued&&(!uploadComplete||ocrFailed));
       $("batchFinish").textContent=changedTarget?"선택 자리로 다시 전송":allQueued?"닫기":batchState?.items?.some(item=>item.send_status==="확인 필요")?"전송 상태 확인":batchState?.status==="partial"?"미등록 항목 재시도":ocrReady?"전체 신분증 전송":"OCR 완료 후 전체 전송";
       $("batchFields").querySelectorAll("input,select").forEach(control=>control.disabled=Boolean(locked));
@@ -571,7 +571,7 @@
       const active=batchState?.items?.some(item=>["대기 중","인식 중","취소 중"].includes(item.ocr_status));
       const waiting=batchState?.status==="waiting_ocr"&&!active;
       const prompt=active?"진행 중인 신분증 OCR을 취소할까요? 중단이 끝나면 ‘묶음 취소’를 눌러 새 파일을 등록할 수 있습니다.":waiting?"OCR 완료 후 자동 전송 예약을 취소할까요? 업로드한 묶음은 검토 화면에 남습니다.":"선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다.";
-      if(!confirm(prompt))return;
+      if(!["sending","partial","checking"].includes(batchState?.status)&&!await frameConfirm(prompt))return;
       $("batchCancel").disabled=true;
       try{
         const response=await action("batch_cancel");

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from threading import Event
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -33,8 +34,15 @@ def create_work_package(
     detection: IdTypeDetection,
     reviewed_values: Mapping[str, str],
     document_jobs: Sequence[Mapping[str, object]],
+    cancel_event: Event | None = None,
 ) -> Path:
     """Prepare a manifest/JPG directory for direct Relay page transfer."""
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            from new_work.relay_client import TransferCancelledError
+            raise TransferCancelledError("전송 자료 준비를 취소했습니다.")
+
+    check_cancelled()
     if carrier not in {"SK", "KT"}:
         raise ValueError("포탈은 SK 또는 KT여야 합니다.")
     if not station_id:
@@ -60,6 +68,7 @@ def create_work_package(
 
     document_entries: list[dict[str, object]] = []
     for index, item in enumerate(document_jobs, start=1):
+        check_cancelled()
         source = Path(item["source"])
         source_directory = Path(item["output"])
         page_paths = sorted(source_directory.glob("*.jpg"))
@@ -69,6 +78,7 @@ def create_work_package(
         relative_directory = Path("documents") / document_id
         copied_pages: list[str] = []
         for page_path in page_paths:
+            check_cancelled()
             relative_page = relative_directory / page_path.name
             destination = package_root / relative_page
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +93,7 @@ def create_work_package(
             "pages": copied_pages,
         })
 
+    check_cancelled()
     manifest: dict[str, object] = {
         "schema_version": 1,
         "job_id": job_id,

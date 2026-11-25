@@ -4094,6 +4094,7 @@ class NewWorkApp:
                 detection=detection,
                 reviewed_values=values,
                 document_jobs=documents,
+                cancel_event=cancel_event,
             )
             if cancel_event.is_set():
                 raise TransferCancelledError("전송 자료 준비 중 송신기 초기화가 요청됐습니다.")
@@ -4150,7 +4151,8 @@ class NewWorkApp:
             "Relay 전송 중이면 취소를 요청합니다. Receiver가 이미 받은 자료는 Receiver에서 별도로 초기화해야 합니다.\n"
             "이 앱이 만든 임시 신분증 사본·PDF 페이지·전송 자료만 정리하며, 원본 파일은 삭제하지 않습니다."
         )
-        if not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
+        active_transfer = self._transfer_cancel_event is not None or self._pending_confirmation is not None
+        if not active_transfer and not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
             return
 
         self._resend_target = None
@@ -4168,7 +4170,7 @@ class NewWorkApp:
             self._transfer_cancel_event.set()
             self.reset_button.configure(state="disabled", text="취소 요청 중…")
             self.review_status.set(
-                "취소 요청 중 · 진행 중인 Relay 요청이 끝나면 작업 자료를 정리합니다."
+                "전송 중단 요청됨 · 연결을 끊고 Relay 취소 결과를 확인합니다."
             )
             return
 

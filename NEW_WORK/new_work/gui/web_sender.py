@@ -232,6 +232,8 @@ def _backend_process(port: int, token: str) -> None:
         ocr=PaddleOcrAdapter(device="cpu", ocr_version="PP-OCRv5"),
         version="v2",
     )
+    from new_work.web_dialogs import WebDialogs, CLIENT
+    dialogs = WebDialogs(root)
     app._receiver_presence = {}
     app._receiver_presence_available = False
     app._receiver_presence_checking = False
@@ -444,6 +446,8 @@ def _backend_process(port: int, token: str) -> None:
         if app.relay_config is None:
             raise ValueError(app._relay_config_error or "Relay 설정을 확인하세요.")
         with batch_lock:
+            if batch.get("cancel_requested") and batch["status"] in {"sending", "checking"}:
+                raise ValueError("전송 취소 결과를 확인 중입니다. 완료 후 다시 전송하세요.")
             items = sorted(batch["items"], key=lambda row: row.get("index", 0))
             changed_target = bool(batch.get("station_id") and batch["station_id"] != store.relay_station_id)
             if changed_target and batch["status"] in {"sending", "checking"}:
@@ -495,6 +499,7 @@ def _backend_process(port: int, token: str) -> None:
             portal = str(batch["portal"])
             batch_id = str(batch["id"])
             relay_config = dict(app.relay_config)
+            batch["cancel_requested"] = False
             batch_cancel_event.clear()
         threading.Thread(
             target=_send_batch_worker,
@@ -554,6 +559,8 @@ def _backend_process(port: int, token: str) -> None:
                 item["send_status"] = "전송 중"
                 item["error"] = ""
             transfer_id = str(uuid4())
+            with batch_lock:
+                item["job_id"] = transfer_id
             item_dir = Path(item["path"]).parent.parent
             package = item_dir / f"{transfer_id}_{carrier}.zip"
             result = item["result"]
@@ -568,7 +575,7 @@ def _backend_process(port: int, token: str) -> None:
                     station_id=store.relay_station_id, carrier=carrier,
                     result=result, detection=item["detection"],
                     reviewed_values=dict(item["values"]),
-                    document_jobs=[],
+                    document_jobs=[], cancel_event=batch_cancel_event,
                 )
                 job_id = send_work_package(
                     relay_config, store.relay_station_id, package,
@@ -585,7 +592,7 @@ def _backend_process(port: int, token: str) -> None:
                     )
             except TransferCancelledError as exc:
                 with batch_lock:
-                    item["send_status"] = "취소"
+                    item["send_status"] = "확인 필요" if "확인" in str(exc) or "수신을 완료" in str(exc) else "취소"
                     item["error"] = str(exc)
                 return
             except DeliveryPendingError as exc:
@@ -622,6 +629,9 @@ def _backend_process(port: int, token: str) -> None:
                         item["send_status"] = "실패"
                         item["error"] = str(exc)
 
+        if batch.get("cancel_requested"):
+            _finish_batch_cancel()
+            return
         with batch_lock:
             if all(item.get("send_status") == "Relay 등록" for item in all_items):
                 batch["status"] = "complete"
@@ -725,6 +735,8 @@ def _backend_process(port: int, token: str) -> None:
         with batch_lock:
             if batch["id"] != batch_id or emergency_state["active"]:
                 return
+            if batch.get("cancel_requested"):
+                return
             target = batch.pop("resend_store", None)
         if target is not None:
             try:
@@ -732,6 +744,27 @@ def _backend_process(port: int, token: str) -> None:
             except Exception as exc:
                 with batch_lock:
                     batch["error"] = str(exc)
+
+    def _finish_batch_cancel() -> None:
+        from new_work.relay_client import cancel_work_package
+        with batch_lock:
+            rows = list(batch["items"])
+        for row in rows:
+            job_id = row.get("job_id")
+            if not job_id or row.get("send_status") not in {"Relay 등록", "확인 필요"}:
+                continue
+            try:
+                status = cancel_work_package(dict(app.relay_config), str(job_id))
+                with batch_lock:
+                    row["send_status"] = "수신 완료" if status == "delivered" else "취소"
+                    row["error"] = "이미 수신한 자료는 수신기에 유지됩니다." if status == "delivered" else ""
+            except Exception as exc:
+                with batch_lock:
+                    row["send_status"] = "확인 필요"
+                    row["error"] = str(exc)
+        with batch_lock:
+            batch["status"] = "cancelled"
+            batch["error"] = "전송 중단 처리 완료. 이미 수신된 자료는 유지됩니다. '확인 필요' 항목은 수신 여부를 확인하세요."
 
     def _set_batch_item_progress(item: dict[str, object], message: str) -> None:
         with batch_lock:
@@ -769,6 +802,9 @@ def _backend_process(port: int, token: str) -> None:
                     item["error"] = "Relay에서 취소된 작업입니다. 재전송할 수 있습니다."
                 else:
                     item["error"] = f"Relay 상태: {status} · 중복 전송하지 않았습니다."
+        if batch.get("cancel_requested"):
+            _finish_batch_cancel()
+            return
         with batch_lock:
             batch["status"] = (
                 "complete" if all(row.get("send_status") == "Relay 등록" for row in batch["items"])
@@ -798,6 +834,8 @@ def _backend_process(port: int, token: str) -> None:
             return self.headers.get("X-NewWork-Token", "") == token
 
         def do_GET(self) -> None:
+            if dialogs.handle(self):
+                return
             parsed = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             if parsed.path == "/" and query.get("token", [""])[0] == token:
@@ -806,7 +844,7 @@ def _backend_process(port: int, token: str) -> None:
                     html = html.replace(b"__APP_ICON_DATA__", base64.b64encode(_APP_ICON_PATH.read_bytes()))
                     siren_data = base64.b64encode(_SIREN_ICON_PATH.read_bytes())
                     html = html.replace(b"__EMERGENCY_SIREN_DATA__", siren_data)
-                    self._reply(200, html, "text/html; charset=utf-8")
+                    self._reply(200, html.replace(b"</body>", CLIENT + b"</body>"), "text/html; charset=utf-8")
                 except OSError as exc:
                     self._reply(500, {"error": str(exc)})
                 return
@@ -829,6 +867,8 @@ def _backend_process(port: int, token: str) -> None:
             self._reply(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if dialogs.handle(self):
+                return
             if not self._authorized():
                 self._reply(403, {"error": "unauthorized"})
                 return
@@ -957,7 +997,17 @@ def _backend_process(port: int, token: str) -> None:
                                 result["value"] = {"closed": True, "message": "종료된 묶음입니다. 신분증을 다시 등록할 수 있습니다."}
                                 return
                             if batch["status"] in {"sending", "partial", "checking"}:
-                                raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
+                                previous_status = batch["status"]
+                                batch["cancel_requested"] = True
+                                batch.pop("resend_store", None)
+                                batch["auto_send_requested"] = False
+                                batch_cancel_event.set()
+                                batch["error"] = "전송 중단 요청됨 · Relay 취소 결과를 확인합니다."
+                                if previous_status == "partial":
+                                    batch["status"] = "sending"
+                                    threading.Thread(target=_finish_batch_cancel, daemon=True).start()
+                                result["value"] = {"closed": False, "message": batch["error"]}
+                                return
                             if any(row.get("ocr_status") == "업로드 중" for row in batch["items"]):
                                 raise ValueError("이미지 업로드/변환이 끝난 뒤 OCR을 취소하세요.")
                             active_ocr = [
@@ -1135,8 +1185,9 @@ def _backend_process(port: int, token: str) -> None:
                     completed.set()
 
             root.after(0, run_action)
-            if not completed.wait(60):
-                raise TimeoutError("화면 동작 응답 시간이 초과됐습니다.")
+            while not completed.wait(60):
+                if not dialogs.pending:
+                    raise TimeoutError("화면 동작 응답 시간이 초과됐습니다.")
             if result["error"]:
                 raise RuntimeError(str(result["error"]))
             return result["value"]

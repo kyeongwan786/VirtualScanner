@@ -7,13 +7,14 @@ import os
 import re
 import shutil
 import ssl
+import socket
 import tempfile
 import time
 import stat
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from threading import Event, Lock, local
+from threading import Event, Lock, Thread, local
 from typing import Callable
 from urllib.parse import quote, urlsplit
 
@@ -78,7 +79,11 @@ def _request(url: str, token: str, *, method: str = "GET",
              extra_headers: dict[str, str] | None = None,
              response_limit: int = 64 * 1024,
              on_download_chunk: Callable[[int], None] | None = None,
-             timeout: float = 60) -> tuple[int, dict | bytes]:
+             timeout: float = 60, cancel_event: Event | None = None) -> tuple[int, dict | bytes]:
+    if cancel_event is not None and cancel_event.is_set():
+        raise TransferCancelledError("송신기에서 전송을 취소했습니다.")
+    request_done = Event()
+    watcher = None
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise TransferError("Relay 주소 형식이 올바르지 않습니다.")
@@ -110,6 +115,27 @@ def _request(url: str, token: str, *, method: str = "GET",
             _http_state.connection = connection
             _http_state.origin = origin
         connection.timeout = timeout
+        if cancel_event is not None:
+            def interrupt_request():
+                while not request_done.wait(0.05):
+                    if cancel_event.is_set():
+                        sock = connection.sock
+                        if sock is not None:
+                            try:
+                                sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            return
+            watcher = Thread(target=interrupt_request, daemon=True)
+            watcher.start()
+            if connection.sock is None:
+                connection.timeout = min(timeout, 5)
+                connection.connect()
+            if cancel_event.is_set():
+                connection.close()
+                raise TransferCancelledError("송신기에서 전송을 취소했습니다.")
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         if on_download_chunk is None:
@@ -149,15 +175,26 @@ def _request(url: str, token: str, *, method: str = "GET",
         if connection is not None:
             connection.close()
         _http_state.connection = None
+        if cancel_event is not None and cancel_event.is_set():
+            raise TransferCancelledError("송신기에서 전송을 취소했습니다.") from exc
         raise TransferError(f"Relay 연결 실패: {exc}") from exc
+    finally:
+        request_done.set()
+        if watcher is not None:
+            watcher.join()
+        if cancel_event is not None and cancel_event.is_set():
+            cached = getattr(_http_state, "connection", None)
+            if cached is not None:
+                cached.close()
+            _http_state.connection = None
 
 
-def _relay_features(relay_url: str, token: str) -> frozenset[str]:
+def _relay_features(relay_url: str, token: str, cancel_event: Event | None = None) -> frozenset[str]:
     with _health_cache_lock:
         cached = _health_cache.get(relay_url)
         if cached is not None and cached[0] > time.monotonic():
             return cached[1]
-        status, health = _request(f"{relay_url}/health", token)
+        status, health = _request(f"{relay_url}/health", token, cancel_event=cancel_event)
         features = health.get("features") if status == 200 and isinstance(health, dict) else None
         if not isinstance(features, list) or not all(isinstance(item, str) for item in features):
             return frozenset()
@@ -340,25 +377,12 @@ def send_work_package(
 
     def cancel_remote_job(job_id: str) -> str:
         try:
-            _request(
-                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
-                token, method="DELETE",
-            )
-            return "cancelled"
-        except TransferError as cancel_error:
-            try:
-                status = get_work_package_status(relay_config, job_id)
-            except TransferError:
-                raise TransferCancelledError(
-                    "취소 요청을 보냈지만 Relay 상태를 확인하지 못했습니다. "
-                    f"Receiver 작업을 확인하세요. 작업 ID: {job_id}"
-                ) from cancel_error
-            if status in {"delivered", "cancelled"}:
-                return status
+            return cancel_work_package(relay_config, job_id)
+        except TransferError as exc:
             raise TransferCancelledError(
                 "취소 요청 결과를 확인하지 못했습니다. "
-                f"Relay 상태: {status} · 작업 ID: {job_id}"
-            ) from cancel_error
+                f"Receiver 작업을 확인하세요. 작업 ID: {job_id} · {exc}"
+            ) from exc
 
     check_cancelled()
     relay_url = relay_config["relay_url"].rstrip("/")
@@ -366,7 +390,7 @@ def send_work_package(
     report = progress or (lambda _message: None)
     package_path = Path(package_path)
     direct_pages = package_path.is_dir()
-    features = _relay_features(relay_url, token)
+    features = _relay_features(relay_url, token, cancel_event)
     check_cancelled()
     required_feature = "new-work-v1" if direct_pages else "new-work-zip-v1"
     if required_feature not in features:
@@ -419,7 +443,7 @@ def send_work_package(
         status, result = _request(
             f"{relay_url}/v1/jobs", token, method="POST",
             body=json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
-            content_type="application/json",
+            content_type="application/json", cancel_event=cancel_event,
         )
         if status != 201:
             raise TransferError(f"Relay가 작업을 만들지 못했습니다: {result}")
@@ -434,7 +458,7 @@ def send_work_package(
                 content = page_path.read_bytes()
                 status, result = _request(
                     f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/pages/{number}",
-                    token, method="PUT", body=content, content_type="image/jpeg",
+                    token, method="PUT", body=content, content_type="image/jpeg", cancel_event=cancel_event,
                 )
                 if status not in (200, 201):
                     raise TransferError(f"Relay가 JPG 페이지 {number}를 받지 못했습니다: {result}")
@@ -470,7 +494,7 @@ def send_work_package(
                     status, result = _request(
                         f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/pages/{number}",
                         token, method="PUT", body=content,
-                        content_type="application/octet-stream",
+                        content_type="application/octet-stream", cancel_event=cancel_event,
                     )
                     if status not in (200, 201):
                         raise TransferError(f"Relay가 ZIP 조각 {number}를 받지 못했습니다: {result}")
@@ -487,7 +511,7 @@ def send_work_package(
         status, result = _request(
             f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/complete",
             token, method="POST", body=completion_body,
-            content_type="application/json",
+            content_type="application/json", cancel_event=cancel_event,
         )
         if status not in (200, 201):
             raise TransferError(f"Relay가 작업 완료를 확인하지 못했습니다: {result}")
@@ -535,7 +559,13 @@ def send_work_package(
             )
         try:
             status, result = _request(
-                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status", token,
+                f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status", token, cancel_event=cancel_event,
+            )
+        except TransferCancelledError:
+            remote_status = cancel_remote_job(job_id)
+            raise TransferCancelledError(
+                "취소 전에 Receiver가 자료 수신을 완료했습니다." if remote_status == "delivered"
+                else "Receiver 대기 중 Relay 작업을 취소했습니다."
             )
         except TransferError as exc:
             raise DeliveryPendingError(
@@ -558,11 +588,11 @@ def send_work_package(
     )
 
 
-def get_work_package_status(relay_config: dict[str, str], job_id: str) -> str:
+def get_work_package_status(relay_config: dict[str, str], job_id: str, *, timeout: float = 60) -> str:
     relay_url = relay_config["relay_url"].rstrip("/")
     _, result = _request(
         f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/status",
-        relay_config["central_token"],
+        relay_config["central_token"], timeout=timeout,
     )
     status = result.get("status") if isinstance(result, dict) else None
     if status not in {"uploading", "queued", "receiving", "delivered", "cancelled"}:
@@ -725,14 +755,14 @@ def cancel_work_package(relay_config: dict[str, str], job_id: str) -> str:
     try:
         _, result = _request(
             f"{relay_url}/v1/jobs/{quote(job_id, safe='')}/cancel",
-            relay_config["central_token"], method="DELETE",
+            relay_config["central_token"], method="DELETE", timeout=5,
         )
         status = result.get("status") if isinstance(result, dict) else None
         if status == "cancelled":
             return status
     except TransferError:
         pass
-    status = get_work_package_status(relay_config, job_id)
+    status = get_work_package_status(relay_config, job_id, timeout=5)
     if status in {"cancelled", "delivered"}:
         return status
     raise TransferError(

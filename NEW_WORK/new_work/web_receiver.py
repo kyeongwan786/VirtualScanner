@@ -7,6 +7,7 @@ import re
 import secrets
 import shutil
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -301,6 +302,8 @@ def _backend_process(port: int, token: str) -> None:
 
     root = tk.Tk()
     app = ReceiverApp(root)
+    from new_work.web_dialogs import WebDialogs, CLIENT
+    dialogs = WebDialogs(root)
     try:
         provisioning = load_provisioning()
         app._provisioned_stations = station_options()
@@ -479,6 +482,8 @@ def _backend_process(port: int, token: str) -> None:
             return self.headers.get("X-NewWork-Token", "") == token
 
         def do_GET(self) -> None:
+            if dialogs.handle(self):
+                return
             parsed = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             if app._emergency_stopping and parsed.path not in {"/api/health"}:
@@ -492,7 +497,7 @@ def _backend_process(port: int, token: str) -> None:
                         html = _HTML_PATH.read_bytes().replace(
                             b"__APP_ICON_DATA__", base64.b64encode(_APP_ICON_PATH.read_bytes()),
                         )
-                        self._reply(200, html, "text/html; charset=utf-8")
+                        self._reply(200, html.replace(b"</body>", CLIENT + b"</body>"), "text/html; charset=utf-8")
                     except OSError as exc:
                         self._reply(500, {"error": str(exc)})
                 return
@@ -579,6 +584,8 @@ def _backend_process(port: int, token: str) -> None:
             self._reply(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if dialogs.handle(self):
+                return
             if not self._authorized():
                 self._reply(403, {"error": "unauthorized"})
                 return
@@ -1007,8 +1014,9 @@ def _backend_process(port: int, token: str) -> None:
                     completed.set()
 
             root.after(0, run_action)
-            if not completed.wait(60):
-                raise TimeoutError("화면 동작 응답 시간이 초과됐습니다.")
+            while not completed.wait(60):
+                if not dialogs.pending:
+                    raise TimeoutError("화면 동작 응답 시간이 초과됐습니다.")
             if result["error"]:
                 raise RuntimeError(str(result["error"]))
             return result["value"]
@@ -1036,6 +1044,10 @@ def _backend_process(port: int, token: str) -> None:
 
 def main() -> None:
     multiprocessing.freeze_support()
+    from new_work.windows_lifecycle import acquire_receiver_instance, register_current_user_autostart
+
+    if not acquire_receiver_instance():
+        return
     from new_work.emergency import (
         erase_receiver_data,
         is_emergency_locked,
@@ -1143,6 +1155,18 @@ def main() -> None:
         worker.terminate()
         worker.join(timeout=2)
         raise RuntimeError("Receiver 화면 서버가 제한 시간 안에 준비되지 않았습니다.")
+
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        try:
+            register_current_user_autostart("NewWorkReceiverV4")
+        except OSError as exc:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                f"Windows 로그인 자동 시작 등록에 실패했습니다. 수신기는 계속 실행됩니다.\n{exc}",
+                "Receiver V4 자동 시작", 0x30,
+            )
 
     window = webview.create_window(
         "접수 자료함 · Receiver V4",

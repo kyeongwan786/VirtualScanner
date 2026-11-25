@@ -157,7 +157,7 @@ def unregister_new_work_autostart() -> None:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
             for name in (
                 "NewWorkIdReview", "NewWorkIdReviewV1", "NewWorkIdReviewV2",
-                "NewWorkIdReviewV3", "NewWorkReceiverV3",
+                "NewWorkIdReviewV3", "NewWorkReceiverV3", "NewWorkReceiverV4",
             ):
                 try:
                     winreg.DeleteValue(key, name)
