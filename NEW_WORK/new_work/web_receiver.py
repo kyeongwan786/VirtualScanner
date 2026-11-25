@@ -673,14 +673,6 @@ def _backend_process(port: int, token: str) -> None:
                             raise ValueError("포탈은 SK 또는 KT로 선택하세요.")
                         session = ensure_local_session()
                         with local_lock:
-                            marker_path = Path(session["draft_dir"]) / "applied.json"
-                            if marker_path.is_file():
-                                try:
-                                    applied = json.loads(marker_path.read_text(encoding="utf-8"))
-                                except (OSError, json.JSONDecodeError) as exc:
-                                    raise ValueError("기존 신분증 저장 상태를 확인할 수 없습니다.") from exc
-                                if applied.get("carrier") != carrier:
-                                    raise ValueError("이미 저장된 포탈은 변경할 수 없습니다. 수정은 기존 포탈로 저장하세요.")
                             session["carrier"] = carrier
                     elif action == "local_clear":
                         with local_lock:
@@ -780,9 +772,10 @@ def _backend_process(port: int, token: str) -> None:
                             identity = session.get("identity")
                             if not identity or identity.get("status") == "처리 중":
                                 raise ValueError("신분증 OCR이 끝난 뒤 저장할 수 있습니다.")
-                            carrier = str(session.get("carrier", ""))
+                            carrier = str(data.get("carrier", session.get("carrier", "")))
                             if carrier not in {"SK", "KT"}:
                                 raise ValueError("저장 포탈을 SK 또는 KT로 선택하세요.")
+                            session["carrier"] = carrier
                             identity_path = Path(identity["path"])
                             bounds = _parse_crop_bounds(values.get("_idCropBounds")) if values.get("_idCropBounds") else None
                             if values.get("_idCropBounds") and bounds is None:
@@ -817,11 +810,10 @@ def _backend_process(port: int, token: str) -> None:
                                 pass
                             detection = {"name": ID_TYPES[code]["name"], "type_code": ID_TYPES[code]["type"], "candidate_codes": [code], "preferred_code": code}
                             manifest = {**previous_manifest, "job_id": draft_id, "station_id": app.config.get("station_id") or "local", "source": "local", "carrier": carrier, "identity_image": identity_path.relative_to(draft_dir).as_posix(), "id_type_code": code, "id_type_detection": detection, "reviewed_values": values, "documents": previous_manifest.get("documents", []), "created_at": previous_manifest.get("created_at") or datetime.now().isoformat(timespec="seconds")}
-                            app._write_json_atomic(draft_dir / "manifest.json", manifest)
-                            app._jobs[draft_id] = {"manifest": manifest, "job_dir": draft_dir}
-                        error = app._apply_identity_correction(draft_id, draft_dir, manifest, values, code, carrier_override=carrier, web=True)
+                        error = app._apply_identity_correction(draft_id, draft_dir, manifest, values, code, carrier_override=carrier, allow_carrier_switch=True, web=True)
                         if error:
                             raise RuntimeError(error)
+                        app._jobs[draft_id] = {"manifest": manifest, "job_dir": draft_dir}
                         result["value"] = {"message": f"수정한 OCR과 idCrop을 {carrier}에 저장했습니다."}
                     elif action == "local_save":
                         with local_lock:
@@ -879,7 +871,10 @@ def _backend_process(port: int, token: str) -> None:
                                 (job_dir / "received.json").write_text(json.dumps({"received_at": datetime.now().isoformat(timespec="seconds"), "source": "local"}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                                 applied_marker = draft_dir / "applied.json"
                                 if identity and applied_marker.is_file():
-                                    shutil.copy2(applied_marker, job_dir / "applied.json")
+                                    saved = json.loads(applied_marker.read_text(encoding="utf-8"))
+                                    selected_marker = saved if saved.get("carrier") == session["carrier"] else saved.get("by_carrier", {}).get(session["carrier"])
+                                    if selected_marker:
+                                        app._write_json_atomic(job_dir / "applied.json", selected_marker)
                             except Exception:
                                 shutil.rmtree(job_dir, ignore_errors=True)
                                 raise

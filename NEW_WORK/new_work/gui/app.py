@@ -969,6 +969,8 @@ class NewWorkApp:
         self._pending_auto_send: tuple[Store, str] | None = None
         self._transfer_cancel_event: Event | None = None
         self._reset_requested = False
+        self._resend_target = None
+        self._transfer_station_id = ""
         self._selected_store_index = -1
         self._emergency_polling = False
         self._store_card_frames: list[tuple[int | None, RoundedActionButton]] = []
@@ -2860,6 +2862,8 @@ class NewWorkApp:
                 parent=self.root,
             )
             return
+        if self._job_sent:
+            self._clear_sender_session()
         display_name = path.name
         # If documents were added first, attach the ID image to that same job.
         reuse_job = self.draft is None and self._document_job_id is not None
@@ -2911,11 +2915,7 @@ class NewWorkApp:
             )
             return
         if self._job_sent:
-            messagebox.showinfo(
-                "새 작업 필요", "전송을 마친 작업은 초기화 중입니다. 잠시 후 서류를 추가하세요.",
-                parent=self.root,
-            )
-            return
+            self._clear_sender_session()
         if not self._document_job_id:
             self._document_job_id = str(uuid4())
         self._add_pdf_paths(paths, self._document_job_id)
@@ -3837,6 +3837,24 @@ class NewWorkApp:
         self._resize_source_preview()
 
     def mark_reviewed(self) -> None:
+        if self.version != "v1":
+            selected = self._selected_store()
+            if self._resend_target is not None:
+                if selected is not None:
+                    self._resend_target = (selected, self.portal_var.get())
+                return
+            if self._transfer_cancel_event is not None or self._pending_confirmation is not None:
+                if selected is None or not selected.relay_station_id or selected.relay_station_id == self._transfer_station_id:
+                    self.review_status.set("현재 자리로 전송 중입니다. 다른 자리를 선택하면 같은 자료를 다시 보낼 수 있습니다.")
+                    return
+                self._resend_target = (selected, self.portal_var.get())
+                self._reset_requested = False
+                self.review_status.set(f"{selected.name}로 다시 전송 준비 · 이전 요청 정리 중…")
+                if self._transfer_cancel_event is not None:
+                    self._transfer_cancel_event.set()
+                else:
+                    Thread(target=self._cancel_for_resend, args=(dict(self.relay_config), self._pending_confirmation[2]), daemon=True).start()
+                return
         if self.version == "v1" and self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
@@ -3990,6 +4008,8 @@ class NewWorkApp:
         transfer_job_id = str(uuid4())
         cancel_event = Event()
         self._transfer_cancel_event = cancel_event
+        self._transfer_station_id = store.relay_station_id
+        self._job_sent = False
         self._reset_requested = False
         self.save_button.configure(state="disabled", text="전송 중…")
         self._set_transfer_controls(False)
@@ -4108,9 +4128,6 @@ class NewWorkApp:
                 return
             self.root.after(0, self._work_package_failed, store.name, str(exc))
             return
-        finally:
-            if cancel_event.is_set():
-                shutil.rmtree(default_job_directory() / session_id, ignore_errors=True)
         if cancel_event.is_set():
             self.root.after(
                 0, self._work_package_cancelled,
@@ -4136,6 +4153,7 @@ class NewWorkApp:
         if not messagebox.askyesno("전송 취소·초기화", prompt, parent=self.root):
             return
 
+        self._resend_target = None
         if self._ocr_cancel_event is not None:
             self._reset_requested = True
             self._ocr_cancel_event.set()
@@ -4196,6 +4214,8 @@ class NewWorkApp:
             self.review_status.set("송신 작업 취소 및 화면 초기화 완료")
 
     def _work_package_cancelled(self, message: str) -> None:
+        if self._continue_resend():
+            return
         self._clear_sender_session()
         if "완료됐습니다" in message or "확인하지 못했습니다" in message or "확인해 주세요" in message:
             self.review_status.set(f"초기화 완료 · {message}")
@@ -4203,7 +4223,32 @@ class NewWorkApp:
         else:
             self.review_status.set("전송 취소 및 작업 초기화 완료")
 
+    def _cancel_for_resend(self, relay_config: dict[str, str], job_id: str) -> None:
+        try:
+            cancel_work_package(relay_config, job_id)
+        except Exception:
+            # Delivery may already be complete. The new destination is a separate job.
+            pass
+        self.root.after(0, self._continue_resend)
+
+    def _continue_resend(self) -> bool:
+        target = self._resend_target
+        if target is None:
+            return False
+        self._resend_target = None
+        self._transfer_cancel_event = None
+        self._pending_confirmation = None
+        self._pending_auto_send = None
+        self._reset_requested = False
+        self._job_sent = False
+        self.status_button.configure(state="disabled", text="전송 상태 확인")
+        self._set_transfer_controls(True)
+        self._start_v2_transfer(*target)
+        return True
+
     def _clear_sender_session(self) -> None:
+        self._resend_target = None
+        self._transfer_station_id = ""
         if self._ocr_cancel_event is not None:
             self._ocr_cancel_event.set()
         job_id = self._document_job_id
@@ -4256,6 +4301,8 @@ class NewWorkApp:
         self.review_status.set("작업 초기화 완료")
 
     def _work_package_failed(self, store_name: str, error: str) -> None:
+        if self._continue_resend():
+            return
         if self._reset_requested:
             self._clear_sender_session()
             self.review_status.set("작업 초기화 완료 · Relay 전송은 시작되지 않았습니다.")
@@ -4284,6 +4331,8 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str], error: str,
     ) -> None:
+        if self._continue_resend():
+            return
         self._transfer_cancel_event = None
         if self._reset_requested and self.relay_config is not None:
             self._pending_confirmation = (store_name, carrier, job_id, values)
@@ -4339,7 +4388,7 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str], status: str,
     ) -> None:
-        if self._reset_requested or self._pending_confirmation is None:
+        if self._reset_requested or self._pending_confirmation is None or self._resend_target is not None or self._pending_confirmation[2] != job_id:
             return
         self.status_button.configure(state="normal", text="전송 상태 확인")
         if status == "delivered":
@@ -4353,6 +4402,8 @@ class NewWorkApp:
         self, store_name: str, carrier: str, job_id: str,
         values: dict[str, str],
     ) -> None:
+        if self._continue_resend():
+            return
         if self._reset_requested:
             self._transfer_cancel_event = None
             self._clear_sender_session()
@@ -4360,9 +4411,17 @@ class NewWorkApp:
             self.review_status.set(message)
             messagebox.showwarning("전송 취소 결과", message, parent=self.root)
             return
-        self._clear_sender_session()
+        self._transfer_cancel_event = None
+        self._pending_confirmation = None
+        self._pending_auto_send = None
+        self._job_sent = True
+        self._set_transfer_controls(True)
+        self.save_button.configure(state="normal", text="선택 PC로 다시 전송")
+        self.pdf_button.configure(state="normal")
+        self.status_button.configure(state="disabled", text="전송 상태 확인")
+        self.reset_button.configure(state="normal", text="전송 취소·초기화")
         self.review_status.set(
-            f"{store_name} Receiver 수신 완료 · 신분증은 Receiver 확인 후 {carrier}에 저장됩니다 · 다음 자료를 끌어다 놓으세요"
+            f"{store_name} Receiver 수신 완료 · 다른 자리를 선택하면 같은 자료를 다시 보낼 수 있습니다. 기존 자리의 수신 자료는 유지됩니다."
         )
 
 def main(version: str = "v2") -> None:

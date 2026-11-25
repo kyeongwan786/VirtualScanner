@@ -200,8 +200,13 @@ def _snapshot(app) -> dict[str, object]:
             "error": getattr(app, "_receiver_presence_error", ""),
             "checked_at": getattr(app, "_receiver_presence_checked_at", ""),
         },
+        "can_redirect": bool(selected_store and (app.draft is not None or app._document_jobs)
+            and selected_store.relay_station_id != getattr(app, "_transfer_station_id", "")
+            and (app._transfer_cancel_event is not None or app._pending_confirmation is not None or app._pending_auto_send is not None)),
+        "retained_transfer": bool(getattr(app, "_job_sent", False) and app._pending_confirmation is None),
         "selected_station": selected_name,
         "selected_store_index": getattr(app, "_selected_store_index", -1),
+        "station_selection_revision": getattr(app, "_station_selection_revision", 0),
         "sending": bool(
             getattr(app, "_transfer_cancel_event", None)
             or getattr(app, "_pending_confirmation", None)
@@ -291,6 +296,7 @@ def _backend_process(port: int, token: str) -> None:
                 "status": batch["status"], "error": batch["error"],
                 "expected_count": batch["expected_count"],
                 "auto_send_requested": bool(batch.get("auto_send_requested")),
+                "station_id": batch.get("station_id", ""),
                 "items": [
                     {key: item.get(key) for key in (
                         "id", "index", "name", "ocr_status", "code", "type_label",
@@ -431,14 +437,26 @@ def _backend_process(port: int, token: str) -> None:
                 and field not in {entry["key"] for entry in item["fields"]}
             ]
 
-    def _start_batch_send() -> dict[str, object]:
-        store = app._selected_store()
+    def _start_batch_send(store_override=None) -> dict[str, object]:
+        store = store_override or app._selected_store()
         if store is None or not store.relay_station_id:
             raise ValueError("전송 대상을 선택하고 Relay 자리 ID를 설정하세요.")
         if app.relay_config is None:
             raise ValueError(app._relay_config_error or "Relay 설정을 확인하세요.")
         with batch_lock:
             items = sorted(batch["items"], key=lambda row: row.get("index", 0))
+            changed_target = bool(batch.get("station_id") and batch["station_id"] != store.relay_station_id)
+            if changed_target and batch["status"] in {"sending", "checking"}:
+                batch["resend_store"] = store
+                if batch["status"] == "sending":
+                    batch_cancel_event.set()
+                return {"message": "이전 요청이 정리되면 선택한 자리로 묶음을 다시 전송합니다."}
+            if changed_target and batch["status"] in {"partial", "complete", "cancelled"}:
+                for item in items:
+                    if item.get("job_id"):
+                        item.setdefault("previous_transfers", []).append({"station_id": batch["station_id"], "job_id": item["job_id"], "status": item.get("send_status")})
+                    item.update({"send_status": "대기", "job_id": "", "error": ""})
+                batch["status"] = "reviewing"
             if len(items) < 2 or batch["status"] not in {
                 "reviewing", "partial", "waiting_ocr",
             }:
@@ -471,6 +489,7 @@ def _backend_process(port: int, token: str) -> None:
             if not pending:
                 raise ValueError("모든 신분증이 이미 Relay에 등록되었습니다.")
             batch["status"] = "sending"
+            batch["station_id"] = store.relay_station_id
             batch["auto_send_requested"] = False
             batch["error"] = ""
             portal = str(batch["portal"])
@@ -625,6 +644,8 @@ def _backend_process(port: int, token: str) -> None:
             except Exception:
                 pass
 
+        root.after(0, _resume_redirected_batch, batch_id)
+
     def begin_emergency_stop() -> None:
         if emergency_state["status"] in {"requesting", "complete", "complete_with_error"}:
             return
@@ -632,6 +653,7 @@ def _backend_process(port: int, token: str) -> None:
         emergency_state["status"] = "requesting"
         emergency_state["error"] = ""
         app._pending_auto_send = None
+        app._resend_target = None
         active_transfer = getattr(app, "_transfer_cancel_event", None)
         if active_transfer is not None:
             active_transfer.set()
@@ -699,6 +721,18 @@ def _backend_process(port: int, token: str) -> None:
             name="new-work-global-emergency",
         ).start()
 
+    def _resume_redirected_batch(batch_id: str) -> None:
+        with batch_lock:
+            if batch["id"] != batch_id or emergency_state["active"]:
+                return
+            target = batch.pop("resend_store", None)
+        if target is not None:
+            try:
+                _start_batch_send(target)
+            except Exception as exc:
+                with batch_lock:
+                    batch["error"] = str(exc)
+
     def _set_batch_item_progress(item: dict[str, object], message: str) -> None:
         with batch_lock:
             item["error"] = message
@@ -740,6 +774,8 @@ def _backend_process(port: int, token: str) -> None:
                 "complete" if all(row.get("send_status") == "Relay 등록" for row in batch["items"])
                 else "partial"
             )
+
+        root.after(0, _resume_redirected_batch, str(batch["id"]))
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "NewWorkLocalUI/1"
@@ -861,6 +897,22 @@ def _backend_process(port: int, token: str) -> None:
                         if index < 0:
                             raise ValueError("접점이 등록되지 않은 자리입니다.")
                         app._select_store(index)
+                        app._station_selection_revision = getattr(app, "_station_selection_revision", 0) + 1
+                        store = app.stores[index]
+                        selection = {
+                            "selected_store_id": store.store_id,
+                            "can_redirect": bool((app.draft is not None or app._document_jobs)
+                                and store.relay_station_id != getattr(app, "_transfer_station_id", "")
+                                and (app._transfer_cancel_event is not None or app._pending_confirmation is not None or app._pending_auto_send is not None)),
+                            "selected_store_index": index,
+                            "selected_station": getattr(app, "_store_display_names", {}).get(store.store_id, store.name),
+                            "station_selection_revision": app._station_selection_revision,
+                        }
+                        # Publish immediately; a click must not wait for the periodic snapshot.
+                        with snapshot_lock:
+                            state.update(selection)
+                            state["stations"] = _station_rows(app)
+                        result["value"] = selection
                     elif action == "run_ocr":
                         app.run_ocr()
                     elif action == "cancel_ocr":
@@ -877,6 +929,8 @@ def _backend_process(port: int, token: str) -> None:
                                 or app._pending_confirmation is not None
                                 or app._pending_auto_send is not None):
                             raise ValueError("진행 중인 전송을 마친 뒤 여러 신분증을 등록하세요.")
+                        if app._job_sent and app._pending_confirmation is None:
+                            app._clear_sender_session()
                         if app.draft is not None:
                             raise ValueError("현재 열려 있는 신분증을 먼저 초기화하거나 전송하세요.")
                         if not app._ocr_warmup_finished or not app._ocr_models_ready:
@@ -892,6 +946,7 @@ def _backend_process(port: int, token: str) -> None:
                             "id": str(uuid4()), "portal": app.portal_var.get(),
                             "status": "reviewing", "error": "", "items": [],
                             "expected_count": count, "auto_send_requested": False,
+                            "station_id": "", "resend_store": None,
                         })
                         result["value"] = {"batch_id": batch["id"]}
                     elif action == "batch_update":

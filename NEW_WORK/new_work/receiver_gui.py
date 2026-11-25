@@ -2093,6 +2093,7 @@ class ReceiverApp:
         code: str,
         *,
         carrier_override: str | None = None,
+        allow_carrier_switch: bool = False,
         web: bool = False,
     ) -> str | None:
         try:
@@ -2106,6 +2107,7 @@ class ReceiverApp:
                 preferred_code=code,
             )
             updated_manifest = dict(manifest)
+            updated_manifest["carrier"] = carrier
             updated_manifest["id_type_code"] = code
             updated_manifest["id_type_detection"] = {
                 "name": detection.name,
@@ -2121,8 +2123,14 @@ class ReceiverApp:
                 json.loads(marker_path.read_text(encoding="utf-8"))
                 if marker_exists else {}
             )
+            carrier_history = dict(marker.get("by_carrier", {}))
+            if marker_exists:
+                carrier_history[marker.get("carrier")] = {key: value for key, value in marker.items() if key != "by_carrier"}
             if marker_exists and marker.get("carrier") != carrier:
-                raise ValueError("적용 완료 정보의 포탈이 작업 manifest와 다릅니다.")
+                if not allow_carrier_switch or manifest.get("source") != "local":
+                    raise ValueError("적용 완료 정보의 포탈이 작업 manifest와 다릅니다.")
+                marker = dict(carrier_history.get(carrier, {}))
+                marker_exists = bool(marker)
             history_path = (
                 Path(self.config["work_path"]).expanduser()
                 / "backups" / "receiver-corrections.json"
@@ -2179,7 +2187,7 @@ class ReceiverApp:
                     else:
                         missing_images.add(name)
                 try:
-                    self._apply_kt_result(
+                    marker["kt_element_id"] = self._apply_kt_result(
                         job_dir, updated_manifest, target_element_id=target_element_id,
                     )
                 except Exception:
@@ -2204,6 +2212,8 @@ class ReceiverApp:
             })
             self._write_json_atomic(history_path, history)
             self._write_json_atomic(job_dir / "manifest.json", updated_manifest)
+            carrier_history[carrier] = {key: value for key, value in marker.items() if key != "by_carrier"}
+            marker["by_carrier"] = carrier_history
             self._write_json_atomic(marker_path, marker)
             callback = self._web_identity_correction_finished if web else self._identity_correction_finished
             self.root.after(0, callback, job_id, "")
