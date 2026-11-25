@@ -39,7 +39,7 @@ def main() -> int:
         "--onedir",
         "--windowed",
         "--name",
-        "new_work_receiver_v3",
+        "new_work_receiver_v4",
         "--paths",
         str(root),
         "--collect-submodules",
@@ -103,11 +103,11 @@ def main() -> int:
             # PyInstaller's destination is a directory; the source basename is
             # retained, so this lands at _MEIPASS/new_work/relay-provisioning.json.
             command.extend(("--add-data", f"{profile};new_work"))
-            command.append("receiver_run.py")
+            command.append("receiver_run_v4.py")
             subprocess.run(command, check=True, cwd=root)
     else:
         print("Relay provisioning file not found; Receiver seat setup will remain manual.")
-        command.append("receiver_run.py")
+        command.append("receiver_run_v4.py")
         subprocess.run(command, check=True, cwd=root)
     return 0
 

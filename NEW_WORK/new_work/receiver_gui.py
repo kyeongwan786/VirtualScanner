@@ -164,7 +164,7 @@ class DocumentPreviewDialog:
 class ReceiverApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("접수 자료 Receiver")
+        self.root.title("접수 자료 Receiver V4")
         self.root.geometry("1580x940")
         self.root.minsize(1240, 760)
         self.config_path = default_receiver_config_path()

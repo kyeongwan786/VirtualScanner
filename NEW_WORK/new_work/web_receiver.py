@@ -1146,7 +1146,7 @@ def main() -> None:
         raise RuntimeError("Receiver 화면 서버가 제한 시간 안에 준비되지 않았습니다.")
 
     window = webview.create_window(
-        "접수 자료함",
+        "접수 자료함 · Receiver V4",
         f"{origin}/?token={urllib.parse.quote(token)}",
         width=1600,
         height=1000,

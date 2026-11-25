@@ -21,5 +21,5 @@ if ! cmp -s requirements_receiver.txt "$VENV_DIR/requirements-installed.txt"; th
 fi
 
 "$VENV_DIR/bin/python" package_receiver_macos.py
-echo "macOS 앱 생성 완료: $SCRIPT_DIR/dist/new_work_receiver_v3.app"
+echo "macOS 앱 생성 완료: $SCRIPT_DIR/dist/new_work_receiver_v4.app"
 read -r -p "Enter를 누르면 닫힙니다. "

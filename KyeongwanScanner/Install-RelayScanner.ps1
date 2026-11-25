@@ -1,11 +1,11 @@
 param(
-    [string]$BuiltSource = (Join-Path $PSScriptRoot 'bin\Win32\Release\KyeongwanScanner.ds')
+    [string]$BuiltSource = (Join-Path $PSScriptRoot 'bin\Win32\Release\RelayScanner.ds')
 )
 
 $ErrorActionPreference = 'Stop'
-$destinationDirectory = Join-Path $env:SystemRoot 'twain_32\KyeongwanScanner'
-$destinationFile = Join-Path $destinationDirectory 'KyeongwanScanner.ds'
-$ownershipFile = Join-Path $destinationDirectory '.kyeongwan-scanner.install.json'
+$destinationDirectory = Join-Path $env:SystemRoot 'twain_32\RelayScanner'
+$destinationFile = Join-Path $destinationDirectory 'RelayScanner.ds'
+$ownershipFile = Join-Path $destinationDirectory '.relay-scanner.install.json'
 
 if (-not (Test-Path -LiteralPath $BuiltSource -PathType Leaf)) {
     throw "빌드 파일이 없습니다: $BuiltSource"
@@ -30,7 +30,7 @@ if (Test-Path -LiteralPath $destinationDirectory) {
     $directoryCreated = $true
 }
 
-$temporaryFile = Join-Path $destinationDirectory ('.KyeongwanScanner.' + [guid]::NewGuid().ToString('N') + '.tmp')
+$temporaryFile = Join-Path $destinationDirectory ('.RelayScanner.' + [guid]::NewGuid().ToString('N') + '.tmp')
 $sourceHash = (Get-FileHash -LiteralPath $BuiltSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $installedFileCreated = $false
 $ownershipFileCreated = $false
@@ -41,8 +41,8 @@ try {
     $installedFileCreated = $true
 
     $record = @{
-        product = 'kyeongwan-scanner'
-        file = 'KyeongwanScanner.ds'
+        product = 'relay-scanner'
+        file = 'RelayScanner.ds'
         sha256 = $sourceHash
     } | ConvertTo-Json -Compress
     $stream = [System.IO.File]::Open($ownershipFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
@@ -55,7 +55,7 @@ try {
         $stream.Dispose()
     }
     Write-Host "설치 완료: $destinationFile"
-    Write-Host '업무페이지를 완전히 종료했다가 다시 열어 kyeongwan-scanner를 확인하세요.'
+    Write-Host '업무페이지를 완전히 종료했다가 다시 열어 relay-scanner를 확인하세요.'
 } catch {
     if (Test-Path -LiteralPath $temporaryFile) { Remove-Item -LiteralPath $temporaryFile -Force }
     if ($ownershipFileCreated) { Remove-Item -LiteralPath $ownershipFile -Force }

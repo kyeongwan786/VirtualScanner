@@ -1,4 +1,4 @@
-# kyeongwan-scanner 프로젝트 정리
+# relay-scanner 프로젝트 정리
 
 ## 만들려는 것
 
@@ -11,7 +11,7 @@
 1. 텔레그램으로 받은 서류 PDF를 중앙 PC에서 이미지로 변환한다. 현재는 ALPDF로 변환하는 흐름을 사용한다.
 2. 중앙 PC가 이미지와 접수 대상 자리 정보를 관리한다.
 3. 각 접수 PC에는 수신 프로그램과 가상 스캐너를 둔다.
-4. 직원이 해당 PC의 업무페이지에서 **문서 스캔**을 누르고 `kyeongwan-scanner`를 선택한다.
+4. 직원이 해당 PC의 업무페이지에서 **문서 스캔**을 누르고 `relay-scanner`를 선택한다.
 5. 가상 스캐너가 중앙 PC에서 그 자리의 접수 이미지를 받아 업무페이지에 스캔 결과로 전달한다.
 
 여기서 가상 스캐너는 업무페이지와 중앙 이미지 전달 기능 사이의 연결부다. 업무페이지에는 로컬 스캐너 장치처럼 나타나고, 스캔 요청이 오면 중앙에서 준비한 이미지를 반환하는 것이 최종 동작이다.
@@ -28,7 +28,7 @@
 
 ### `KyeongwanScanner`
 
-Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지의 스캐너 선택 목록에 `kyeongwan-scanner`라는 이름을 노출하는 첫 단계를 목표로 한다. 기존 Canon, HP, UniTwain, VOIM 등의 장치 파일을 덮어쓰지 않고 별도 폴더에 설치하도록 구성돼 있다.
+Windows x86용 TWAIN Data Source를 만드는 프로젝트다. 업무페이지의 스캐너 선택 목록에 `relay-scanner`라는 이름을 노출하는 첫 단계를 목표로 한다. 기존 Canon, HP, UniTwain, VOIM 등의 장치 파일을 덮어쓰지 않고 별도 폴더에 설치하도록 구성돼 있다.
 
 현재 코드는 TWAIN Source identity, 열기/닫기, `%ProgramData%\KyeongwanScanner\VirtualSource\ready`의 완성된 작업 검색, Acquire 이벤트 및 JPG의 Native Transfer 반환까지 작성되어 있다. 모든 페이지 반환 후 업무페이지가 `MSG_ENDXFER`로 완료를 확인하면 해당 작업 폴더를 삭제하며, 취소·실패·미완료 작업은 재시도할 수 있도록 `ready`에 남긴다. 송신 중 취소한 작업은 Receiver가 `cancelled`에 보존한다. **2026-10-14 Windows VM에서 identity 덮어쓰기와 `DAT_EVENT` 상수 오류를 수정한 진단 Source로 신청서 스캔이 정상 완료됐다고 사용자가 확인했다. 반환된 페이지가 어떤 `ready` 작업에서 왔는지는 아직 대조하지 않았다.**
 
@@ -69,3 +69,9 @@ TWAIN Source, Receiver 대기열 및 중앙 GUI의 송수신·취소 코드는 �
 ## 기존 장치에 대한 설치 원칙
 
 가상 Source는 고유한 이름과 별도 설치 경로를 사용한다. 기존 제조사 TWAIN/WIA 드라이버, 레지스트리 등록, 휴대폰 연결 설정은 수정하거나 덮어쓰지 않는 방향으로 유지한다. 현재 설치 스크립트는 동일한 프로젝트 파일이 이미 있으면 덮어쓰지 않도록 되어 있다. 실제 대상 PC에 설치하기 전에는 별도 파일만 추가하는지 설치 스크립트를 확인하고, 문제 발생 시 프로젝트 전용 파일만 제거한다.
+
+## 스캐너 이름 및 신규 PC 설치 변경
+
+`build-win32.cmd`는 빌드 후 `dist`에 배포용 ZIP도 생성하도록 작성되어 있습니다. 대상 PC에서 ZIP 전체를 풀고 `Setup-RelayScanner.cmd`를 더블클릭한 뒤 Windows 관리자 권한을 승인하면 전용 설치 폴더 생성과 Source 복사를 수행합니다. Receiver는 별도로 실행합니다. 패키징 및 더블클릭 설치의 Windows 실행 확인은 아직 하지 않았습니다.
+
+새 빌드의 표시 이름은 `relay-scanner`, 파일은 `RelayScanner.ds`, 설치 스크립트는 `Install-RelayScanner.ps1`입니다. 전용 설치 경로는 `%SystemRoot%\twain_32\RelayScanner`입니다. Receiver와 연결된 `%ProgramData%\KyeongwanScanner\VirtualSource` 데이터 경로는 유지합니다. 기존 이름의 설치는 자동 변경하지 않으며 기존 제거 스크립트를 보존합니다. 신규 PC에 복사할 파일과 관리자 PowerShell 명령은 [설치 안내](KyeongwanScanner/README.md#다른-windows-pc에-설치하기)를 참고하세요. 이름 변경 후 Windows 빌드·설치·스캔 확인은 미실행입니다.

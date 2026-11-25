@@ -1,6 +1,6 @@
-# kyeongwan-scanner (TWAIN Source와 JPG 대기열 연결)
+# relay-scanner (TWAIN Source와 JPG 대기열 연결)
 
-이 폴더는 Windows x86 TWAIN Data Source 프로젝트입니다. 업무페이지의 스캐너 선택창에 `kyeongwan-scanner` 이름을 노출하기 위한 독립 Source를 만듭니다. 기존 Canon, HP, UniTwain, VOIM 또는 WIA 드라이버 파일과 레지스트리를 수정하거나 덮어쓰지 않습니다. 빌드 결과는 고유한 하위 폴더 `C:\Windows\twain_32\KyeongwanScanner\KyeongwanScanner.ds`에 별도 설치합니다.
+이 폴더는 Windows x86 TWAIN Data Source 프로젝트입니다. 업무페이지의 스캐너 선택창에 `relay-scanner` 이름을 노출하기 위한 독립 Source를 만듭니다. 기존 Canon, HP, UniTwain, VOIM 또는 WIA 드라이버 파일과 레지스트리를 수정하거나 덮어쓰지 않습니다. 빌드 결과는 고유한 하위 폴더 `C:\Windows\twain_32\RelayScanner\RelayScanner.ds`에 별도 설치합니다.
 
 ## Windows PC에서 빌드
 
@@ -12,7 +12,7 @@
    .\build-win32.cmd
    ```
 
-   스크립트가 `vswhere`로 안정화 버전과 Preview/Insiders 버전을 포함한 Visual Studio의 MSBuild를 찾아 Win32 Release로 빌드합니다. Visual Studio 구성 요소 ID 차이로 설치본 검색이 실패하지 않도록 별도 구성 요소 필터는 사용하지 않으며, v143이 빠진 경우 MSBuild가 해당 도구 누락 오류를 표시합니다. 산출물은 `bin\Win32\Release\KyeongwanScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
+   스크립트가 `vswhere`로 안정화 버전과 Preview/Insiders 버전을 포함한 Visual Studio의 MSBuild를 찾아 Win32 Release로 빌드합니다. Visual Studio 구성 요소 ID 차이로 설치본 검색이 실패하지 않도록 별도 구성 요소 필터는 사용하지 않으며, v143이 빠진 경우 MSBuild가 해당 도구 누락 오류를 표시합니다. 산출물은 `bin\Win32\Release\RelayScanner.ds`입니다. 기존 업무 프로그램 화면의 `(32-32)`가 실제 32비트 TWAIN 사용을 뜻하는지는 대상 PC에서 확인해야 합니다.
 
    `vswhere.exe`가 Visual Studio를 찾지 못하면 Visual Studio Installer에서 설치가 완료됐는지 확인합니다. `MSB8020` 또는 `v143` 도구 세트를 찾을 수 없다는 오류가 나오면 Installer의 개별 구성 요소에서 **MSVC v143 x64/x86 build tools**를 추가합니다. Visual Studio Installer 자체에서 메모리 접근 위반이 발생하면 이 스크립트로 해결할 수 없으며, Installer 문제를 먼저 복구해야 합니다.
 
@@ -21,13 +21,13 @@
 관리자 권한 PowerShell에서 설치합니다:
 
 ```powershell
- powershell -ExecutionPolicy Bypass -File .\Install-KyeongwanScanner.ps1
+ powershell -ExecutionPolicy Bypass -File .\Install-RelayScanner.ps1
 ```
 
 설치 스크립트는 전용 폴더가 이미 존재하면서 비어 있지 않거나 같은 이름의 파일이 있으면 중단합니다. 설치 파일과 SHA-256 소유권 기록을 새로 만들며, 기존 TWAIN Source 파일은 덮어쓰지 않습니다. 설치한 뒤 업무페이지를 완전히 종료하고 다시 열어 목록을 새로 불러오세요. 제거할 때는 다음을 실행합니다:
 
 ```powershell
- powershell -ExecutionPolicy Bypass -File .\Uninstall-KyeongwanScanner.ps1
+ powershell -ExecutionPolicy Bypass -File .\Uninstall-RelayScanner.ps1
 ```
 
 제거 스크립트는 설치 소유권 기록과 Source 파일의 SHA-256이 일치할 때만 둘을 삭제합니다. Source가 설치 후 변경됐거나 소유권 기록이 없으면 중단하며, 설치 폴더는 다른 파일 보호를 위해 남겨둡니다.
@@ -73,10 +73,58 @@ U.Scan과 TWAIN 로그를 한 번의 시도로 시간 대조하려면 `Capture-O
 
 ## 기존 Source를 유지하는 병렬 진단 설치
 
-현재 설치된 `kyeongwan-scanner`를 제거하거나 덮어쓰지 않고 진단 빌드를 나란히 설치할 수 있습니다. Windows에서 `build-diagnostic-win32.cmd`를 실행하면 `bin\Win32\Diagnostic\KyeongwanScannerDiagnostic.ds`가 생성됩니다. 이를 VM으로 복사하고, 관리자 PowerShell에서 다음 스크립트를 실행합니다:
+현재 설치된 `relay-scanner`를 제거하거나 덮어쓰지 않고 진단 빌드를 나란히 설치할 수 있습니다. Windows에서 `build-diagnostic-win32.cmd`를 실행하면 `bin\Win32\Diagnostic\RelayScannerDiagnostic.ds`가 생성됩니다. 이를 VM으로 복사하고, 관리자 PowerShell에서 다음 스크립트를 실행합니다:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-KyeongwanScannerDiagnostic.ps1 -BuiltSource .\KyeongwanScannerDiagnostic.ds
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-RelayScannerDiagnostic.ps1 -BuiltSource .\RelayScannerDiagnostic.ds
 ```
 
-이 Source의 표시 이름은 `kyeongwan-scanner-diagnostic`이며 설치 폴더는 `C:\Windows\twain_32\KyeongwanScannerDiagnostic`입니다. 업무 포털의 신청서 스캔 설정에서 이 이름을 임시 선택해 진단할 수 있습니다. 진단 빌드는 성공한 요청을 포함해 모든 TWAIN 요청을 같은 `twain-diagnostics.log`에 기록하며, capability 번호와 EnableDS UI 인수도 남깁니다. 기존 `kyeongwan-scanner`, VOIM, WIA 장치의 파일 및 설정은 설치 스크립트가 변경하지 않습니다. 시험 후 진단 Source를 제거할 때만 `Uninstall-KyeongwanScannerDiagnostic.ps1`을 사용합니다. 소유권/해시가 일치하지 않으면 제거를 중단합니다.
+이 Source의 표시 이름은 `relay-scanner-diagnostic`이며 설치 폴더는 `C:\Windows\twain_32\RelayScannerDiagnostic`입니다. 업무 포털의 신청서 스캔 설정에서 이 이름을 임시 선택해 진단할 수 있습니다. 진단 빌드는 성공한 요청을 포함해 모든 TWAIN 요청을 같은 `twain-diagnostics.log`에 기록하며, capability 번호와 EnableDS UI 인수도 남깁니다. 기존 `relay-scanner`, VOIM, WIA 장치의 파일 및 설정은 설치 스크립트가 변경하지 않습니다. 시험 후 진단 Source를 제거할 때만 `Uninstall-RelayScannerDiagnostic.ps1`을 사용합니다. 소유권/해시가 일치하지 않으면 제거를 중단합니다.
+
+
+## 다른 Windows PC에 설치하기
+
+### 더블클릭 설치 (권장)
+
+빌드용 Windows PC에서 `build-win32.cmd`를 실행하면 Win32 Release 빌드 후
+`dist\RelayScanner-Setup-<날짜>-<고유값>.zip`을 자동으로 만듭니다. 매번 새 패키지를 만들며 기존 패키지는 덮어쓰지 않습니다.
+
+대상 PC에서는 **ZIP 전체 압축 풀기 → `Setup-RelayScanner.cmd` 더블클릭 → Windows 관리자 권한 창에서 예**만 진행합니다.
+설치가 끝나면 업무 프로그램을 다시 열고 `relay-scanner`를 선택합니다.
+대상 PC에서 직접 폴더를 만들거나 `.ds` 파일을 Windows 폴더에 복사하거나 명령을 입력할 필요가 없습니다.
+ZIP 안에서 바로 실행하지 말고 반드시 전체 압축을 먼저 풉니다.
+
+실행기는 관리자 권한을 요청하고 기존 설치 스크립트를 호출합니다. `%SystemRoot%\twain_32\RelayScanner`에
+Source와 소유권 기록만 설치하며, 같은 파일이나 비어 있지 않은 설치 폴더가 있으면 중단합니다.
+권한 승인을 취소하거나 설치가 실패하면 오류를 표시합니다. 다른 스캐너와 수신 데이터는 변경하지 않습니다.
+Receiver는 별도로 실행하고 자리 설정 및 스캔 대기열 등록을 해야 합니다.
+현재 Mac에서 코드와 변경 내역만 확인했으며, 패키지 생성/UAC/설치 실행은 Windows에서 확인해야 합니다.
+
+### 수동 설치 및 기존 버전 제거
+
+새 표시 이름은 `relay-scanner`입니다. 저장소의 프로젝트 폴더/소스 파일 이름은 유지하며,
+Receiver 연결 호환성을 위해 데이터와 로그 경로 `%ProgramData%\KyeongwanScanner\VirtualSource`도 유지합니다.
+
+1. **빌드용 Windows PC**에서 위 C++ 도구를 준비하고 `build-win32.cmd`를 실행합니다.
+2. 생성된 `bin\Win32\Release\RelayScanner.ds`, `Install-RelayScanner.ps1`,
+   `Uninstall-RelayScanner.ps1`을 **설치 대상 PC의 한 폴더**에 복사합니다.
+   대상 PC에서 다시 빌드할 필요는 없습니다. 기존 `.ds`의 파일명만 바꿔서는 표시 이름이 바뀌지 않습니다.
+3. 스캔 업무 프로그램을 종료하고, 그 폴더에서 **관리자 PowerShell**로 실행합니다:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-RelayScanner.ps1 -BuiltSource .\RelayScanner.ds
+   ```
+
+4. `%SystemRoot%\twain_32\RelayScanner\RelayScanner.ds`와 전용 소유권 기록이 생성됩니다.
+   업무 프로그램을 다시 열고 `relay-scanner`를 선택합니다. Receiver도 별도로 실행하여
+   해당 PC의 자리 설정을 맞추고, 서류를 스캔 대기열에 추가해야 반환할 이미지가 준비됩니다.
+   Receiver의 ready 경로는 위 공용 데이터 경로의 `ready` 폴더와 같아야 합니다.
+5. 제거할 때는 관리자 PowerShell에서 `Uninstall-RelayScanner.ps1`을 실행합니다.
+   소유권/해시가 일치하는 새 Source와 소유권 기록만 지우며, 받은 이미지나 ready 작업은 삭제하지 않습니다.
+
+기존 설치는 자동으로 제거하거나 바꾸지 않습니다. 이전 `kyeongwan-scanner`를 목록에서 없애려면
+업무 프로그램을 종료한 뒤 기존 `Uninstall-KyeongwanScanner.ps1`을 관리자 권한으로 실행합니다.
+이전 진단판은 `Uninstall-KyeongwanScannerDiagnostic.ps1`로 제거합니다.
+새 진단판은 `RelayScannerDiagnostic.ds`와 `Install-RelayScannerDiagnostic.ps1`을 사용합니다.
+
+이번 이름 변경은 소스/설치 스크립트에 반영했으며 Windows 빌드와 새 이름의 장치 열거·스캔은 아직 검증하지 않았습니다.

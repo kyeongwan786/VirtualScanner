@@ -43,5 +43,10 @@ if errorlevel 1 (
 )
 
 echo.
-echo Build succeeded: "%~dp0bin\Win32\Release\KyeongwanScanner.ds"
+echo Build succeeded: "%~dp0bin\Win32\Release\RelayScanner.ds"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package-RelayScanner.ps1"
+if errorlevel 1 (
+    echo Installation package creation failed.
+    exit /b 1
+)
 exit /b 0

@@ -266,16 +266,16 @@ TW_IDENTITY_KW MakeIdentity() {
     identity.Version.MinorNum = 9;
     identity.Version.Language = TWON_LANGUAGE_USA;
     identity.Version.Country = TWCY_USA;
-    strcpy_s(identity.Version.Info, "Kyeongwan Scanner 0.2");
+    strcpy_s(identity.Version.Info, "Relay Scanner 0.2");
     identity.ProtocolMajor = 1;
     identity.ProtocolMinor = 9;
     identity.SupportedGroups = DG_CONTROL | DG_IMAGE;
-    strcpy_s(identity.Manufacturer, "Kyeongwan");
+    strcpy_s(identity.Manufacturer, "RelayScanner");
     strcpy_s(identity.ProductFamily, "Virtual Scanner");
 #ifdef KYEONGWAN_SCANNER_DIAGNOSTIC
-    strcpy_s(identity.ProductName, "kyeongwan-scanner-diagnostic");
+    strcpy_s(identity.ProductName, "relay-scanner-diagnostic");
 #else
-    strcpy_s(identity.ProductName, "kyeongwan-scanner");
+    strcpy_s(identity.ProductName, "relay-scanner");
 #endif
     return identity;
 }

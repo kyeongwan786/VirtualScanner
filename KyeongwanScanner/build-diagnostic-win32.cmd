@@ -37,5 +37,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Build succeeded: "%~dp0bin\Win32\Diagnostic\KyeongwanScannerDiagnostic.ds"
+echo Build succeeded: "%~dp0bin\Win32\Diagnostic\RelayScannerDiagnostic.ds"
 exit /b 0

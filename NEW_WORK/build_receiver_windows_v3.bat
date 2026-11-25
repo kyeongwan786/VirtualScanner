@@ -1,4 +1,4 @@
 @echo off
-setlocal
-call "%~dp0build_receiver_windows.bat"
-exit /b %errorlevel%
+echo Receiver is now V4. Run build_receiver_windows_v4.bat.
+pause
+exit /b 1

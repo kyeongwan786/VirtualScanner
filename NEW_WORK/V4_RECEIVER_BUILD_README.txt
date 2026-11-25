@@ -1,0 +1,80 @@
+V4 변경: 수신 목록의 신분증 아이콘 대신 실제 신분증 썸네일을 표시합니다.
+신분증+서류 접수도 동일합니다. 창과 화면 상단의 V4 표기로 구분하세요.
+Windows에서는 build_receiver_windows_v4.bat을 실행합니다.
+산출물: dist\new_work_receiver_v4\new_work_receiver_v4.exe
+소스 실행: python receiver_run_v4.py
+Windows 빌드/실행은 아직 검증하지 않았습니다.
+
+NEW_WORK V4 Receiver 빌드 안내
+==============================
+
+V4 Receiver는 선택 PC로 전송된 작업 패키지를 Relay에서 받아 접수 폴더에 보관하고,
+PDF 서류 스캔 대기열을 관리합니다. 신분증 OCR 값은 송신기에서 검토된 결과를 사용하며
+Receiver에는 신분증 종류만 표시됩니다. **신분증 확인**을 눌렀을 때 SK의
+`sk_report.txt` 또는 KT DB와 `ORG.jpg`/`CR.jpg`를 저장합니다.
+
+추가로 **이 PC에서 직접 접수** 탭에서 중앙 PC를 거치지 않고 JPG/PNG 신분증 OCR과
+PDF→JPG 변환을 실행할 수 있습니다. 각 파일은 넣는 즉시 로컬 처리되며, 신분증만,
+PDF만, 둘 다 독립적으로 접수할 수 있습니다. 결과를 받은 자료함에 등록한 뒤 기존처럼
+신분증 확인을 누르고 변환된 문서 묶음별로 스캔 대기열에 올립니다. Relay 설정 없이도
+로컬 준비 작업을 할 수 있습니다. 이를 위해 Receiver 패키지에는 중앙 OCR과 같은
+PaddleOCR/PaddleX 런타임과 세 개의 PP-OCRv5 모델이 포함됩니다.
+
+KT CR.jpg는 기존 코드 크기 규격에 따라 유형 1001은 340×406, 그 외 유형은
+320×420으로 저장합니다. 중앙에서 직접 배치한 크롭 좌표도 수신 이미지에 그대로
+적용합니다.
+
+신분증 없이 PDF만 전송된 패키지도 받습니다. 이때 SK/KT 결과는 수정하지 않습니다.
+새 패키지가 와도 이전 접수 폴더와 ready 대기열은 유지됩니다. ID/PDF가 없는 경우도
+화면에 각각 없음 상태를 표시합니다.
+
+메인 화면은 HTML/CSS와 pywebview로 구현되어 macOS와 Windows에서 같은 폴더 화면을
+사용합니다. 송신기에서 PDF를 JPG 페이지로 변환해 보내므로 수신기에는 변환된 JPG 썸네일과
+페이지 수가 표시됩니다. 원본 PDF 파일명은 이미지를 묶어 구분하는 이름으로만 남습니다.
+**스캔 대기열에 추가**를 누르면 그 이미지 묶음만 `ready`에 복사되고 버튼은 **스캔 취소**로
+바뀝니다. 취소해도 수신한 JPG 원본은 보존하고 ready 복사본만 대기 상태로 되돌립니다.
+
+스캔 목록의 서류는 스캔 완료 전에도 **대기열로 내리기**로 되돌릴 수 있습니다.
+Receiver는 ready에 올린 복사본만 제거하고 받은 원본 페이지는 보존합니다. TWAIN이
+해당 서류를 읽는 중이면 진행 중인 스캔이 실패할 수 있습니다.
+
+송신기의 **긴급 중단**에서 `전체 폐기`를 확정하면 Relay가 잠기고 대기 작업이 삭제됩니다.
+실행 중인 최신 V4 Receiver는 명령 확인 후 NEW_WORK로 받은 작업자료와 이 Receiver가
+`ready`에 올린 파일을 지우고 Windows 설치 폴더를 제거합니다. 기존 SK/KT 결과,
+데이터베이스, 백업과 설정은 보존합니다. 오프라인 PC는 재연결 또는 다음 실행 때 처리되며,
+이전 Receiver 빌드는 자체 종료·제거 명령을 처리하지 못합니다. Render 로그와 저장소
+소스는 삭제되지 않습니다. Relay 잠금과 정리 결과는 Neon `DATABASE_URL`에 저장되며,
+Render `/health`에서 `emergency_storage_persistent: true`인지 확인하세요. 대기 전송 파일은
+Render 임시 저장소에 있어 재시작 시 사라질 수 있습니다.
+
+Windows x64에서 Python 3.12 x64를 설치하고 build_receiver_windows_v4.bat을
+실행하세요. 결과는 dist\new_work_receiver_v4\new_work_receiver_v4.exe입니다.
+이 ZIP은 빌드 소스이며 완성된 Windows EXE는 포함하지 않습니다.
+
+자동 자리 설정을 포함하려면 개인 설정 파일 `relay-provisioning.json`을 NEW_WORK 폴더에
+복사한 뒤 빌드하세요. 저장소/빌드 ZIP에는 비밀 파일을 넣지 않습니다. 빌드된 Receiver
+EXE에는 그 파일에 적힌 모든 자리 토큰이 포함됩니다. 실행 후 **Receiver 설정**에서 이
+PC의 자리를 선택하고 **자리 설정 적용**을 누르면 Relay URL, 자리 ID, 토큰이 저장됩니다.
+각 PC에 이 파일을 손으로 입력하거나 Render 대시보드의 값을 복사할 필요는 없습니다.
+
+macOS에서 Receiver 화면 실행
+---------------------------
+
+macOS에서도 같은 Receiver 화면을 실행하고 Relay에서 자료를 받아 신분증 확인을 하거나
+PDF 페이지를 미리 볼 수 있습니다. macOS용 Python 3.12를 설치한 뒤
+NEW_WORK 폴더에서 run_receiver_macos.command를 실행하세요. 처음 실행할 때
+전용 가상환경을 만들고 requirements_receiver.txt의 패키지를 설치합니다.
+터미널에서 직접 실행하려면 다음 명령도 사용할 수 있습니다.
+
+    cd NEW_WORK
+    chmod +x run_receiver_macos.command
+    ./run_receiver_macos.command
+
+macOS 앱으로 묶으려면 build_receiver_macos.command를 실행하세요. 결과는
+dist/new_work_receiver_v4.app입니다. 이 앱은 실행한 Mac용으로 생성되며 Windows
+실행 파일이 아닙니다. 앱 서명과 공증은 포함하지 않습니다.
+
+가상 스캐너의 TWAIN Source와 업무페이지에서 실제 스캔하는 단계는 Windows용
+구성입니다. macOS에서 Receiver UI, Relay 수신, 신분증 확인, JPG 미리보기와
+로컬 대기열은 실행할 수 있지만, 업무페이지 스캔 연동은 Windows PC에서 확인해야
+합니다. macOS에서의 Windows 스캔 호환성은 검증된 것으로 간주하지 않습니다.

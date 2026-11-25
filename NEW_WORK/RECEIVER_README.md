@@ -1,4 +1,4 @@
-# NEW_WORK Receiver V3
+# NEW_WORK Receiver V4
 
 이 Receiver는 중앙 OCR V3의 선택 PC 전송을 받는다. 중앙 OCR V1은 실행 PC에 직접
 SK/KT 결과를 적용하므로 Receiver가 필요하지 않다.
@@ -72,10 +72,10 @@ python .\receiver_run.py
 For a standalone Receiver app without the central OCR dependencies, use the Receiver-specific build files on Windows:
 
 ```powershell
-.\build_receiver_windows_v3.bat
+.\build_receiver_windows_v4.bat
 ```
 
-The package is also available through `NEW_WORK-Receiver-V3-Windows-Build.zip`. Run `dist\new_work_receiver_v3\new_work_receiver_v3.exe`. If built with the private provisioning file, in **Receiver 설정** select the matching station and press **자리 설정 적용**. Otherwise enter:
+The package is also available through `NEW_WORK-Receiver-V4-Windows-Build.zip`. Run `dist\new_work_receiver_v4\new_work_receiver_v4.exe`. If built with the private provisioning file, in **Receiver 설정** select the matching station and press **자리 설정 적용**. Otherwise enter:
 
 - Render Relay HTTPS address.
 - `station_id` exactly as configured in Render and the central workstation entry.
@@ -114,3 +114,7 @@ Folder names are normalized for display so Korean filenames created on macOS do 
 The Receiver UI uses HTML/CSS in a pywebview desktop window and can also run on macOS from source with `NEW_WORK/run_receiver_macos.command`, or be packaged as a Mac app with `NEW_WORK/build_receiver_macos.command`. Both use the same folder dashboard for Relay receipt, identity confirmation, page preview, and local queue management. TWAIN acquisition is Windows-specific and must be used on a Windows workstation for actual business-page scanning.
 
 Identity images, reviewed OCR values, received job folders, previous SK reports, KT database backups, and scanner queue data remain on the workstations until explicitly reset or normally completed. The Render relay is a separate cloud copy: its page payload is deleted after Receiver confirms local receipt, while a small status record remains so the central app can confirm delivery.
+
+## V4 화면 확인
+
+창 제목은 `접수 자료함 · Receiver V4`, 화면 상단은 `접수 자료함 · V4`입니다. 신분증만 또는 신분증+서류 접수의 목록 왼쪽에는 해당 신분증의 실제 썸네일을 76×50px 안에 비율을 유지해 표시합니다. 서류만 접수는 문서 아이콘을 유지합니다. 기존 V3 EXE는 자동 갱신되지 않으므로 V4를 새로 빌드하고 실행해야 합니다. 기존 자리 설정과 받은 자료 경로는 유지합니다. 같은 자리의 V3와 V4를 동시에 실행하지 마세요. V4 Windows 빌드 및 실제 수신 화면 확인은 미실행입니다.

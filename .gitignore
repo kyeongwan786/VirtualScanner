@@ -25,6 +25,7 @@ __pycache__/
 *.crt
 
 # Local build and temporary files
+KyeongwanScanner/dist/
 /VirtualScanner-source.zip
 /*.pdf
 /*.jpg

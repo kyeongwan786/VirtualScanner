@@ -35,9 +35,9 @@ def main() -> int:
         "--onedir",
         "--windowed",
         "--name",
-        "new_work_receiver_v3",
+        "new_work_receiver_v4",
         "--osx-bundle-identifier",
-        "com.kyeongwan.newwork.receiver.v3",
+        "com.kyeongwan.newwork.receiver.v4",
         "--paths",
         str(root),
         "--collect-submodules",
@@ -76,7 +76,7 @@ def main() -> int:
         "pymupdf",
         "--collect-all",
         "pypdfium2",
-        "receiver_run.py",
+        "receiver_run_v4.py",
     ]
     command.extend(("--collect-binaries", "paddle"))
     for model_name in (

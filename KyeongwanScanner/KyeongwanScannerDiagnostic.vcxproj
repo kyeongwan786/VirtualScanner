@@ -7,7 +7,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{6A436205-7DF5-491D-8B59-E0E3B9C22C39}</ProjectGuid>
-    <RootNamespace>KyeongwanScannerDiagnostic</RootNamespace>
+    <RootNamespace>RelayScannerDiagnostic</RootNamespace>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -21,7 +21,7 @@
   <PropertyGroup>
     <OutDir>$(ProjectDir)bin\Win32\Diagnostic\</OutDir>
     <IntDir>$(ProjectDir)obj\Win32\Diagnostic\</IntDir>
-    <TargetName>KyeongwanScannerDiagnostic</TargetName>
+    <TargetName>RelayScannerDiagnostic</TargetName>
     <TargetExt>.ds</TargetExt>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">

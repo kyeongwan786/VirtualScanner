@@ -1,11 +1,11 @@
 param(
-    [string]$BuiltSource = (Join-Path $PSScriptRoot 'bin\Win32\Diagnostic\KyeongwanScannerDiagnostic.ds')
+    [string]$BuiltSource = (Join-Path $PSScriptRoot 'bin\Win32\Diagnostic\RelayScannerDiagnostic.ds')
 )
 
 $ErrorActionPreference = 'Stop'
-$destinationDirectory = Join-Path $env:SystemRoot 'twain_32\KyeongwanScannerDiagnostic'
-$destinationFile = Join-Path $destinationDirectory 'KyeongwanScannerDiagnostic.ds'
-$ownershipFile = Join-Path $destinationDirectory '.kyeongwan-scanner-diagnostic.install.json'
+$destinationDirectory = Join-Path $env:SystemRoot 'twain_32\RelayScannerDiagnostic'
+$destinationFile = Join-Path $destinationDirectory 'RelayScannerDiagnostic.ds'
+$ownershipFile = Join-Path $destinationDirectory '.relay-scanner-diagnostic.install.json'
 
 if (-not (Test-Path -LiteralPath $BuiltSource -PathType Leaf)) { throw "빌드 파일이 없습니다: $BuiltSource" }
 if (Test-Path -LiteralPath $destinationFile) { throw "진단용 파일이 이미 있어 덮어쓰지 않았습니다: $destinationFile" }
@@ -22,7 +22,7 @@ if (Test-Path -LiteralPath $destinationDirectory) {
     $directoryCreated = $true
 }
 
-$temporaryFile = Join-Path $destinationDirectory ('.KyeongwanScannerDiagnostic.' + [guid]::NewGuid().ToString('N') + '.tmp')
+$temporaryFile = Join-Path $destinationDirectory ('.RelayScannerDiagnostic.' + [guid]::NewGuid().ToString('N') + '.tmp')
 $sourceHash = (Get-FileHash -LiteralPath $BuiltSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $installedFileCreated = $false
 $ownershipFileCreated = $false
@@ -31,7 +31,7 @@ try {
     [System.IO.File]::Move($temporaryFile, $destinationFile)
     $installedFileCreated = $true
 
-    $record = @{ product = 'kyeongwan-scanner-diagnostic'; file = 'KyeongwanScannerDiagnostic.ds'; sha256 = $sourceHash } | ConvertTo-Json -Compress
+    $record = @{ product = 'relay-scanner-diagnostic'; file = 'RelayScannerDiagnostic.ds'; sha256 = $sourceHash } | ConvertTo-Json -Compress
     $stream = [System.IO.File]::Open($ownershipFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     $ownershipFileCreated = $true
     try {
@@ -40,7 +40,7 @@ try {
         $stream.Flush($true)
     } finally { $stream.Dispose() }
     Write-Host "진단용 Source 설치 완료: $destinationFile"
-    Write-Host '기존 kyeongwan-scanner 및 다른 스캐너 드라이버는 변경하지 않았습니다.'
+    Write-Host '기존 relay-scanner 및 다른 스캐너 드라이버는 변경하지 않았습니다.'
 } catch {
     if (Test-Path -LiteralPath $temporaryFile) { Remove-Item -LiteralPath $temporaryFile -Force }
     if ($ownershipFileCreated) { Remove-Item -LiteralPath $ownershipFile -Force }
