@@ -130,6 +130,12 @@ def _snapshot(
             "folder_label": folder_label,
             "document_names": document_names,
             "identity_present": identity_present,
+            "identity_thumbnail_url": (
+                "/api/identity-preview?token=" + urllib.parse.quote(app._web_token)
+                + "&job_id=" + urllib.parse.quote(job["job_id"], safe="")
+                + "&thumbnail=1"
+                if identity_present else ""
+            ),
             "identity_type": id_type,
             "identity_confirmed": confirmed,
             "document_count": len(documents),
@@ -553,13 +559,14 @@ def _backend_process(port: int, token: str) -> None:
                         raise ValueError("받은 신분증이 없습니다.")
                     image_path = app._job_file(job["job_dir"], image_name)
                     stamp = image_path.stat()
-                    cache_key = f"identity:{job_id}"
+                    thumbnail = query.get("thumbnail", [""])[0] == "1"
+                    cache_key = f"identity-thumbnail:{job_id}" if thumbnail else f"identity:{job_id}"
                     signature = (stamp.st_mtime_ns, stamp.st_size)
                     with snapshot_lock:
                         cached = image_cache.get(cache_key)
                         payload = cached[2] if cached and cached[:2] == signature else ""
                         if not payload:
-                            payload = _image_payload(image_path, (1200, 800))
+                            payload = _image_payload(image_path, (228, 150) if thumbnail else (1200, 800))
                             image_cache[cache_key] = (*signature, payload)
                     self._reply(200, base64.b64decode(payload), "image/jpeg")
                 except (OSError, TypeError, ValueError) as exc:

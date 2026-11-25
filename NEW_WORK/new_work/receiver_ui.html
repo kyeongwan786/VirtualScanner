@@ -50,6 +50,10 @@
     .folder-icon.id{background:#e7f7ef;color:#18825a}
     .folder-icon.pdf{background:#fff3dc;color:#a96508}
     .folder-icon svg{width:22px;height:22px}
+    .folder.has-identity{grid-template-columns:76px minmax(0,1fr)}
+    .folder-icon.identity-thumbnail{width:76px;height:50px;overflow:hidden;border:1px solid #dce5ef;border-radius:7px;background:#f3f6fa}
+    .identity-thumbnail img{display:block;width:100%;height:100%;object-fit:contain}
+    .folder.has-identity .folder-title-row{flex-wrap:wrap}
     .folder-title-row{justify-content:space-between;gap:6px}
     .folder-title{font-size:11px}
     .folder-time{font-size:10px;font-weight:700;color:#60738e}
@@ -164,7 +168,7 @@
     function renderFolders(){
       const query=$("search").value.trim().toLowerCase();
       const rows=(state?.folders||[]).filter(row=>(selectedFilter==="all"||selectedFilter==="both"&&row.package_type==="신분증 + 서류"||selectedFilter==="id"&&row.package_type==="신분증만"||selectedFilter==="pdf"&&row.package_type==="서류만")&&(!query||`${row.carrier} ${row.received_at} ${row.identity_type} ${row.package_type} ${(row.document_names||[]).join(" ")}`.toLowerCase().includes(query)));
-      const signature=JSON.stringify(rows.map(row=>[row.job_id,row.selected,row.package_type,row.document_count,row.page_count,row.identity_type,row.received_label,row.document_names,row.identity_confirmed]));
+      const signature=JSON.stringify(rows.map(row=>[row.job_id,row.selected,row.package_type,row.document_count,row.page_count,row.identity_type,row.received_label,row.document_names,row.identity_confirmed,row.identity_thumbnail_url]));
       if(signature===folderSig)return;
       folderSig=signature;
       const root=$("folders");root.replaceChildren();$("folderSubtitle").textContent=`${rows.length}건`;
@@ -177,6 +181,12 @@
         button.onclick=()=>action("select_job",{job_id:row.job_id});
         button.innerHTML='<span class="folder-icon"></span><span class="folder-main"><span class="folder-title-row"><span class="folder-title"></span><time class="folder-time"></time></span><span class="folder-summary"></span><span class="folder-right"><span class="type-badge"></span><span class="folder-chevron">›</span></span></span>';
         const icon=button.querySelector(".folder-icon");icon.classList.add(iconType);icon.innerHTML=packageIcon(row.package_type);
+        if(row.identity_present&&row.identity_thumbnail_url){
+          button.classList.add("has-identity");icon.classList.add("identity-thumbnail");
+          const image=document.createElement("img");image.alt="받은 신분증 미리보기";image.loading="lazy";image.decoding="async";
+          image.onerror=()=>{icon.innerHTML=packageIcon(row.package_type);icon.title="신분증 미리보기를 불러오지 못했습니다.";};
+          image.src=row.identity_thumbnail_url;icon.replaceChildren(image);
+        }
         button.querySelector(".folder-title").textContent=row.package_type;
         button.querySelector(".folder-time").textContent=row.received_label||row.received_at||"시간 미상";
         const fileSummary=row.document_names?.length?row.document_names.join(", "):"서류 없음";
