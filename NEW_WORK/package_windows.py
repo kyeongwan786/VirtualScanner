@@ -19,6 +19,7 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from new_work.provisioning import build_bundle_payload
+from new_work.build_icon import verify_executable_icon
 
 
 def main() -> int:
@@ -147,6 +148,11 @@ def main() -> int:
         command.append(entry_point)
         subprocess.run(command, check=True)
 
+    if version == "v3":
+        verify_executable_icon(
+            Path("dist") / app_name / f"{app_name}.exe",
+            Path(__file__).resolve().parent / "new_work" / "assets" / "sender.ico",
+        )
     return 0
 
 

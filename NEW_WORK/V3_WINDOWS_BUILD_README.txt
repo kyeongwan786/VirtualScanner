@@ -63,3 +63,5 @@ Render 주소와 작업 흐름은 `RECEIVER_README.md`를 참고하세요.
 V1은 별도 OCR 전용 프로그램이며 `NEW_WORK-V1-Windows-Build.zip`에서 빌드합니다.
 
 송신기 V3는 파란색 위쪽 화살표 아이콘입니다. 새 빌드의 EXE와 화면 상단에 적용됩니다. 기존 실행 파일은 자동 갱신되지 않으므로 다시 빌드해야 합니다. 아이콘 변경 후 Windows 빌드/실행 확인은 미실행입니다.
+
+Windows 빌드는 EXE 내부 아이콘 리소스를 ICO 원본과 대조하고, 기본/다른 아이콘이 남아 있으면 실패합니다. 성공 시 Verified embedded icon과 EXE 절대 경로·SHA-256이 출력됩니다. Explorer에 해당 파일의 갱신도 알립니다. 바로가기 아이콘이 이전 모습이면 바로가기 속성의 대상 경로가 이번 dist의 EXE인지 확인하세요. 이 검증 코드는 아직 Windows에서 실행하지 않았습니다.

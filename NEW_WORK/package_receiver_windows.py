@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from new_work.provisioning import build_bundle_payload
+from new_work.build_icon import verify_executable_icon
 
 
 def main() -> int:
@@ -113,6 +114,10 @@ def main() -> int:
         print("Relay provisioning file not found; Receiver seat setup will remain manual.")
         command.append("receiver_run_v4.py")
         subprocess.run(command, check=True, cwd=root)
+    verify_executable_icon(
+        root / "dist" / "new_work_receiver_v4" / "new_work_receiver_v4.exe",
+        root / "new_work" / "assets" / "receiver.ico",
+    )
     return 0
 
 
