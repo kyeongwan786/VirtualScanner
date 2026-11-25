@@ -22,6 +22,7 @@ from PIL import Image
 
 
 _HTML_PATH = Path(__file__).with_name("receiver_ui.html")
+_APP_ICON_PATH = Path(__file__).with_name("assets") / "receiver.png"
 
 
 def _available_port() -> int:
@@ -488,7 +489,10 @@ def _backend_process(port: int, token: str) -> None:
                     self._reply(200, {"ok": True})
                 else:
                     try:
-                        self._reply(200, _HTML_PATH.read_bytes(), "text/html; charset=utf-8")
+                        html = _HTML_PATH.read_bytes().replace(
+                            b"__APP_ICON_DATA__", base64.b64encode(_APP_ICON_PATH.read_bytes()),
+                        )
+                        self._reply(200, html, "text/html; charset=utf-8")
                     except OSError as exc:
                         self._reply(500, {"error": str(exc)})
                 return

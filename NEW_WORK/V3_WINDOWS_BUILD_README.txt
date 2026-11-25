@@ -61,3 +61,5 @@ macOS에서 Windows EXE를 만들거나 검증하지 않았습니다.
 Render 주소와 작업 흐름은 `RECEIVER_README.md`를 참고하세요.
 
 V1은 별도 OCR 전용 프로그램이며 `NEW_WORK-V1-Windows-Build.zip`에서 빌드합니다.
+
+송신기 V3는 파란색 위쪽 화살표 아이콘입니다. 새 빌드의 EXE와 화면 상단에 적용됩니다. 기존 실행 파일은 자동 갱신되지 않으므로 다시 빌드해야 합니다. 아이콘 변경 후 Windows 빌드/실행 확인은 미실행입니다.

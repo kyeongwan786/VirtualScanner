@@ -90,8 +90,14 @@ def main() -> int:
         "--collect-all",
         "pypdfium2",
     ]
+    if version == "v3":
+        icon_root = Path(__file__).resolve().parent / "new_work" / "assets"
+        command.extend((
+            "--icon", str(icon_root / "sender.ico"),
+        ))
     if version in {"v2", "v3"}:
         command.extend((
+            "--add-data", str(Path(__file__).resolve().parent / "new_work" / "assets" / "sender.png") + ";new_work/assets",
             "--collect-all", "webview",
             "--hidden-import", "new_work.gui.web_sender",
             "--add-data",

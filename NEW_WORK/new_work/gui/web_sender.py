@@ -26,6 +26,7 @@ from new_work.pdf_render import default_job_directory
 
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 _HTML_PATH = Path(__file__).with_name("sender_ui.html")
+_APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "sender.png"
 _SIREN_ICON_PATH = Path(__file__).with_name("assets") / "emergency-siren.png"
 
 
@@ -766,6 +767,7 @@ def _backend_process(port: int, token: str) -> None:
             if parsed.path == "/" and query.get("token", [""])[0] == token:
                 try:
                     html = _HTML_PATH.read_bytes()
+                    html = html.replace(b"__APP_ICON_DATA__", base64.b64encode(_APP_ICON_PATH.read_bytes()))
                     siren_data = base64.b64encode(_SIREN_ICON_PATH.read_bytes())
                     html = html.replace(b"__EMERGENCY_SIREN_DATA__", siren_data)
                     self._reply(200, html, "text/html; charset=utf-8")

@@ -1,0 +1,11 @@
+Application icons: sender V3 / receiver V4
+Generated with the built-in image_gen tool. PNG originals retain transparency.
+Windows ICO files contain 16, 24, 32, 48, 64, 128 and 256 pixel sizes.
+Receiver ICNS is for the macOS application bundle.
+Pillow was used only for icon-format conversion.
+
+Sender prompt:
+Use case: logo-brand. Generate a single square Windows desktop app icon for a DOCUMENT SENDER. Bold minimal polished flat icon: saturated cobalt blue rounded-square tile, large white sheet of paper with folded corner, prominent thick upward-pointing arrow in bright white/light cyan moving out of an outbox. Extremely clear at 32px, strong simple silhouette, centered fills 85% canvas, transparent outside rounded-square tile. No text, letters, numbers, watermark, mockup or extra icons. This is the blue SEND member of a paired SEND/RECEIVE app icon family. Save the image as a project usable asset.
+
+Receiver prompt:
+Use case: logo-brand. Generate a single square Windows desktop app icon for a DOCUMENT RECEIVER. Bold minimal polished flat icon: saturated emerald green rounded-square tile, large white sheet of paper with folded corner, prominent thick downward-pointing arrow entering an inbox tray. Extremely clear at 32px, strong simple silhouette, centered fills 85% canvas, transparent outside rounded-square tile. White and light mint details, no text, letters, numbers, watermark, mockup or extra icons. This is the green RECEIVE member of a paired SEND/RECEIVE app icon family.
