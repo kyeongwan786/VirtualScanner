@@ -4,6 +4,8 @@
 
 ## Windows PC에서 빌드
 
+`build-win32.cmd`와 `build-diagnostic-win32.cmd`는 더블클릭 실행 시 성공/실패 모두 결과 화면에서 키 입력을 기다립니다. 자동 실행에서는 `--no-pause`를 붙이면 대기하지 않습니다. 이전 스크립트가 바로 닫힌다면 PowerShell을 열고 `cmd /k .\build-win32.cmd`로 실행해 오류를 확인하세요. 창이 닫힌 것만으로 빌드 도구 누락인지 컴파일 오류인지는 알 수 없습니다.
+
 1. Visual Studio 2022 또는 2026에서 **Desktop development with C++**, **MSVC v143 x64/x86 build tools**, Windows SDK를 설치합니다. `ARM` 또는 `ARM64` 도구가 아니라 **x64/x86** 도구가 필요합니다.
 2. 이 폴더를 Windows PC로 복사합니다.
 3. PowerShell 또는 명령 프롬프트에서 이 폴더로 이동해 빌드 스크립트를 실행합니다:

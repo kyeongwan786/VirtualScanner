@@ -406,9 +406,17 @@
       if(identities.length>50){showNotice("한 번에 신분증을 최대 50개까지 검토할 수 있습니다.",true);return;}
       if(currentState?.identity_name||currentState?.sending){showNotice("현재 작업을 마치거나 초기화한 뒤 신분증 묶음을 시작하세요.",true);return;}
       try{
+        const existing=await request("/api/batch/state");
+        if(existing.id&&!["idle","closed"].includes(existing.status)){
+          batchState=existing;batchItem=null;batchSelectionId=null;batchIndex=0;$("batchList").dataset.signature="";
+          if(!$("batchDialog").open)$("batchDialog").showModal();
+          await refreshBatch(true);
+          showNotice("진행 중인 묶음을 다시 열었습니다. OCR 중단 후 묶음 취소를 누르고 새 파일을 등록하세요.",true);
+          return;
+        }
         const started=await action("batch_start",{count:identities.length});
         const batchId=started.result?.batch_id;if(!batchId)throw new Error("신분증 묶음을 시작하지 못했습니다.");
-        batchUploading=true;batchState={id:batchId,status:"reviewing",expected_count:identities.length,items:[]};batchItem=null;batchIndex=0;
+        batchUploading=true;batchState={id:batchId,status:"reviewing",expected_count:identities.length,items:[]};batchItem=null;batchSelectionId=null;batchIndex=0;
         $("batchDialog").showModal();$("batchEditor").hidden=false;$("batchError").textContent="";$("batchCancel").disabled=false;
         refreshBatch(true);
         const uploads=new Array(identities.length);let nextUpload=0;
@@ -541,7 +549,25 @@
       await action("batch_send");await refreshBatch(false);refreshBatch(true);
     }
     $("batchFinish").onclick=async()=>{try{await batchFinish();}catch(error){$("batchError").textContent=error.message;await refreshBatch(false);}};
-    $("batchCancel").onclick=async()=>{const active=batchState?.items?.some(item=>["대기 중","인식 중","취소 중"].includes(item.ocr_status));const waiting=batchState?.status==="waiting_ocr"&&!active;const prompt=active?"진행 중인 신분증 OCR을 취소할까요? 현재 모델 인식 단계가 끝나면 후속 OCR을 멈춥니다.":waiting?"OCR 완료 후 자동 전송 예약을 취소할까요? 업로드한 묶음은 검토 화면에 남습니다.":"선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다.";if(!confirm(prompt))return;const response=await action("batch_cancel");if(response?.message?.includes("취소를 요청")){await refreshBatch(false);return;}if(!waiting){$("batchDialog").close();batchState=null;batchItem=null;}else await refreshBatch(false);};
+    $("batchCancel").onclick=async()=>{
+      const active=batchState?.items?.some(item=>["대기 중","인식 중","취소 중"].includes(item.ocr_status));
+      const waiting=batchState?.status==="waiting_ocr"&&!active;
+      const prompt=active?"진행 중인 신분증 OCR을 취소할까요? 중단이 끝나면 ‘묶음 취소’를 눌러 새 파일을 등록할 수 있습니다.":waiting?"OCR 완료 후 자동 전송 예약을 취소할까요? 업로드한 묶음은 검토 화면에 남습니다.":"선택한 신분증 사본과 검토 내용을 취소할까요? 원본 파일은 삭제하지 않습니다.";
+      if(!confirm(prompt))return;
+      $("batchCancel").disabled=true;
+      try{
+        const response=await action("batch_cancel");
+        const result=response.result;
+        if(result?.closed===true){
+          $("batchDialog").close();batchState=null;batchItem=null;batchSelectionId=null;batchIndex=0;
+          showNotice(result.message);
+        }else{
+          await refreshBatch(false);
+          $("batchError").textContent=result?.message||"묶음이 유지되어 있습니다. 현재 처리 상태를 확인하세요.";
+        }
+      }catch(error){$("batchError").textContent=error.message;}
+      finally{updateBatchControls();}
+    };
     $("batchDialog").addEventListener("cancel",event=>event.preventDefault());
     $("ocrButton").onclick=()=>action(currentState?.ocr_active?"cancel_ocr":"run_ocr");
     $("sendButton").onclick=()=>action("send");

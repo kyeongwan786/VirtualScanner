@@ -898,6 +898,9 @@ def _backend_process(port: int, token: str) -> None:
                         update_batch_item(data)
                     elif action == "batch_cancel":
                         with batch_lock:
+                            if not batch["id"]:
+                                result["value"] = {"closed": True, "message": "종료된 묶음입니다. 신분증을 다시 등록할 수 있습니다."}
+                                return
                             if batch["status"] in {"sending", "partial", "checking"}:
                                 raise ValueError("전송이 시작된 묶음은 취소할 수 없습니다.")
                             if any(row.get("ocr_status") == "업로드 중" for row in batch["items"]):
@@ -917,12 +920,18 @@ def _backend_process(port: int, token: str) -> None:
                                     row["error"] = ""
                                 batch["status"] = "reviewing"
                                 batch["error"] = "OCR 취소 요청 중 · 현재 모델 인식 단계가 끝나면 중단됩니다."
-                                result["value"] = {"message": "진행 중인 OCR에 취소를 요청했습니다."}
+                                result["value"] = {
+                                    "closed": False,
+                                    "message": "진행 중인 OCR에 취소를 요청했습니다. 중단 후 묶음 취소를 누르면 다시 등록할 수 있습니다.",
+                                }
                                 return
                             if batch["status"] == "waiting_ocr":
                                 batch["status"] = "reviewing"
                                 batch["error"] = "자동 전송 예약을 취소했습니다."
-                                result["value"] = {"message": "OCR 후 자동 전송 예약을 취소했습니다."}
+                                result["value"] = {
+                                    "closed": False,
+                                    "message": "OCR 후 자동 전송 예약을 취소했습니다. 검토 묶음은 유지됩니다.",
+                                }
                                 return
                             batch_dir = (
                                 default_job_directory() / ".sender-batches" / str(batch["id"])
@@ -932,6 +941,7 @@ def _backend_process(port: int, token: str) -> None:
                                 "id": "", "status": "closed", "error": "", "items": [],
                                 "expected_count": 0, "auto_send_requested": False,
                             })
+                            result["value"] = {"closed": True, "message": "묶음을 취소했습니다. 신분증을 다시 등록할 수 있습니다."}
                     elif action == "batch_send":
                         result["value"] = _start_batch_send()
                     elif action == "batch_check":
