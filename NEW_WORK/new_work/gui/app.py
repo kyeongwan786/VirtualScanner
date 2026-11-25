@@ -3858,7 +3858,7 @@ class NewWorkApp:
         if self.version == "v1" and self.draft is None:
             messagebox.showinfo("JPG 선택", "먼저 JPG 이미지를 선택하세요.")
             return
-        if self.draft is not None and self._id_type_detection.code in {
+        if self.version == "v1" and self.draft is not None and self._id_type_detection.code in {
             "1001", "1101", "1102", "1201", "1301", "1302", "1303",
         }:
             resident_number = "".join(

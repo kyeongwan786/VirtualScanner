@@ -233,6 +233,10 @@ def _snapshot(
                 + "&key=" + urllib.parse.quote(key, safe=""),
             })
         marker_path = Path(job["job_dir"]) / "applied.json"
+        try:
+            apply_error = json.loads((Path(job["job_dir"]) / "apply-error.json").read_text(encoding="utf-8")).get("error", "")
+        except (OSError, ValueError, AttributeError):
+            apply_error = ""
         detail = {
             "job_id": selected_id,
             "carrier": manifest.get("carrier", ""),
@@ -255,6 +259,7 @@ def _snapshot(
             "identity_present": identity_present,
             "identity_type": id_type,
             "identity_confirmed": marker_path.exists(),
+            "identity_apply_error": apply_error,
             "identity_preview_url": (
                 "/api/identity-preview?token=" + urllib.parse.quote(app._web_token)
                 + "&job_id=" + urllib.parse.quote(selected_id, safe="")
@@ -881,6 +886,9 @@ def _backend_process(port: int, token: str) -> None:
                                     saved = json.loads(applied_marker.read_text(encoding="utf-8"))
                                     selected_marker = saved if saved.get("carrier") == session["carrier"] else saved.get("by_carrier", {}).get(session["carrier"])
                                     if selected_marker:
+                                        selected_marker = dict(selected_marker)
+                                        selected_marker["by_carrier"] = dict(saved.get("by_carrier", {}))
+                                        selected_marker["by_carrier"][saved["carrier"]] = {key: value for key, value in saved.items() if key != "by_carrier"}
                                         app._write_json_atomic(job_dir / "applied.json", selected_marker)
                             except Exception:
                                 shutil.rmtree(job_dir, ignore_errors=True)

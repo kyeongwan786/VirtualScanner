@@ -11,7 +11,7 @@ import sys
 import tkinter as tk
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from threading import Event, Thread
+from threading import Event, Thread, RLock
 from time import monotonic, time_ns
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -164,6 +164,7 @@ class DocumentPreviewDialog:
 class ReceiverApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self._identity_save_lock = RLock()
         self.root.title("접수 자료 Receiver V4")
         self.root.geometry("1580x940")
         self.root.minsize(1240, 760)
@@ -829,12 +830,21 @@ class ReceiverApp:
                     raise ValueError("서류 메타데이터가 올바르지 않습니다.")
                 for page in document["pages"]:
                     self._job_file(job_dir, str(page))
+            apply_error = ""
+            if has_identity:
+                try:
+                    self._store_received_identity(str(manifest["job_id"]), job_dir, manifest)
+                except Exception as exc:
+                    apply_error = str(exc)
+                    self._write_json_atomic(job_dir / "apply-error.json", {
+                        "error": apply_error, "carrier": manifest.get("carrier"),
+                    })
             received_marker = job_dir / "received.json"
             if not received_marker.exists():
                 received_marker.write_text(
                     json.dumps({
                         "received_at": datetime.now().isoformat(timespec="seconds"),
-                        "identity_pending": has_identity,
+                        "identity_pending": has_identity and bool(apply_error),
                     }, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
@@ -843,10 +853,10 @@ class ReceiverApp:
             )
             claim_state.clear()
             new_job_id = str(manifest["job_id"])
-            if has_identity and documents:
-                outcome = "신분증과 서류 수신 완료 · 폴더에서 각각 확인하세요"
+            if has_identity and apply_error:
+                outcome = f"수신 완료 · {manifest['carrier']} 자동 저장 실패: {apply_error} · 수정하기에서 저장하세요"
             elif has_identity:
-                outcome = "신분증 수신 완료 · 확인 버튼을 누르면 포탈에 저장됩니다"
+                outcome = f"{manifest['carrier']} 신분증 자동 저장 완료" + (" · 서류는 스캔 대기열에 추가하세요" if documents else "")
             else:
                 outcome = "서류 수신 완료 · 원하는 서류를 스캔 대기열에 추가하세요"
             self._retry_after = 0.0
@@ -997,16 +1007,24 @@ class ReceiverApp:
     def _confirm_identity(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
-            raise ValueError("확인할 접수 폴더를 찾지 못했습니다.")
-        manifest = job["manifest"]
+            raise ValueError("저장할 접수 폴더를 찾지 못했습니다.")
+        self._store_received_identity(job_id, Path(job["job_dir"]), job["manifest"])
+        self.status.set(f"{job['manifest']['carrier']} 신분증 저장 완료")
+        self._refresh_queue()
+
+    def _store_received_identity(self, job_id: str, job_dir: Path, manifest: dict) -> None:
+        with self._identity_save_lock:
+            self._store_received_identity_locked(job_id, job_dir, manifest)
+
+    def _store_received_identity_locked(self, job_id: str, job_dir: Path, manifest: dict) -> None:
         identity_name = manifest.get("identity_image")
         if not isinstance(identity_name, str) or not identity_name:
             raise ValueError("이 접수 폴더에는 받은 신분증이 없습니다.")
-        marker_path = Path(job["job_dir"]) / "applied.json"
+        marker_path = job_dir / "applied.json"
         if marker_path.exists():
             return
         if manifest.get("carrier") == "SK":
-            identity = self._job_file(Path(job["job_dir"]), identity_name)
+            identity = self._job_file(job_dir, identity_name)
             detection_data = manifest.get("id_type_detection", {})
             code = str(manifest.get("id_type_code", ""))
             if not isinstance(detection_data, dict):
@@ -1018,7 +1036,7 @@ class ReceiverApp:
                 candidate_codes=tuple(detection_data.get("candidate_codes", (code,))),
                 preferred_code=detection_data.get("preferred_code") or code,
             )
-            report_path = Path(job["job_dir"]) / "sk_report.txt"
+            report_path = job_dir / "sk_report.txt"
             result = OcrResult(job_id=job_id, image_path=identity)
             write_ocr_result(
                 result, detection, values=manifest.get("reviewed_values", {}),
@@ -1029,20 +1047,16 @@ class ReceiverApp:
         elif manifest.get("carrier") == "KT":
             details = {
                 "identity_applied": True,
-                "kt_element_id": self._apply_kt_result(Path(job["job_dir"]), manifest),
+                "kt_element_id": self._apply_kt_result(job_dir, manifest),
             }
         else:
             raise ValueError("지원하지 않는 포탈 작업입니다.")
-        marker_path.write_text(
-            json.dumps({
-                "carrier": manifest["carrier"],
-                "applied_at": datetime.now().isoformat(timespec="seconds"),
-                **details,
-            }, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        self.status.set(f"{manifest['carrier']} 신분증 확인 및 저장 완료")
-        self._refresh_queue()
+        self._write_json_atomic(marker_path, {
+            "carrier": manifest["carrier"],
+            "applied_at": datetime.now().isoformat(timespec="seconds"),
+            **details,
+        })
+        (job_dir / "apply-error.json").unlink(missing_ok=True)
 
     @staticmethod
     def _job_file(job_dir: Path, relative_name: str) -> Path:
@@ -1920,24 +1934,8 @@ class ReceiverApp:
     @staticmethod
     def _job_can_correct(job: dict) -> bool:
         manifest = job.get("manifest", {})
-        if not isinstance(manifest, dict) or not manifest.get("identity_image"):
-            return False
-        carrier = job.get("carrier") or (
-            manifest.get("carrier") if isinstance(manifest, dict) else None
-        )
-        if carrier == "SK":
-            return True
-        if carrier != "KT":
-            return False
-        try:
-            marker = json.loads((job["job_dir"] / "applied.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            return False
-        return (
-            isinstance(marker, dict)
-            and isinstance(marker.get("kt_element_id"), str)
-            and bool(marker["kt_element_id"])
-        )
+        return bool(isinstance(manifest, dict) and manifest.get("identity_image")
+                    and manifest.get("carrier") in {"SK", "KT"})
 
     def _set_identity_editing(self, editing: bool) -> None:
         self._identity_editing = editing
@@ -2048,17 +2046,6 @@ class ReceiverApp:
                 or crop_bounds[3] > image_height
             ):
                 raise ValueError("idCrop 영역이 신분증 이미지 범위를 벗어났습니다.")
-        marker_path = Path(job["job_dir"]) / "applied.json"
-        if marker_path.exists():
-            try:
-                marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("기존 저장 상태를 읽지 못해 수정할 수 없습니다.") from exc
-            if marker.get("carrier") != carrier:
-                raise ValueError(
-                    "이미 적용된 자료의 포탈은 여기서 변경할 수 없습니다. "
-                    "기존 포탈 자료를 먼저 정리한 뒤 수정하세요."
-                )
         manifest["carrier"] = carrier
         manifest["id_type_code"] = code
         manifest["id_type_detection"] = {
@@ -2080,7 +2067,7 @@ class ReceiverApp:
         Thread(
             target=self._apply_identity_correction,
             args=(job_id, job["job_dir"], manifest, manifest["reviewed_values"], code),
-            kwargs={"carrier_override": carrier, "web": True},
+            kwargs={"carrier_override": carrier, "allow_carrier_switch": True, "web": True},
             daemon=True,
         ).start()
 
@@ -2096,132 +2083,142 @@ class ReceiverApp:
         allow_carrier_switch: bool = False,
         web: bool = False,
     ) -> str | None:
+        error = None
         try:
-            carrier = carrier_override or str(manifest.get("carrier", ""))
-            image_path = self._job_file(job_dir, str(manifest.get("identity_image", "")))
-            result = OcrResult(job_id=job_id, image_path=image_path)
-            detection = IdTypeDetection(
-                name=ID_TYPES[code]["name"],
-                type_code=ID_TYPES[code]["type"],
-                candidate_codes=(code,),
-                preferred_code=code,
-            )
-            updated_manifest = dict(manifest)
-            updated_manifest["carrier"] = carrier
-            updated_manifest["id_type_code"] = code
-            updated_manifest["id_type_detection"] = {
-                "name": detection.name,
-                "type_code": detection.type_code,
-                "candidate_codes": [code],
-                "preferred_code": code,
-            }
-            updated_manifest["reviewed_values"] = values
-
-            marker_path = job_dir / "applied.json"
-            marker_exists = marker_path.exists()
-            marker = (
-                json.loads(marker_path.read_text(encoding="utf-8"))
-                if marker_exists else {}
-            )
-            carrier_history = dict(marker.get("by_carrier", {}))
-            if marker_exists:
-                carrier_history[marker.get("carrier")] = {key: value for key, value in marker.items() if key != "by_carrier"}
-            if marker_exists and marker.get("carrier") != carrier:
-                if not allow_carrier_switch or manifest.get("source") != "local":
-                    raise ValueError("적용 완료 정보의 포탈이 작업 manifest와 다릅니다.")
-                marker = dict(carrier_history.get(carrier, {}))
-                marker_exists = bool(marker)
-            history_path = (
-                Path(self.config["work_path"]).expanduser()
-                / "backups" / "receiver-corrections.json"
-            )
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                history = json.loads(history_path.read_text(encoding="utf-8"))
-                if not isinstance(history, list):
-                    raise ValueError("수정 이력 파일 형식이 올바르지 않습니다.")
-            except FileNotFoundError:
-                history = []
-            if not marker_exists and carrier == "SK":
-                staged_report = job_dir / f".sk-initial-{uuid4().hex}.txt"
-                try:
-                    write_ocr_result(result, detection, values=values, path=staged_report)
-                    self._apply_sk_report(staged_report)
-                finally:
-                    staged_report.unlink(missing_ok=True)
-                marker = {"carrier": carrier, "identity_applied": True}
-            elif not marker_exists and carrier == "KT":
-                marker = {
-                    "carrier": carrier,
-                    "identity_applied": True,
-                    "kt_element_id": self._apply_kt_result(job_dir, updated_manifest),
-                }
-            elif carrier == "SK":
-                staged_report = job_dir / f".sk-correction-{uuid4().hex}.txt"
-                try:
-                    write_ocr_result(result, detection, values=values, path=staged_report)
-                    self._apply_sk_report(staged_report)
-                finally:
-                    staged_report.unlink(missing_ok=True)
-            elif carrier == "KT":
-                target_element_id = marker.get("kt_element_id")
-                if not isinstance(target_element_id, str) or not target_element_id:
-                    raise ValueError(
-                        "이 KT 작업은 최초 적용 행 ID가 기록되지 않은 구버전입니다. "
-                        "다른 접수 건을 잘못 수정하지 않도록 수정 적용을 중단했습니다."
-                    )
-                image_dir = Path(self.config["kt_image_directory"]).expanduser()
-                backup_dir = (
-                    Path(self.config["work_path"]).expanduser() / "backups"
-                    / f"kt_images_{job_id}_{datetime.now():%Y%m%d_%H%M%S_%f}"
-                )
-                image_backups: dict[str, Path] = {}
-                missing_images: set[str] = set()
-                for name in ("ORG.jpg", "CR.jpg"):
-                    source = image_dir / name
-                    if source.is_file():
-                        backup_dir.mkdir(parents=True, exist_ok=True)
-                        backup_path = backup_dir / name
-                        shutil.copy2(source, backup_path)
-                        image_backups[name] = backup_path
-                    else:
-                        missing_images.add(name)
-                try:
-                    marker["kt_element_id"] = self._apply_kt_result(
-                        job_dir, updated_manifest, target_element_id=target_element_id,
-                    )
-                except Exception:
-                    for name in missing_images:
-                        (image_dir / name).unlink(missing_ok=True)
-                    for name, backup_path in image_backups.items():
-                        shutil.copy2(backup_path, image_dir / name)
-                    raise
-                marker["corrected_at"] = datetime.now().isoformat(timespec="seconds")
-            else:
-                raise ValueError("지원하지 않는 포탈 작업입니다.")
-
-            corrected_at = datetime.now().isoformat(timespec="seconds")
-            if not marker_exists:
-                marker["applied_at"] = corrected_at
-            history.append({
-                "job_id": job_id,
-                "corrected_at": corrected_at,
-                "carrier": carrier,
-                "before": manifest.get("reviewed_values", {}),
-                "after": values,
-            })
-            self._write_json_atomic(history_path, history)
-            self._write_json_atomic(job_dir / "manifest.json", updated_manifest)
-            carrier_history[carrier] = {key: value for key, value in marker.items() if key != "by_carrier"}
-            marker["by_carrier"] = carrier_history
-            self._write_json_atomic(marker_path, marker)
-            callback = self._web_identity_correction_finished if web else self._identity_correction_finished
-            self.root.after(0, callback, job_id, "")
-            return None
+            with self._identity_save_lock:
+                self._persist_identity_correction(job_id, job_dir, manifest, values, code,
+                                                  carrier_override, allow_carrier_switch)
         except Exception as exc:
-            callback = self._web_identity_correction_finished if web else self._identity_correction_finished
-            self.root.after(0, callback, job_id, str(exc))
-            return str(exc)
+            error = str(exc)
+            try:
+                self._write_json_atomic(job_dir / "apply-error.json", {"error": error, "carrier": carrier_override or manifest.get("carrier")})
+            except OSError:
+                pass
+        callback = self._web_identity_correction_finished if web else self._identity_correction_finished
+        self.root.after(0, callback, job_id, error or "")
+        return error
+
+    def _persist_identity_correction(self, job_id, job_dir, manifest, values, code,
+                                     carrier_override, allow_carrier_switch):
+        carrier = carrier_override or str(manifest.get("carrier", ""))
+        image_path = self._job_file(job_dir, str(manifest.get("identity_image", "")))
+        result = OcrResult(job_id=job_id, image_path=image_path)
+        detection = IdTypeDetection(
+            name=ID_TYPES[code]["name"],
+            type_code=ID_TYPES[code]["type"],
+            candidate_codes=(code,),
+            preferred_code=code,
+        )
+        updated_manifest = dict(manifest)
+        updated_manifest["carrier"] = carrier
+        updated_manifest["id_type_code"] = code
+        updated_manifest["id_type_detection"] = {
+            "name": detection.name,
+            "type_code": detection.type_code,
+            "candidate_codes": [code],
+            "preferred_code": code,
+        }
+        updated_manifest["reviewed_values"] = values
+
+        marker_path = job_dir / "applied.json"
+        marker_exists = marker_path.exists()
+        marker = (
+            json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker_exists else {}
+        )
+        carrier_history = dict(marker.get("by_carrier", {}))
+        if marker_exists:
+            carrier_history[marker.get("carrier")] = {key: value for key, value in marker.items() if key != "by_carrier"}
+        if marker_exists and marker.get("carrier") != carrier:
+            if not allow_carrier_switch:
+                raise ValueError("적용 완료 정보의 포탈이 작업 manifest와 다릅니다.")
+            marker = dict(carrier_history.get(carrier, {}))
+            marker_exists = bool(marker)
+        history_path = (
+            Path(self.config["work_path"]).expanduser()
+            / "backups" / "receiver-corrections.json"
+        )
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+            if not isinstance(history, list):
+                raise ValueError("수정 이력 파일 형식이 올바르지 않습니다.")
+        except FileNotFoundError:
+            history = []
+        if not marker_exists and carrier == "SK":
+            staged_report = job_dir / f".sk-initial-{uuid4().hex}.txt"
+            try:
+                write_ocr_result(result, detection, values=values, path=staged_report)
+                self._apply_sk_report(staged_report)
+            finally:
+                staged_report.unlink(missing_ok=True)
+            marker = {"carrier": carrier, "identity_applied": True}
+        elif not marker_exists and carrier == "KT":
+            marker = {
+                "carrier": carrier,
+                "identity_applied": True,
+                "kt_element_id": self._apply_kt_result(job_dir, updated_manifest),
+            }
+        elif carrier == "SK":
+            staged_report = job_dir / f".sk-correction-{uuid4().hex}.txt"
+            try:
+                write_ocr_result(result, detection, values=values, path=staged_report)
+                self._apply_sk_report(staged_report)
+            finally:
+                staged_report.unlink(missing_ok=True)
+        elif carrier == "KT":
+            target_element_id = marker.get("kt_element_id")
+            if not isinstance(target_element_id, str) or not target_element_id:
+                raise ValueError(
+                    "이 KT 작업은 최초 적용 행 ID가 기록되지 않은 구버전입니다. "
+                    "다른 접수 건을 잘못 수정하지 않도록 수정 적용을 중단했습니다."
+                )
+            image_dir = Path(self.config["kt_image_directory"]).expanduser()
+            backup_dir = (
+                Path(self.config["work_path"]).expanduser() / "backups"
+                / f"kt_images_{job_id}_{datetime.now():%Y%m%d_%H%M%S_%f}"
+            )
+            image_backups: dict[str, Path] = {}
+            missing_images: set[str] = set()
+            for name in ("ORG.jpg", "CR.jpg"):
+                source = image_dir / name
+                if source.is_file():
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    backup_path = backup_dir / name
+                    shutil.copy2(source, backup_path)
+                    image_backups[name] = backup_path
+                else:
+                    missing_images.add(name)
+            try:
+                marker["kt_element_id"] = self._apply_kt_result(
+                    job_dir, updated_manifest, target_element_id=target_element_id,
+                )
+            except Exception:
+                for name in missing_images:
+                    (image_dir / name).unlink(missing_ok=True)
+                for name, backup_path in image_backups.items():
+                    shutil.copy2(backup_path, image_dir / name)
+                raise
+            marker["corrected_at"] = datetime.now().isoformat(timespec="seconds")
+        else:
+            raise ValueError("지원하지 않는 포탈 작업입니다.")
+
+        corrected_at = datetime.now().isoformat(timespec="seconds")
+        if not marker_exists:
+            marker["applied_at"] = corrected_at
+        history.append({
+            "job_id": job_id,
+            "corrected_at": corrected_at,
+            "carrier": carrier,
+            "before": manifest.get("reviewed_values", {}),
+            "after": values,
+        })
+        self._write_json_atomic(history_path, history)
+        self._write_json_atomic(job_dir / "manifest.json", updated_manifest)
+        carrier_history[carrier] = {key: value for key, value in marker.items() if key != "by_carrier"}
+        marker["by_carrier"] = carrier_history
+        self._write_json_atomic(marker_path, marker)
+        (job_dir / "apply-error.json").unlink(missing_ok=True)
 
     @staticmethod
     def _write_json_atomic(path: Path, value: object) -> None:
@@ -2257,7 +2254,7 @@ class ReceiverApp:
     def _web_identity_correction_finished(self, job_id: str, error: str) -> None:
         self._correction_busy = False
         if error:
-            self.status.set("수신 PC 수정 적용 실패")
+            self.status.set(f"수신 PC 수정 적용 실패 · {error}")
             return
         job = self._jobs.get(job_id)
         if job is not None:
