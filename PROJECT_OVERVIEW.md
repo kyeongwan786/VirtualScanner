@@ -75,3 +75,5 @@ TWAIN Source, Receiver 대기열 및 중앙 GUI의 송수신·취소 코드는 �
 `build-win32.cmd`는 빌드 후 `dist`에 배포용 ZIP도 생성하도록 작성되어 있습니다. 대상 PC에서 ZIP 전체를 풀고 `Setup-RelayScanner.cmd`를 더블클릭한 뒤 Windows 관리자 권한을 승인하면 전용 설치 폴더 생성과 Source 복사를 수행합니다. Receiver는 별도로 실행합니다. 패키징 및 더블클릭 설치의 Windows 실행 확인은 아직 하지 않았습니다.
 
 새 빌드의 표시 이름은 `relay-scanner`, 파일은 `RelayScanner.ds`, 설치 스크립트는 `Install-RelayScanner.ps1`입니다. 전용 설치 경로는 `%SystemRoot%\twain_32\RelayScanner`입니다. Receiver와 연결된 `%ProgramData%\KyeongwanScanner\VirtualSource` 데이터 경로는 유지합니다. 기존 이름의 설치는 자동 변경하지 않으며 기존 제거 스크립트를 보존합니다. 신규 PC에 복사할 파일과 관리자 PowerShell 명령은 [설치 안내](KyeongwanScanner/README.md#다른-windows-pc에-설치하기)를 참고하세요. 이름 변경 후 Windows 빌드·설치·스캔 확인은 미실행입니다.
+
+수신 신분증은 자동 저장하며, 같은 포탈에는 마지막으로 저장 처리된 신분증이 적용됩니다. `신분증 확인` 버튼은 저장 완료 후에도 유지합니다. 목록에서 이전 신분증을 선택하고 이 버튼을 누르면 현재 선택 건의 저장된 OCR 값으로 SK report 또는 KT의 현재 접수 행과 ORG.jpg/CR.jpg를 다시 적용합니다. 자동 수신 중복 방지는 유지하며 명시적인 버튼 작업만 재적용합니다. 이 버튼은 과거 KT 행 수정을 시도하는 대신 현재 접수 대상으로 적용하고 새 KT 행 ID를 해당 건의 포탈별 이력에 기록합니다. Windows 실동작은 미검증입니다.

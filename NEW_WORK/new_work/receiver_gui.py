@@ -1008,21 +1008,25 @@ class ReceiverApp:
         job = self._jobs.get(job_id)
         if job is None:
             raise ValueError("저장할 접수 폴더를 찾지 못했습니다.")
-        self._store_received_identity(job_id, Path(job["job_dir"]), job["manifest"])
+        self._store_received_identity(job_id, Path(job["job_dir"]), job["manifest"], force=True)
         self.status.set(f"{job['manifest']['carrier']} 신분증 저장 완료")
         self._refresh_queue()
 
-    def _store_received_identity(self, job_id: str, job_dir: Path, manifest: dict) -> None:
+    def _store_received_identity(self, job_id: str, job_dir: Path, manifest: dict, *, force: bool = False) -> None:
         with self._identity_save_lock:
-            self._store_received_identity_locked(job_id, job_dir, manifest)
+            self._store_received_identity_locked(job_id, job_dir, manifest, force=force)
 
-    def _store_received_identity_locked(self, job_id: str, job_dir: Path, manifest: dict) -> None:
+    def _store_received_identity_locked(self, job_id: str, job_dir: Path, manifest: dict, *, force: bool = False) -> None:
         identity_name = manifest.get("identity_image")
         if not isinstance(identity_name, str) or not identity_name:
             raise ValueError("이 접수 폴더에는 받은 신분증이 없습니다.")
         marker_path = job_dir / "applied.json"
-        if marker_path.exists():
+        if marker_path.exists() and not force:
             return
+        previous = json.loads(marker_path.read_text(encoding="utf-8")) if marker_path.exists() else {}
+        carrier_history = dict(previous.get("by_carrier", {}))
+        if previous.get("carrier"):
+            carrier_history[previous["carrier"]] = {key: value for key, value in previous.items() if key != "by_carrier"}
         if manifest.get("carrier") == "SK":
             identity = self._job_file(job_dir, identity_name)
             detection_data = manifest.get("id_type_detection", {})
@@ -1051,11 +1055,14 @@ class ReceiverApp:
             }
         else:
             raise ValueError("지원하지 않는 포탈 작업입니다.")
-        self._write_json_atomic(marker_path, {
+        marker = {
             "carrier": manifest["carrier"],
             "applied_at": datetime.now().isoformat(timespec="seconds"),
             **details,
-        })
+        }
+        carrier_history[manifest["carrier"]] = dict(marker)
+        marker["by_carrier"] = carrier_history
+        self._write_json_atomic(marker_path, marker)
         (job_dir / "apply-error.json").unlink(missing_ok=True)
 
     @staticmethod
